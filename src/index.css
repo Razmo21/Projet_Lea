@@ -1,0 +1,73 @@
+:root {
+  font-family: Arial, sans-serif;
+  color: #1f2937;
+  background: #f5f7fa;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+}
+
+.chat {
+  width: min(100%, 640px);
+  padding: 32px;
+  background: #ffffff;
+  border: 1px solid #d8dee9;
+  border-radius: 12px;
+}
+
+h1 {
+  margin: 0 0 24px;
+}
+
+form {
+  display: grid;
+  gap: 12px;
+}
+
+textarea,
+button {
+  font: inherit;
+}
+
+textarea {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #9ca3af;
+  border-radius: 6px;
+  resize: vertical;
+}
+
+button {
+  justify-self: start;
+  padding: 10px 16px;
+  color: #ffffff;
+  background: #2563eb;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #1d4ed8;
+}
+
+.response {
+  min-height: 72px;
+  margin-top: 24px;
+  padding: 16px;
+  background: #f8fafc;
+  border: 1px solid #d8dee9;
+  border-radius: 6px;
+}
