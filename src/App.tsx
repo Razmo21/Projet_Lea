@@ -1,15 +1,38 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 
-const responseMessage = "Léa n'est pas encore connectée à son modèle."
+const backendUrl = 'http://127.0.0.1:8000/test-response'
+const backendErrorMessage = 'Impossible de contacter le backend de Léa.'
+
+type TestResponse = {
+  answer: string
+}
 
 function App() {
   const [question, setQuestion] = useState('')
   const [response, setResponse] = useState('')
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    setResponse(responseMessage)
+
+    try {
+      const backendResponse = await fetch(backendUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ question }),
+      })
+
+      if (!backendResponse.ok) {
+        throw new Error('Backend request failed')
+      }
+
+      const data: TestResponse = await backendResponse.json()
+      setResponse(data.answer)
+    } catch {
+      setResponse(backendErrorMessage)
+    }
   }
 
   return (
