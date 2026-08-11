@@ -20,6 +20,9 @@ models/
 *.gguf
 *.safetensors
 
+# Runtime local llama.cpp (binaires, DLL et archives téléchargées)
+runtime/llama.cpp/
+
 database/
 data/
 workspace/
