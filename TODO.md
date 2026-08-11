@@ -1,37 +1,17 @@
 # TODO — Projet Léa
 
-## ÉTAPE ACTIVE — 1. Interface localhost minimale
+## Étapes terminées
 
-- [ ] Initialiser React + TypeScript + Vite.
-- [ ] Démarrer le serveur de développement.
-- [ ] Afficher le titre « Léa ».
-- [ ] Ajouter une zone de saisie.
-- [ ] Ajouter un bouton « Envoyer ».
-- [ ] Ajouter une zone de réponse.
-- [ ] Afficher une réponse fictive au clic.
-- [ ] Vérifier le fonctionnement dans le navigateur.
-- [ ] Vérifier l'absence d'erreurs importantes.
-- [ ] Faire valider l'étape par l'utilisateur.
+- [x] Étape 1 — Interface localhost minimale.
+- [x] Étape 2 — Backend FastAPI minimal.
+- [x] Étape 3 — Connexion frontend / backend avec réponse fictive.
+- [x] Étape 4 — Installation et test du premier modèle local.
+- [x] Étape 5 — Première vraie réponse de Léa : frontend React, FastAPI et modèle local reliés et validés.
 
-### Ne pas faire
-- Backend
-- Modèle IA
-- Mémoire
-- Base de données
-- Accès fichiers
-- Internet
+## ÉTAPE 6 — Démarrage et arrêt local
 
-## ÉTAPE 2 — Backend minimal
-À commencer uniquement après validation explicite de l'étape 1.
-
-## ÉTAPE 3 — Connexion frontend/backend
-À commencer uniquement après validation explicite de l'étape 2.
-
-## ÉTAPE 4 — Premier modèle local
-À commencer uniquement après validation explicite de l'étape 3.
-
-## ÉTAPE 5 — Première vraie réponse de Léa
-À commencer uniquement après validation explicite de l'étape 4.
+À commencer uniquement après validation explicite de l’étape 5 : simplifier et fiabiliser le démarrage et l’arrêt local de Léa (frontend, backend et moteur IA), sans ajouter de mémoire ni de nouvelle fonctionnalité.
 
 ## Plus tard
+
 Mémoire, Développement, Santé animale, Vision, Web, RAG, voix et autres fonctions.

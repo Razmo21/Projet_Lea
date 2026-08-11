@@ -1,20 +1,26 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 
-const backendUrl = 'http://127.0.0.1:8000/test-response'
-const backendErrorMessage = 'Impossible de contacter le backend de Léa.'
+const backendUrl = 'http://127.0.0.1:8000/chat'
+const backendErrorMessage = 'Le modèle local de Léa n’est pas disponible.'
 
-type TestResponse = {
+type ChatResponse = {
   answer: string
 }
 
 function App() {
   const [question, setQuestion] = useState('')
   const [response, setResponse] = useState('')
+  const [isLoading, setIsLoading] = useState(false)
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (isLoading) {
+      return
+    }
 
+    setIsLoading(true)
+    setResponse('Léa réfléchit...')
     try {
       const backendResponse = await fetch(backendUrl, {
         method: 'POST',
@@ -28,10 +34,12 @@ function App() {
         throw new Error('Backend request failed')
       }
 
-      const data: TestResponse = await backendResponse.json()
+      const data: ChatResponse = await backendResponse.json()
       setResponse(data.answer)
     } catch {
       setResponse(backendErrorMessage)
+    } finally {
+      setIsLoading(false)
     }
   }
 
@@ -49,10 +57,12 @@ function App() {
             placeholder="Écrivez votre question"
             rows={5}
           />
-          <button type="submit">Envoyer</button>
+          <button type="submit" disabled={isLoading}>
+            {isLoading ? 'Envoi...' : 'Envoyer'}
+          </button>
         </form>
 
-        <section className="response" aria-live="polite" aria-label="Réponse">
+        <section className="response" aria-live="polite" aria-label="Réponse" aria-busy={isLoading}>
           {response}
         </section>
       </section>

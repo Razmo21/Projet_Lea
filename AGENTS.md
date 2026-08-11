@@ -40,20 +40,7 @@ Après modification :
 
 ## Étape actuelle
 
-Créer uniquement le frontend local avec :
-- React
-- TypeScript
-- Vite
-
-La page doit contenir :
-- un titre « Léa » ;
-- une zone de saisie ;
-- un bouton « Envoyer » ;
-- une zone de réponse.
-
-Quand on clique sur Envoyer, afficher uniquement :
-
-`Léa n'est pas encore connectée à son modèle.`
+Étape 5 — connecter le frontend React, FastAPI et le modèle local déjà installé afin d’afficher une première vraie réponse de Léa.
 
 ## Interdictions actuelles
 
