@@ -8,9 +8,17 @@
 - [x] Étape 4 — Installation et test du premier modèle local.
 - [x] Étape 5 — Première vraie réponse de Léa : frontend React, FastAPI et modèle local reliés et validés.
 
-## ÉTAPE 6 — Démarrage et arrêt local
+## ÉTAPE 6 — Démarrage et arrêt local — terminée
 
-À commencer uniquement après validation explicite de l’étape 5 : simplifier et fiabiliser le démarrage et l’arrêt local de Léa (frontend, backend et moteur IA), sans ajouter de mémoire ni de nouvelle fonctionnalité.
+- [x] Créer une commande locale unique pour démarrer Léa.
+- [x] Suivre uniquement les processus lancés par Léa.
+- [x] Vérifier l’état des trois composants.
+- [x] Arrêter proprement les processus et nettoyer l’état temporaire.
+- [x] Vérifier deux cycles complets de démarrage et d’arrêt.
+
+## ÉTAPE 7 — Contexte temporaire de conversation
+
+À commencer uniquement après validation explicite de l’étape 6 : ajouter le contexte temporaire de conversation pendant une session, sans mémoire persistante.
 
 ## Plus tard
 

@@ -40,15 +40,15 @@ Après modification :
 
 ## Étape actuelle
 
-Étape 5 — connecter le frontend React, FastAPI et le modèle local déjà installé afin d’afficher une première vraie réponse de Léa.
+Étape 6 — simplifier et fiabiliser le démarrage, l’état et l’arrêt local de Léa.
 
 ## Interdictions actuelles
 
 Ne crée PAS :
-- backend FastAPI ;
-- serveur Python ;
-- modèle local ;
-- llama.cpp ;
+- un nouveau backend FastAPI ;
+- un nouveau serveur Python ;
+- un nouveau modèle local ;
+- une nouvelle installation de llama.cpp ;
 - mémoire ;
 - base de données ;
 - RAG ;
@@ -63,13 +63,11 @@ Ne crée PAS :
 ## Validation de l'étape
 
 L'étape est terminée uniquement si :
-- `npm install` fonctionne ;
-- `npm run dev` démarre sans erreur ;
-- localhost est accessible ;
-- le titre « Léa » est visible ;
-- l'utilisateur peut écrire une question ;
-- le bouton Envoyer fonctionne ;
-- la réponse fictive apparaît ;
+- `.\lea.ps1 start` démarre le modèle, FastAPI puis Vite sans erreur ;
+- `.\lea.ps1 status` reflète correctement leur état ;
+- l'interface locale répond et affiche une vraie réponse de Léa ;
+- `.\lea.ps1 stop` arrête uniquement les processus gérés et libère les ports ;
+- aucune fonctionnalité de l'étape suivante n'a été ajoutée ;
 - aucune fonctionnalité supplémentaire n'a été ajoutée.
 
 Une fois ces critères atteints : arrête-toi.

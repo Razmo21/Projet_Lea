@@ -16,6 +16,9 @@ Thumbs.db
 *.log
 logs/
 
+# État temporaire du lanceur local Léa
+.lea/
+
 models/
 *.gguf
 *.safetensors
