@@ -10,11 +10,12 @@ $ProgressPreference = 'SilentlyContinue'
 $ProjectRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)
 $StateDirectory = Join-Path $ProjectRoot '.lea'
 $StateFile = Join-Path $StateDirectory 'processes.json'
+$StandardInputFile = Join-Path $StateDirectory 'stdin.empty'
 $TaskkillExecutable = Join-Path $env:SystemRoot 'System32\taskkill.exe'
 $NetstatExecutable = Join-Path $env:SystemRoot 'System32\netstat.exe'
 
 $ModelExecutable = Join-Path $ProjectRoot 'runtime\llama.cpp\llama-server.exe'
-$ModelPath = Join-Path $ProjectRoot 'models\general\Qwen3-4B-Q4_K_M.gguf'
+$ModelPath = Join-Path $ProjectRoot 'models\general\Huihui-Qwen3-4B-abliterated-v2-Q4_K_M.gguf'
 $BackendDirectory = Join-Path $ProjectRoot 'backend'
 $BackendPython = Join-Path $BackendDirectory '.venv\Scripts\python.exe'
 $PackageFile = Join-Path $ProjectRoot 'package.json'
@@ -48,6 +49,7 @@ $ComponentDefinitions = [ordered]@{
 
 $KnownStateFiles = @(
     'processes.json',
+    'stdin.empty',
     'model.stdout.log',
     'model.stderr.log',
     'backend.stdout.log',
@@ -518,6 +520,11 @@ function Clear-PreviousLogs {
     }
 }
 
+function Ensure-EmptyStandardInputFile {
+    Initialize-StateDirectory
+    [System.IO.File]::WriteAllBytes($StandardInputFile, [byte[]]@())
+}
+
 function New-LeaState {
     return [ordered]@{
         version = 1
@@ -642,7 +649,7 @@ function Start-Model {
     $arguments = '-m "' + $ModelPath + '" -ngl 99 -c 4096 --host 127.0.0.1 --port 8080 --jinja --alias lea-general'
     $process = $null
     try {
-        $process = Start-Process -FilePath $ModelExecutable -ArgumentList $arguments -WorkingDirectory $ProjectRoot -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $StateDirectory 'model.stdout.log') -RedirectStandardError (Join-Path $StateDirectory 'model.stderr.log')
+        $process = Start-Process -FilePath $ModelExecutable -ArgumentList $arguments -WorkingDirectory $ProjectRoot -PassThru -WindowStyle Hidden -RedirectStandardInput $StandardInputFile -RedirectStandardOutput (Join-Path $StateDirectory 'model.stdout.log') -RedirectStandardError (Join-Path $StateDirectory 'model.stderr.log')
         $launcherRecord = New-ProcessRecord -ProcessId $process.Id -ExpectedName $definition.ExpectedName -ExpectedPath $definition.ExpectedPath
         $State.components['model'] = [ordered]@{
             launcher = $launcherRecord
@@ -678,7 +685,7 @@ function Start-Backend {
 
     $process = $null
     try {
-        $process = Start-Process -FilePath $BackendPython -ArgumentList '-m uvicorn app.main:app --host 127.0.0.1 --port 8000' -WorkingDirectory $BackendDirectory -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $StateDirectory 'backend.stdout.log') -RedirectStandardError (Join-Path $StateDirectory 'backend.stderr.log')
+        $process = Start-Process -FilePath $BackendPython -ArgumentList '-m uvicorn app.main:app --host 127.0.0.1 --port 8000' -WorkingDirectory $BackendDirectory -PassThru -WindowStyle Hidden -RedirectStandardInput $StandardInputFile -RedirectStandardOutput (Join-Path $StateDirectory 'backend.stdout.log') -RedirectStandardError (Join-Path $StateDirectory 'backend.stderr.log')
         $launcherRecord = New-ProcessRecord -ProcessId $process.Id -ExpectedName $definition.ExpectedName -ExpectedPath $definition.ExpectedPath
         $State.components['backend'] = [ordered]@{
             launcher = $launcherRecord
@@ -715,7 +722,7 @@ function Start-Frontend {
     $npmCommand = (Get-Command npm.cmd -ErrorAction Stop).Source
     $process = $null
     try {
-        $process = Start-Process -FilePath $npmCommand -ArgumentList 'run dev -- --host 127.0.0.1 --port 5173' -WorkingDirectory $ProjectRoot -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $StateDirectory 'frontend.stdout.log') -RedirectStandardError (Join-Path $StateDirectory 'frontend.stderr.log')
+        $process = Start-Process -FilePath $npmCommand -ArgumentList 'run dev -- --host 127.0.0.1 --port 5173' -WorkingDirectory $ProjectRoot -PassThru -WindowStyle Hidden -RedirectStandardInput $StandardInputFile -RedirectStandardOutput (Join-Path $StateDirectory 'frontend.stdout.log') -RedirectStandardError (Join-Path $StateDirectory 'frontend.stderr.log')
         $launcherRecord = New-ProcessRecord -ProcessId $process.Id -ExpectedName $process.ProcessName -ExpectedPath (Get-ProcessPath -Process $process)
         $State.components['frontend'] = [ordered]@{
             launcher = $launcherRecord
@@ -1137,6 +1144,7 @@ function Start-Lea {
     }
 
     Clear-PreviousLogs
+    Ensure-EmptyStandardInputFile
     $state = New-LeaState
     try {
         Start-Model -State $state
@@ -1199,15 +1207,15 @@ try {
     switch ($Action.ToLowerInvariant()) {
         'start' {
             Start-Lea
-            exit 0
+            return
         }
         'status' {
             Show-LeaStatus
-            exit 0
+            return
         }
         'stop' {
             Stop-Lea
-            exit 0
+            return
         }
         default {
             Write-Usage

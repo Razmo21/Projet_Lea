@@ -20,7 +20,7 @@ python -m venv .venv
 Lance d’abord le serveur du modèle depuis la racine du projet :
 
 ```powershell
-.\runtime\llama.cpp\llama-server.exe -m .\models\general\Qwen3-4B-Q4_K_M.gguf -ngl 99 -c 4096 --host 127.0.0.1 --port 8080 --jinja --alias lea-general
+.\runtime\llama.cpp\llama-server.exe -m .\models\general\Huihui-Qwen3-4B-abliterated-v2-Q4_K_M.gguf -ngl 99 -c 4096 --host 127.0.0.1 --port 8080 --jinja --alias lea-general
 ```
 
 Ensuite, depuis le dossier `backend` :
