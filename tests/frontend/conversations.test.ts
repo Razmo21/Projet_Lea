@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  allowsDestructiveMessageAction,
   buildSendMessagePayload,
   conversationIdFromSearch,
   createLatestRequestGate,
@@ -26,6 +27,7 @@ const conversation: ConversationDetail = {
       role: 'user',
       content: 'Ancienne question',
       status: 'completed',
+      kind: 'conversation',
       error: null,
       created_at: '2026-08-12T00:00:00.000Z',
       updated_at: '2026-08-12T00:00:00.000Z',
@@ -37,6 +39,7 @@ const conversation: ConversationDetail = {
       role: 'assistant',
       content: 'Ancienne réponse',
       status: 'completed',
+      kind: 'conversation',
       error: null,
       created_at: '2026-08-12T00:00:00.000Z',
       updated_at: '2026-08-12T00:00:00.000Z',
@@ -119,4 +122,16 @@ test('a stale error or mutation cannot overwrite a newer navigation', async () =
 
   gate.invalidate()
   assert.equal(gate.isCurrent(secondLoad), false)
+})
+
+
+test('only ordinary conversation turns allow destructive message actions', () => {
+  assert.equal(
+    allowsDestructiveMessageAction({ kind: 'conversation' }),
+    true,
+  )
+  assert.equal(
+    allowsDestructiveMessageAction({ kind: 'memory' }),
+    false,
+  )
 })

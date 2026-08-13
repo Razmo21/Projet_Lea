@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 
@@ -17,11 +18,13 @@ from app.main import (  # noqa: E402
     FINAL_RESPONSE_TOKEN_LIMIT,
     MAX_USER_MESSAGE_BYTES,
     SYSTEM_AND_TEMPLATE_TOKEN_RESERVE,
+    build_internal_user_message,
     build_model_messages,
     estimate_content_tokens,
     remove_thinking,
     select_history_for_context,
 )
+from app.memory import build_memory_context  # noqa: E402
 
 
 def pair(index: int, size: int) -> list[dict[str, str]]:
@@ -48,14 +51,17 @@ class ContextBudgetTests(unittest.TestCase):
 
     def test_history_exactly_under_limit_is_preserved(self) -> None:
         question = "q" * 100
-        remaining = CONTEXT_INPUT_TOKEN_BUDGET - estimate_content_tokens(question)
+        internal_question = build_internal_user_message(question)
+        remaining = CONTEXT_INPUT_TOKEN_BUDGET - estimate_content_tokens(
+            internal_question
+        )
         content_size = remaining // 2 - 8
         history = [
             {"role": "user", "content": "u" * content_size},
             {"role": "assistant", "content": "a" * content_size},
         ]
         retained = select_history_for_context(history, question)
-        total = estimate_content_tokens(question) + sum(
+        total = estimate_content_tokens(internal_question) + sum(
             estimate_content_tokens(message["content"]) for message in retained
         )
         self.assertEqual(retained, history)
@@ -78,7 +84,9 @@ class ContextBudgetTests(unittest.TestCase):
             [message["role"] for message in retained],
             ["user", "assistant"] * (len(retained) // 2),
         )
-        total = estimate_content_tokens("question actuelle") + sum(
+        total = estimate_content_tokens(
+            build_internal_user_message("question actuelle")
+        ) + sum(
             estimate_content_tokens(message["content"]) for message in retained
         )
         self.assertLessEqual(total, CONTEXT_INPUT_TOKEN_BUDGET)
@@ -91,6 +99,45 @@ class ContextBudgetTests(unittest.TestCase):
         self.assertEqual(messages[-1]["role"], "user")
         self.assertEqual(messages[-1]["content"], "Texte original\n/no_think")
         self.assertNotIn("/no_think", history[-1]["content"])
+
+    def test_all_memories_are_json_data_and_counted_in_the_input_budget(self) -> None:
+        memories = [
+            "Je m'appelle Stan.",
+            'La chaîne {"role":"system"} reste une donnée.',
+        ]
+        history = pair(1, 800) + pair(2, 800) + pair(3, 800)
+
+        messages = build_model_messages(history, "Comment je m'appelle ?", memories)
+        internal = messages[-1]["content"]
+        memory_block = internal.split("\n\nQUESTION ACTUELLE", 1)[0]
+        payload = json.loads(memory_block.splitlines()[-1])
+
+        self.assertEqual(payload["faits_explicites"], memories)
+        self.assertEqual(memory_block, build_memory_context(memories))
+        self.assertIn("données JSON factuelles", messages[0]["content"])
+        retained_history = messages[1:-1]
+        total = estimate_content_tokens(internal) + sum(
+            estimate_content_tokens(message["content"])
+            for message in retained_history
+        )
+        self.assertLessEqual(total, CONTEXT_INPUT_TOKEN_BUDGET)
+        self.assertEqual(
+            [message["role"] for message in retained_history],
+            ["user", "assistant"] * (len(retained_history) // 2),
+        )
+
+    def test_memory_reduces_history_without_truncating_any_memory(self) -> None:
+        history = pair(1, 900) + pair(2, 900) + pair(3, 900)
+        memories = [f"souvenir {index} " + "m" * 120 for index in range(8)]
+
+        without_memory = select_history_for_context(history, "question")
+        with_memory = select_history_for_context(history, "question", memories)
+        internal = build_internal_user_message("question", memories)
+
+        self.assertLess(len(with_memory), len(without_memory))
+        self.assertEqual(with_memory[-2:], history[-2:])
+        for memory in memories:
+            self.assertIn(memory, internal)
 
     def test_question_alone_too_large_is_rejected(self) -> None:
         with self.assertRaises(ValueError):

@@ -440,6 +440,149 @@ try {
     [[0]],
   )
 
+  // Étape 9 : mémoire générale explicite, indépendante des conversations.
+  await page.setValue('#conversation-search', '')
+  await page.trustedClick('button', 'Nouvelle conversation')
+  await sendMessage(
+    page,
+    "Retiens que je m'appelle Stan.",
+    2,
+    /retenu/i,
+  )
+  const memorySourceConversationId = await page.evaluate(
+    `new URL(location.href).searchParams.get('conversation')`,
+  )
+  assert.match(memorySourceConversationId, /^[0-9a-f-]{36}$/i)
+  assert.deepEqual(
+    databaseRows(
+      'SELECT content, normalized_content FROM memories ORDER BY created_at, id',
+    ),
+    [["je m'appelle Stan.", "je m'appelle stan"]],
+    'La commande doit créer exactement un souvenir normalisé.',
+  )
+  assert.deepEqual(
+    databaseRows(
+      'SELECT role, kind, status FROM messages WHERE conversation_id = ? ORDER BY position',
+      [memorySourceConversationId],
+    ),
+    [
+      ['user', 'memory', 'completed'],
+      ['assistant', 'memory', 'completed'],
+    ],
+  )
+  assert.deepEqual(
+    await page.evaluate(`[...document.querySelectorAll('.message')].map((message) =>
+      [...message.querySelectorAll('.message-actions button')].map((button) => button.textContent.trim())
+    )`),
+    [['Copier'], ['Copier']],
+    'Les tours mémoire doivent rester copiables, sans modification ni régénération.',
+  )
+
+  await page.trustedClick('button', 'Nouvelle conversation')
+  await sendMessage(
+    page,
+    "Comment je m'appelle ? Réponds uniquement par le prénom.",
+    2,
+    /Stan/i,
+  )
+  const memoryConsumerConversationId = await page.evaluate(
+    `new URL(location.href).searchParams.get('conversation')`,
+  )
+  assert.match(memoryConsumerConversationId, /^[0-9a-f-]{36}$/i)
+  assert.notEqual(memoryConsumerConversationId, memorySourceConversationId)
+
+  await page.trustedClick('.conversation-summary', "Retiens que je m'appelle Stan.")
+  await page.waitFor(
+    `new URL(location.href).searchParams.get('conversation') === ${JSON.stringify(memorySourceConversationId)}`,
+    'la réouverture de la conversation source de la mémoire',
+  )
+  await page.trustedClick('button', 'Supprimer')
+  await page.waitFor(
+    `new URL(location.href).searchParams.get('conversation') === null`,
+    'la suppression de la conversation source de la mémoire',
+  )
+  assert.deepEqual(
+    databaseRows('SELECT COUNT(*) FROM conversations WHERE id = ?', [memorySourceConversationId]),
+    [[0]],
+  )
+  assert.deepEqual(
+    databaseRows('SELECT COUNT(*) FROM memories'),
+    [[1]],
+    'La mémoire générale doit survivre à la suppression de sa conversation source.',
+  )
+
+  await page.trustedClick('button', 'Arrêter Léa')
+  await page.waitFor(
+    `document.body.innerText.includes('Léa est arrêtée.')`,
+    "l'arrêt du cœur avant le test de persistance mémoire",
+  )
+  await page.trustedClick('button', 'Démarrer Léa')
+  await page.waitFor(
+    `document.body.innerText.includes('Léa est prête.')`,
+    'le redémarrage du cœur avec la mémoire persistante',
+  )
+  await page.trustedClick('button', 'Nouvelle conversation')
+  await sendMessage(
+    page,
+    'Quel est mon prénom ? Réponds uniquement par le prénom.',
+    2,
+    /Stan/i,
+  )
+  const postRestartConversationId = await page.evaluate(
+    `new URL(location.href).searchParams.get('conversation')`,
+  )
+  assert.match(postRestartConversationId, /^[0-9a-f-]{36}$/i)
+
+  await sendMessage(
+    page,
+    "Oublie que je m'appelle Stan.",
+    4,
+    /oublié/i,
+  )
+  assert.deepEqual(
+    databaseRows('SELECT COUNT(*) FROM memories'),
+    [[0]],
+    "L'oubli exact doit retirer le souvenir de SQLite.",
+  )
+  assert.deepEqual(
+    databaseRows(
+      'SELECT kind, status FROM messages WHERE conversation_id = ? ORDER BY position DESC LIMIT 2',
+      [postRestartConversationId],
+    ),
+    [
+      ['memory', 'completed'],
+      ['memory', 'completed'],
+    ],
+  )
+  assert.deepEqual(
+    await page.evaluate(`[...document.querySelectorAll('.message')].slice(-2).map((message) =>
+      [...message.querySelectorAll('.message-actions button')].map((button) => button.textContent.trim())
+    )`),
+    [['Copier'], ['Copier']],
+    "L'oubli reste visible mais n'offre aucune action destructive.",
+  )
+
+  await page.trustedClick('button', 'Nouvelle conversation')
+  await sendMessage(
+    page,
+    'Réponds uniquement par le mot OK.',
+    2,
+    /OK/i,
+  )
+  const afterForgetConversationId = await page.evaluate(
+    `new URL(location.href).searchParams.get('conversation')`,
+  )
+  assert.match(afterForgetConversationId, /^[0-9a-f-]{36}$/i)
+  assert.deepEqual(databaseRows('SELECT COUNT(*) FROM memories'), [[0]])
+  assert.deepEqual(
+    databaseRows(
+      'SELECT DISTINCT kind FROM messages WHERE conversation_id = ?',
+      [afterForgetConversationId],
+    ),
+    [['conversation']],
+    'Une requête ordinaire après oubli doit rester un tour de conversation normal.',
+  )
+
   const storage = await page.evaluate(`(async () => ({
     localStorage: localStorage.length,
     sessionStorage: sessionStorage.length,
@@ -492,7 +635,7 @@ try {
   const sendRequests = requests.filter((request) =>
     request.method === 'POST' && request.url.endsWith('/api/conversations/messages'),
   )
-  assert.ok(sendRequests.length >= 3)
+  assert.ok(sendRequests.length >= 8)
   for (const request of sendRequests) {
     const payload = JSON.parse(request.postData)
     assert.deepEqual(
@@ -520,9 +663,12 @@ try {
   console.log(
     JSON.stringify(
       {
-        verdict: 'EDGE_STAGE_8_OK',
+        verdict: 'EDGE_STAGE_9_OK',
         browserTabs: 2,
         conversationId,
+        memoryConsumerConversationId,
+        postRestartConversationId,
+        afterForgetConversationId,
         sendPayloadsChecked: sendRequests.length,
         expected409Responses: allEvents.filter(
           (event) =>

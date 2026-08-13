@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
   backendOrigin,
+  allowsDestructiveMessageAction,
   buildSendMessagePayload,
   conversationIdFromSearch,
   createLatestRequestGate,
@@ -495,7 +496,8 @@ function App() {
       isGenerating ||
       conversationLoadingLock.current ||
       renameLock.current ||
-      message.role !== 'user'
+      message.role !== 'user' ||
+      !allowsDestructiveMessageAction(message)
     ) return
     setRenameDraft(null)
     setEditingMessageId(message.id)
@@ -513,7 +515,8 @@ function App() {
       editingMessageId !== message.id ||
       isGenerating ||
       conversationLoadingLock.current ||
-      message.role !== 'user'
+      message.role !== 'user' ||
+      !allowsDestructiveMessageAction(message)
     ) return
     const content = editDraft.trim()
     if (!content) {
@@ -547,7 +550,8 @@ function App() {
       !activeConversation ||
       isGenerating ||
       conversationLoadingLock.current ||
-      message.role !== 'assistant'
+      message.role !== 'assistant' ||
+      !allowsDestructiveMessageAction(message)
     ) return
     void runGeneration(() =>
       apiRequest<ConversationDetail>(
@@ -565,7 +569,8 @@ function App() {
       !activeConversation ||
       isGenerating ||
       conversationLoadingLock.current ||
-      message.role !== 'user'
+      message.role !== 'user' ||
+      !allowsDestructiveMessageAction(message)
     ) return
     void runGeneration(() =>
       apiRequest<ConversationDetail>(
@@ -687,9 +692,9 @@ function App() {
                 {editingMessageId !== message.id && (
                   <div className="message-actions">
                     <button type="button" className="text-button" onClick={() => void handleCopy(message)}>Copier</button>
-                    {message.role === 'user' && <button type="button" className="text-button" onClick={() => handleEdit(message)} disabled={isGenerating || isConversationLoading || isRenaming}>Modifier</button>}
-                    {message.role === 'user' && message.status === 'failed' && <button type="button" className="text-button" onClick={() => handleRetry(message)} disabled={isGenerating || isConversationLoading || isRenaming || coreStatus.state !== 'ready'}>Réessayer</button>}
-                    {message.role === 'assistant' && <button type="button" className="text-button" onClick={() => handleRegenerate(message)} disabled={isGenerating || isConversationLoading || isRenaming || coreStatus.state !== 'ready'}>Régénérer</button>}
+                    {message.role === 'user' && allowsDestructiveMessageAction(message) && <button type="button" className="text-button" onClick={() => handleEdit(message)} disabled={isGenerating || isConversationLoading || isRenaming}>Modifier</button>}
+                    {message.role === 'user' && message.status === 'failed' && allowsDestructiveMessageAction(message) && <button type="button" className="text-button" onClick={() => handleRetry(message)} disabled={isGenerating || isConversationLoading || isRenaming || coreStatus.state !== 'ready'}>Réessayer</button>}
+                    {message.role === 'assistant' && allowsDestructiveMessageAction(message) && <button type="button" className="text-button" onClick={() => handleRegenerate(message)} disabled={isGenerating || isConversationLoading || isRenaming || coreStatus.state !== 'ready'}>Régénérer</button>}
                   </div>
                 )}
               </article>

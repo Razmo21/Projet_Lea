@@ -8,6 +8,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterator
 
+from .memory import (
+    EmptyMemoryCommandError,
+    MemoryCommand,
+    ensure_memory_capacity,
+    parse_memory_command,
+)
 from .migrations import SCHEMA_VERSION, apply_migrations
 
 
@@ -35,6 +41,14 @@ class GenerationConflictError(RuntimeError):
 
 class ConversationOperationError(RuntimeError):
     pass
+
+
+MEMORY_REMEMBERED_CONFIRMATION = "C'est retenu."
+MEMORY_DUPLICATE_CONFIRMATION = "Je le savais déjà."
+MEMORY_FORGOTTEN_CONFIRMATION = "C'est oublié."
+MEMORY_NOT_FOUND_CONFIRMATION = (
+    "Je n'ai trouvé aucun souvenir correspondant exactement."
+)
 
 
 def utc_now() -> str:
@@ -129,9 +143,11 @@ class Database:
             "schema_migrations": "table",
             "conversations": "table",
             "messages": "table",
+            "memories": "table",
             "idx_conversations_updated_at": "index",
             "idx_messages_conversation_position": "index",
             "idx_messages_conversation_status": "index",
+            "idx_memories_normalized_content": "index",
         }
         rows = connection.execute(
             "SELECT name, type FROM sqlite_master WHERE name IN ({})".format(
@@ -142,6 +158,38 @@ class Database:
         actual_objects = {str(row[0]): str(row[1]) for row in rows}
         if actual_objects != required_objects:
             raise RuntimeError("Le schéma SQLite local est incomplet ou incohérent.")
+        message_columns = {
+            str(row[1]): row
+            for row in connection.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        kind_column = message_columns.get("kind")
+        if (
+            kind_column is None
+            or int(kind_column[3]) != 1
+            or str(kind_column[4]).strip("'") != "conversation"
+        ):
+            raise RuntimeError("La classification des messages SQLite est incohérente.")
+        memory_columns = {
+            str(row[1]): row
+            for row in connection.execute("PRAGMA table_info(memories)").fetchall()
+        }
+        if set(memory_columns) != {
+            "id",
+            "content",
+            "normalized_content",
+            "created_at",
+            "updated_at",
+        } or any(
+            int(memory_columns[name][3]) != 1
+            for name in ("content", "normalized_content", "created_at", "updated_at")
+        ):
+            raise RuntimeError("Le schéma de la mémoire SQLite est incohérent.")
+        memory_indexes = {
+            str(row[1]): bool(row[2])
+            for row in connection.execute("PRAGMA index_list(memories)").fetchall()
+        }
+        if memory_indexes.get("idx_memories_normalized_content") is not True:
+            raise RuntimeError("L’unicité de la mémoire SQLite est absente.")
         quick_check = connection.execute("PRAGMA quick_check").fetchone()
         if quick_check is None or str(quick_check[0]).lower() != "ok":
             raise RuntimeError("Le contrôle d’intégrité SQLite a échoué.")
@@ -218,6 +266,17 @@ class Database:
             "content": str(row["content"]),
             "status": str(row["status"]),
             "error": str(row["error_code"]) if row["error_code"] is not None else None,
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+            "kind": str(row["kind"]),
+        }
+
+    @staticmethod
+    def _memory_from_row(row: sqlite3.Row) -> dict[str, str]:
+        return {
+            "id": str(row["id"]),
+            "content": str(row["content"]),
+            "normalized_content": str(row["normalized_content"]),
             "created_at": str(row["created_at"]),
             "updated_at": str(row["updated_at"]),
         }
@@ -319,6 +378,160 @@ class Database:
         detail["messages"] = [self._message_from_row(message) for message in messages]
         return detail
 
+    def list_memories(self) -> list[dict[str, str]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM memories ORDER BY created_at ASC, id ASC"
+            ).fetchall()
+        return [self._memory_from_row(row) for row in rows]
+
+    def apply_memory_command(
+        self,
+        command: MemoryCommand,
+        original_message: str,
+        conversation_id: str | None,
+        expected_revision: int | None,
+    ) -> str:
+        now = utc_now()
+        user_message_id = str(uuid.uuid4())
+        assistant_message_id = str(uuid.uuid4())
+
+        with self.transaction() as connection:
+            is_new_conversation = conversation_id is None
+            if conversation_id is None:
+                if expected_revision is not None:
+                    raise ConversationOperationError(
+                        "Une nouvelle conversation ne possède pas encore de révision."
+                    )
+                conversation_id = str(uuid.uuid4())
+                first_position = 1
+            else:
+                if expected_revision is None:
+                    raise ConversationOperationError(
+                        "La révision attendue est obligatoire pour une conversation existante."
+                    )
+                conversation = self._conversation_row(connection, conversation_id)
+                self._assert_mutation_allowed(conversation, expected_revision)
+                last_message = connection.execute(
+                    """
+                    SELECT role, status FROM messages
+                    WHERE conversation_id = ? ORDER BY position DESC LIMIT 1
+                    """,
+                    (conversation_id,),
+                ).fetchone()
+                if last_message is not None and (
+                    str(last_message["role"]) != "assistant"
+                    or str(last_message["status"]) != "completed"
+                ):
+                    raise ConversationOperationError(
+                        "La dernière question doit être réessayée avant de poursuivre."
+                    )
+                first_position = int(
+                    connection.execute(
+                        """
+                        SELECT COALESCE(MAX(position), 0) + 1
+                        FROM messages WHERE conversation_id = ?
+                        """,
+                        (conversation_id,),
+                    ).fetchone()[0]
+                )
+
+            if command.action == "remember":
+                existing = connection.execute(
+                    "SELECT id FROM memories WHERE normalized_content = ?",
+                    (command.normalized_content,),
+                ).fetchone()
+                if existing is None:
+                    existing_contents = [
+                        str(row[0])
+                        for row in connection.execute(
+                            "SELECT content FROM memories ORDER BY created_at ASC, id ASC"
+                        ).fetchall()
+                    ]
+                    ensure_memory_capacity([*existing_contents, command.content])
+                    connection.execute(
+                        """
+                        INSERT INTO memories(
+                            id, content, normalized_content, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(uuid.uuid4()),
+                            command.content,
+                            command.normalized_content,
+                            now,
+                            now,
+                        ),
+                    )
+                    confirmation = MEMORY_REMEMBERED_CONFIRMATION
+                else:
+                    confirmation = MEMORY_DUPLICATE_CONFIRMATION
+            else:
+                deleted = connection.execute(
+                    "DELETE FROM memories WHERE normalized_content = ?",
+                    (command.normalized_content,),
+                ).rowcount
+                confirmation = (
+                    MEMORY_FORGOTTEN_CONFIRMATION
+                    if deleted == 1
+                    else MEMORY_NOT_FOUND_CONFIRMATION
+                )
+
+            if is_new_conversation:
+                connection.execute(
+                    """
+                    INSERT INTO conversations(
+                        id, title, title_origin, created_at, updated_at,
+                        revision, generation_active
+                    ) VALUES (?, ?, 'automatic', ?, ?, 1, 0)
+                    """,
+                    (conversation_id, automatic_title(original_message), now, now),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE conversations
+                    SET revision = revision + 1, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, conversation_id),
+                )
+
+            connection.execute(
+                """
+                INSERT INTO messages(
+                    id, conversation_id, position, role, content, status,
+                    error_code, created_at, updated_at, kind
+                ) VALUES (?, ?, ?, 'user', ?, 'completed', NULL, ?, ?, 'memory')
+                """,
+                (
+                    user_message_id,
+                    conversation_id,
+                    first_position,
+                    original_message,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO messages(
+                    id, conversation_id, position, role, content, status,
+                    error_code, created_at, updated_at, kind
+                ) VALUES (?, ?, ?, 'assistant', ?, 'completed', NULL, ?, ?, 'memory')
+                """,
+                (
+                    assistant_message_id,
+                    conversation_id,
+                    first_position + 1,
+                    confirmation,
+                    now,
+                    now,
+                ),
+            )
+
+        return conversation_id
+
     def create_pending_conversation(self, content: str) -> tuple[str, str]:
         conversation_id = str(uuid.uuid4())
         message_id = str(uuid.uuid4())
@@ -395,21 +608,99 @@ class Database:
     def completed_history_before(
         self, conversation_id: str, user_message_id: str
     ) -> tuple[list[dict[str, str]], str]:
+        history, question, _memories = self.generation_context_before(
+            conversation_id, user_message_id
+        )
+        return history, question
+
+    def generation_context_before(
+        self, conversation_id: str, user_message_id: str
+    ) -> tuple[list[dict[str, str]], str, list[str]]:
         with self.connection() as connection:
-            current = self._message_row(connection, conversation_id, user_message_id)
-            if str(current["role"]) != "user":
-                raise ConversationOperationError("La génération doit partir d’un message utilisateur.")
-            rows = connection.execute(
-                """
-                SELECT role, content FROM messages
-                WHERE conversation_id = ? AND position < ? AND status = 'completed'
-                ORDER BY position ASC
-                """,
-                (conversation_id, int(current["position"])),
-            ).fetchall()
+            connection.execute("BEGIN")
+            try:
+                current = self._message_row(
+                    connection, conversation_id, user_message_id
+                )
+                if (
+                    str(current["role"]) != "user"
+                    or str(current["kind"]) != "conversation"
+                ):
+                    raise ConversationOperationError(
+                        "La génération doit partir d’un message utilisateur normal."
+                    )
+                rows = connection.execute(
+                    """
+                    SELECT role, content FROM messages
+                    WHERE conversation_id = ? AND position < ?
+                      AND status = 'completed' AND kind = 'conversation'
+                    ORDER BY position ASC
+                    """,
+                    (conversation_id, int(current["position"])),
+                ).fetchall()
+                memory_rows = connection.execute(
+                    "SELECT content FROM memories ORDER BY created_at ASC, id ASC"
+                ).fetchall()
+            except BaseException:
+                connection.rollback()
+                raise
+            else:
+                connection.commit()
         return (
             [{"role": str(row["role"]), "content": str(row["content"])} for row in rows],
             str(current["content"]),
+            [str(row["content"]) for row in memory_rows],
+        )
+
+    def regeneration_context_for_assistant(
+        self, conversation_id: str, assistant_message_id: str
+    ) -> tuple[list[dict[str, str]], str, list[str]]:
+        with self.connection() as connection:
+            connection.execute("BEGIN")
+            try:
+                assistant = self._message_row(
+                    connection, conversation_id, assistant_message_id
+                )
+                if (
+                    str(assistant["role"]) != "assistant"
+                    or str(assistant["kind"]) != "conversation"
+                ):
+                    raise ConversationOperationError(
+                        "La régénération doit cibler une réponse normale de Léa."
+                    )
+                user = connection.execute(
+                    """
+                    SELECT * FROM messages
+                    WHERE conversation_id = ? AND position = ?
+                      AND role = 'user' AND kind = 'conversation'
+                    """,
+                    (conversation_id, int(assistant["position"]) - 1),
+                ).fetchone()
+                if user is None:
+                    raise ConversationOperationError(
+                        "La question associée à cette réponse est introuvable."
+                    )
+                rows = connection.execute(
+                    """
+                    SELECT role, content FROM messages
+                    WHERE conversation_id = ? AND position < ?
+                      AND status = 'completed' AND kind = 'conversation'
+                    ORDER BY position ASC
+                    """,
+                    (conversation_id, int(user["position"])),
+                ).fetchall()
+                memory_rows = connection.execute(
+                    "SELECT content FROM memories ORDER BY created_at ASC, id ASC"
+                ).fetchall()
+            except BaseException:
+                connection.rollback()
+                raise
+            else:
+                connection.commit()
+        return (
+            [{"role": str(row["role"]), "content": str(row["content"])} for row in rows],
+            str(user["content"]),
+            [str(row["content"]) for row in memory_rows],
         )
 
     def complete_generation(
@@ -422,7 +713,11 @@ class Database:
             user_message = self._message_row(connection, conversation_id, user_message_id)
             if not bool(conversation["generation_active"]):
                 raise ConversationOperationError("La génération n’est plus active.")
-            if str(user_message["role"]) != "user" or str(user_message["status"]) != "pending":
+            if (
+                str(user_message["role"]) != "user"
+                or str(user_message["kind"]) != "conversation"
+                or str(user_message["status"]) != "pending"
+            ):
                 raise ConversationOperationError("La question n’est plus en attente.")
             assistant_position = int(user_message["position"]) + 1
             connection.execute(
@@ -458,7 +753,10 @@ class Database:
         with self.transaction() as connection:
             conversation = self._conversation_row(connection, conversation_id)
             user_message = self._message_row(connection, conversation_id, user_message_id)
-            if str(user_message["role"]) != "user":
+            if (
+                str(user_message["role"]) != "user"
+                or str(user_message["kind"]) != "conversation"
+            ):
                 raise ConversationOperationError("Le message en échec n’est pas une question.")
             if str(user_message["status"]) == "pending":
                 connection.execute(
@@ -509,9 +807,21 @@ class Database:
             conversation = self._conversation_row(connection, conversation_id)
             self._assert_mutation_allowed(conversation, expected_revision)
             message = self._message_row(connection, conversation_id, message_id)
-            if str(message["role"]) != "user" or str(message["status"]) != "failed":
+            if (
+                str(message["kind"]) != "conversation"
+                or str(message["role"]) != "user"
+                or str(message["status"]) != "failed"
+            ):
                 raise ConversationOperationError(
                     "Seule une question en échec peut être réessayée."
+                )
+            try:
+                command = parse_memory_command(str(message["content"]))
+            except EmptyMemoryCommandError:
+                command = True
+            if command is not None:
+                raise ConversationOperationError(
+                    "Une commande mémoire doit être envoyée comme nouveau message."
                 )
             later_count = int(
                 connection.execute(
@@ -556,9 +866,21 @@ class Database:
             conversation = self._conversation_row(connection, conversation_id)
             self._assert_mutation_allowed(conversation, expected_revision)
             message = self._message_row(connection, conversation_id, message_id)
+            if str(message["kind"]) != "conversation":
+                raise ConversationOperationError(
+                    "Un tour de gestion de la mémoire ne peut pas être modifié."
+                )
             if str(message["role"]) != "user":
                 raise ConversationOperationError(
                     "Seul un message utilisateur peut être modifié."
+                )
+            try:
+                command = parse_memory_command(content)
+            except EmptyMemoryCommandError:
+                command = True
+            if command is not None:
+                raise ConversationOperationError(
+                    "Une commande mémoire doit être envoyée comme nouveau message."
                 )
             position = int(message["position"])
             connection.execute(
@@ -595,6 +917,10 @@ class Database:
             conversation = self._conversation_row(connection, conversation_id)
             self._assert_mutation_allowed(conversation, expected_revision)
             assistant = self._message_row(connection, conversation_id, message_id)
+            if str(assistant["kind"]) != "conversation":
+                raise ConversationOperationError(
+                    "Un tour de gestion de la mémoire ne peut pas être régénéré."
+                )
             if str(assistant["role"]) != "assistant":
                 raise ConversationOperationError(
                     "Seule une réponse de Léa peut être régénérée."
@@ -610,6 +936,18 @@ class Database:
             if user is None:
                 raise ConversationOperationError(
                     "La question associée à cette réponse est introuvable."
+                )
+            if str(user["kind"]) != "conversation":
+                raise ConversationOperationError(
+                    "Un tour de gestion de la mémoire ne peut pas être régénéré."
+                )
+            try:
+                command = parse_memory_command(str(user["content"]))
+            except EmptyMemoryCommandError:
+                command = True
+            if command is not None:
+                raise ConversationOperationError(
+                    "Une commande mémoire ne peut pas être régénérée."
                 )
             connection.execute(
                 "DELETE FROM messages WHERE conversation_id = ? AND position >= ?",

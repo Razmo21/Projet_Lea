@@ -2,6 +2,7 @@ export const backendOrigin = 'http://127.0.0.1:8000'
 export const maxQuestionBytes = 6000
 
 export type MessageStatus = 'pending' | 'completed' | 'failed'
+export type MessageKind = 'conversation' | 'memory'
 
 export type ConversationMessage = {
   id: string
@@ -10,6 +11,7 @@ export type ConversationMessage = {
   role: 'user' | 'assistant'
   content: string
   status: MessageStatus
+  kind: MessageKind
   error: string | null
   created_at: string
   updated_at: string
@@ -28,6 +30,12 @@ export type ConversationSummary = {
 
 export type ConversationDetail = ConversationSummary & {
   messages: ConversationMessage[]
+}
+
+export function allowsDestructiveMessageAction(
+  message: Pick<ConversationMessage, 'kind'>,
+): boolean {
+  return message.kind === 'conversation'
 }
 
 export type SendMessagePayload = {
