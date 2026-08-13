@@ -16,10 +16,21 @@
 - [x] Arrêter proprement les processus et nettoyer l’état temporaire.
 - [x] Vérifier deux cycles complets de démarrage et d’arrêt.
 
-## ÉTAPE 7 — Contexte temporaire de conversation
+## ÉTAPE 7 — Raisonnement, contrôle local et contexte temporaire — terminée
 
-À commencer uniquement après validation explicite de l’étape 6 : ajouter le contexte temporaire de conversation pendant une session, sans mémoire persistante.
+- [x] Utiliser le raisonnement équilibré et ne jamais afficher la pensée interne.
+- [x] Permettre le démarrage et l’arrêt local du cœur depuis l’interface.
+- [x] Ajouter un contexte de conversation temporaire en mémoire vive seulement.
+- [x] Réduire l’historique par paires complètes dans la fenêtre de contexte.
+
+## Étape 8 — Prochaine étape
+
+Refonte visuelle complète.
+
+## Étape 9 — Planifiée
+
+Historique local persistant et gestion des conversations.
 
 ## Plus tard
 
-Mémoire, Développement, Santé animale, Vision, Web, RAG, voix et autres fonctions.
+Développement, Santé animale, Vision, Web, RAG, voix et autres fonctions.

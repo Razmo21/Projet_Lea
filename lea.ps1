@@ -1,11 +1,16 @@
 ﻿param(
     [Parameter(Position = 0)]
-    [string]$Action
+    [string]$Action,
+    [switch]$Json
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+
+if ($Json) {
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+}
 
 $ProjectRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)
 $StateDirectory = Join-Path $ProjectRoot '.lea'
@@ -46,6 +51,9 @@ $ComponentDefinitions = [ordered]@{
         ExpectedContent = $null
     }
 }
+
+$AllComponentNames = @('model', 'backend', 'frontend')
+$CoreComponentNames = @('model', 'backend')
 
 $KnownStateFiles = @(
     'processes.json',
@@ -251,6 +259,9 @@ function Write-Usage {
     Write-Host '  .\lea.ps1 start'
     Write-Host '  .\lea.ps1 status'
     Write-Host '  .\lea.ps1 stop'
+    Write-Host '  .\lea.ps1 start-core'
+    Write-Host '  .\lea.ps1 status-core [-Json]'
+    Write-Host '  .\lea.ps1 stop-core'
 }
 
 function Get-ObjectValue {
@@ -277,6 +288,43 @@ function Get-ObjectValue {
     }
 
     return $property.Value
+}
+
+function Set-ObjectValue {
+    param(
+        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][string]$Name,
+        $Value
+    )
+
+    if ($Object -is [System.Collections.IDictionary]) {
+        $Object[$Name] = $Value
+        return
+    }
+
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value
+    } else {
+        $property.Value = $Value
+    }
+}
+
+function Remove-ObjectValue {
+    param(
+        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($Object -is [System.Collections.IDictionary]) {
+        [void]$Object.Remove($Name)
+        return
+    }
+
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -ne $property) {
+        [void]$Object.PSObject.Properties.Remove($Name)
+    }
 }
 
 function Test-SamePath {
@@ -316,6 +364,24 @@ function Get-ListeningPids {
     }
 
     return @($pids | Sort-Object -Unique)
+}
+
+function Wait-ForPortRelease {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+
+    $deadline = [datetime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ([datetime]::UtcNow -lt $deadline) {
+        if (@(Get-ListeningPids -Port $Port).Count -eq 0) {
+            return $true
+        }
+
+        Start-Sleep -Milliseconds 250
+    }
+
+    return @(Get-ListeningPids -Port $Port).Count -eq 0
 }
 
 function Assert-PortFree {
@@ -478,6 +544,10 @@ function Read-LeaState {
         throw "L’état temporaire ne correspond pas à ce projet. Aucun processus ne sera arrêté automatiquement."
     }
 
+    if ($null -eq (Get-ObjectValue -Object $state -Name 'components')) {
+        throw "L’état temporaire de Léa est incomplet. Aucun processus ne sera arrêté automatiquement."
+    }
+
     return $state
 }
 
@@ -522,6 +592,17 @@ function Clear-PreviousLogs {
 
 function Ensure-EmptyStandardInputFile {
     Initialize-StateDirectory
+
+    # Les composants déjà gérés peuvent garder ce fichier vide ouvert comme
+    # stdin. Le réutiliser lorsqu'il est bien vide évite de le réécrire (et de
+    # rompre start-core après stop-core alors que Vite reste actif).
+    if (Test-Path -LiteralPath $StandardInputFile) {
+        $existingFile = Get-Item -LiteralPath $StandardInputFile -ErrorAction Stop
+        if ($existingFile.Length -eq 0) {
+            return
+        }
+    }
+
     [System.IO.File]::WriteAllBytes($StandardInputFile, [byte[]]@())
 }
 
@@ -532,6 +613,50 @@ function New-LeaState {
         phase = 'starting'
         components = [ordered]@{}
     }
+}
+
+function Get-StateComponents {
+    param([Parameter(Mandatory = $true)]$State)
+
+    $components = Get-ObjectValue -Object $State -Name 'components'
+    if ($null -eq $components) {
+        throw "L’état temporaire de Léa ne contient pas de composants valides."
+    }
+
+    return $components
+}
+
+function Set-ComponentState {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)][string]$ComponentName,
+        [Parameter(Mandatory = $true)]$Value
+    )
+
+    Set-ObjectValue -Object (Get-StateComponents -State $State) -Name $ComponentName -Value $Value
+}
+
+function Remove-ComponentState {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)][string]$ComponentName
+    )
+
+    Remove-ObjectValue -Object (Get-StateComponents -State $State) -Name $ComponentName
+}
+
+function Get-RecordedComponentNames {
+    param([Parameter(Mandatory = $true)]$State)
+
+    $components = Get-StateComponents -State $State
+    $recordedNames = @()
+    foreach ($componentName in $AllComponentNames) {
+        if ($null -ne (Get-ObjectValue -Object $components -Name $componentName)) {
+            $recordedNames += $componentName
+        }
+    }
+
+    return @($recordedNames)
 }
 
 function Get-PrimaryRecord {
@@ -646,15 +771,16 @@ function Start-Model {
     Assert-PortFree -Port $definition.Port -ComponentLabel $definition.Label
     Write-Host 'Démarrage du modèle local...'
 
-    $arguments = '-m "' + $ModelPath + '" -ngl 99 -c 4096 --host 127.0.0.1 --port 8080 --jinja --alias lea-general'
+    # Raisonnement équilibré : budget interne borné à 512 tokens.
+    $arguments = '-m "' + $ModelPath + '" -ngl 99 -c 4096 --host 127.0.0.1 --port 8080 --jinja --alias lea-general --reasoning on --reasoning-budget 512'
     $process = $null
     try {
         $process = Start-Process -FilePath $ModelExecutable -ArgumentList $arguments -WorkingDirectory $ProjectRoot -PassThru -WindowStyle Hidden -RedirectStandardInput $StandardInputFile -RedirectStandardOutput (Join-Path $StateDirectory 'model.stdout.log') -RedirectStandardError (Join-Path $StateDirectory 'model.stderr.log')
         $launcherRecord = New-ProcessRecord -ProcessId $process.Id -ExpectedName $definition.ExpectedName -ExpectedPath $definition.ExpectedPath
-        $State.components['model'] = [ordered]@{
+        Set-ComponentState -State $State -ComponentName 'model' -Value ([ordered]@{
             launcher = $launcherRecord
             listener = $null
-        }
+        })
         Write-LeaState -State $State
         Wait-ForEndpoint -ComponentLabel $definition.Label -Uri $definition.Endpoint -ExpectedContent $definition.ExpectedContent -TimeoutSeconds 120
         $listenerPids = @(Get-ListeningPids -Port $definition.Port)
@@ -664,7 +790,8 @@ function Start-Model {
 
         Assert-ListenerBelongsToLauncher -ListenerProcessId $listenerPids[0] -LauncherProcessId $process.Id -ComponentLabel $definition.Label
         $listenerRecord = New-ProcessRecord -ProcessId $listenerPids[0] -ExpectedName $definition.ExpectedName -ExpectedPath $definition.ExpectedPath -Port $definition.Port
-        $State.components['model']['listener'] = $listenerRecord
+        $modelState = Get-ObjectValue -Object (Get-StateComponents -State $State) -Name 'model'
+        Set-ObjectValue -Object $modelState -Name 'listener' -Value $listenerRecord
         Write-LeaState -State $State
         Assert-RecordOwnsPort -Record $listenerRecord -ComponentLabel $definition.Label
     } catch {
@@ -687,10 +814,10 @@ function Start-Backend {
     try {
         $process = Start-Process -FilePath $BackendPython -ArgumentList '-m uvicorn app.main:app --host 127.0.0.1 --port 8000' -WorkingDirectory $BackendDirectory -PassThru -WindowStyle Hidden -RedirectStandardInput $StandardInputFile -RedirectStandardOutput (Join-Path $StateDirectory 'backend.stdout.log') -RedirectStandardError (Join-Path $StateDirectory 'backend.stderr.log')
         $launcherRecord = New-ProcessRecord -ProcessId $process.Id -ExpectedName $definition.ExpectedName -ExpectedPath $definition.ExpectedPath
-        $State.components['backend'] = [ordered]@{
+        Set-ComponentState -State $State -ComponentName 'backend' -Value ([ordered]@{
             launcher = $launcherRecord
             listener = $null
-        }
+        })
         Write-LeaState -State $State
         Wait-ForEndpoint -ComponentLabel $definition.Label -Uri $definition.Endpoint -ExpectedContent $definition.ExpectedContent -TimeoutSeconds 30
         $listenerPids = @(Get-ListeningPids -Port $definition.Port)
@@ -700,7 +827,8 @@ function Start-Backend {
 
         Assert-ListenerBelongsToLauncher -ListenerProcessId $listenerPids[0] -LauncherProcessId $process.Id -ComponentLabel $definition.Label
         $listenerRecord = New-ProcessRecord -ProcessId $listenerPids[0] -ExpectedName $definition.ExpectedName -ExpectedPath $null -Port $definition.Port
-        $State.components['backend']['listener'] = $listenerRecord
+        $backendState = Get-ObjectValue -Object (Get-StateComponents -State $State) -Name 'backend'
+        Set-ObjectValue -Object $backendState -Name 'listener' -Value $listenerRecord
         Write-LeaState -State $State
         Assert-RecordOwnsPort -Record $listenerRecord -ComponentLabel $definition.Label
     } catch {
@@ -724,10 +852,10 @@ function Start-Frontend {
     try {
         $process = Start-Process -FilePath $npmCommand -ArgumentList 'run dev -- --host 127.0.0.1 --port 5173' -WorkingDirectory $ProjectRoot -PassThru -WindowStyle Hidden -RedirectStandardInput $StandardInputFile -RedirectStandardOutput (Join-Path $StateDirectory 'frontend.stdout.log') -RedirectStandardError (Join-Path $StateDirectory 'frontend.stderr.log')
         $launcherRecord = New-ProcessRecord -ProcessId $process.Id -ExpectedName $process.ProcessName -ExpectedPath (Get-ProcessPath -Process $process)
-        $State.components['frontend'] = [ordered]@{
+        Set-ComponentState -State $State -ComponentName 'frontend' -Value ([ordered]@{
             launcher = $launcherRecord
             listener = $null
-        }
+        })
         Write-LeaState -State $State
         Wait-ForEndpoint -ComponentLabel $definition.Label -Uri $definition.Endpoint -ExpectedContent $definition.ExpectedContent -TimeoutSeconds 30
         $listenerPids = @(Get-ListeningPids -Port $definition.Port)
@@ -737,7 +865,8 @@ function Start-Frontend {
 
         Assert-ListenerBelongsToLauncher -ListenerProcessId $listenerPids[0] -LauncherProcessId $process.Id -ComponentLabel $definition.Label
         $listenerRecord = New-ProcessRecord -ProcessId $listenerPids[0] -ExpectedName $definition.ExpectedName -ExpectedPath $null -Port $definition.Port
-        $State.components['frontend']['listener'] = $listenerRecord
+        $frontendState = Get-ObjectValue -Object (Get-StateComponents -State $State) -Name 'frontend'
+        Set-ObjectValue -Object $frontendState -Name 'listener' -Value $listenerRecord
         Write-LeaState -State $State
         Assert-RecordOwnsPort -Record $listenerRecord -ComponentLabel $definition.Label
     } catch {
@@ -751,16 +880,20 @@ function Start-Frontend {
 }
 
 function Get-StateSummary {
-    param([Parameter(Mandatory = $true)]$State)
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [string[]]$ComponentNames = $AllComponentNames
+    )
 
     $items = [ordered]@{}
     $allActive = $true
     $allStopped = $true
+    $components = Get-StateComponents -State $State
 
-    foreach ($componentName in @('model', 'backend', 'frontend')) {
+    foreach ($componentName in $ComponentNames) {
         $record = Get-PrimaryRecord -State $State -ComponentName $componentName
         $check = Test-ProcessRecord -Record $record
-        $componentState = Get-ObjectValue -Object (Get-ObjectValue -Object $State -Name 'components') -Name $componentName
+        $componentState = Get-ObjectValue -Object $components -Name $componentName
         $launcherRecord = Get-ObjectValue -Object $componentState -Name 'launcher'
         $launcherCheck = Test-ProcessRecord -Record $launcherRecord
         $active = $check.Exists -and $check.Verified -and $check.Listening
@@ -790,7 +923,9 @@ function Get-StateSummary {
 }
 
 function Test-AllEndpointsReady {
-    foreach ($componentName in @('model', 'backend', 'frontend')) {
+    param([string[]]$ComponentNames = $AllComponentNames)
+
+    foreach ($componentName in $ComponentNames) {
         $definition = $ComponentDefinitions[$componentName]
         if (-not (Test-Endpoint -Uri $definition.Endpoint -ExpectedContent $definition.ExpectedContent)) {
             return $false
@@ -800,12 +935,93 @@ function Test-AllEndpointsReady {
     return $true
 }
 
+function Get-CoreStatus {
+    param($State)
+
+    $componentStates = [ordered]@{}
+    $hasError = $false
+    $hasStarting = $false
+    $readyCount = 0
+    $stoppedCount = 0
+    $summary = $null
+
+    if ($null -ne $State) {
+        $summary = Get-StateSummary -State $State -ComponentNames $CoreComponentNames
+    }
+
+    foreach ($componentName in $CoreComponentNames) {
+        $definition = $ComponentDefinitions[$componentName]
+        $componentStatus = 'stopped'
+
+        if ($null -eq $summary) {
+            $owners = @(Get-ListeningPids -Port $definition.Port)
+            if ($owners.Count -gt 0) {
+                $componentStatus = 'error'
+            }
+        } else {
+            $item = $summary.Items[$componentName]
+            if ($item.Check.Exists -and -not $item.Check.Verified) {
+                $componentStatus = 'error'
+            } elseif ($item.LauncherCheck.Exists -and -not $item.LauncherCheck.Verified) {
+                $componentStatus = 'error'
+            } elseif ($item.Active -and $item.LauncherCheck.Exists -and $item.LauncherCheck.Verified) {
+                if (Test-Endpoint -Uri $definition.Endpoint -ExpectedContent $definition.ExpectedContent) {
+                    $componentStatus = 'ready'
+                } else {
+                    $componentStatus = 'error'
+                }
+            } elseif ($item.LauncherCheck.Exists -and $item.LauncherCheck.Verified) {
+                $componentStatus = 'starting'
+            } elseif ($item.Check.Exists) {
+                $componentStatus = 'error'
+            } else {
+                $owners = @(Get-ListeningPids -Port $definition.Port)
+                if ($owners.Count -gt 0) {
+                    $componentStatus = 'error'
+                }
+            }
+        }
+
+        $componentStates[$componentName] = $componentStatus
+        switch ($componentStatus) {
+            'ready' { $readyCount++ }
+            'stopped' { $stoppedCount++ }
+            'starting' { $hasStarting = $true }
+            'error' { $hasError = $true }
+        }
+    }
+
+    if ($readyCount -eq $CoreComponentNames.Count) {
+        $stateName = 'ready'
+        $message = 'Léa est prête.'
+    } elseif ($stoppedCount -eq $CoreComponentNames.Count) {
+        $stateName = 'stopped'
+        $message = 'Léa est arrêtée.'
+    } elseif ($hasError) {
+        $stateName = 'error'
+        $message = 'Le cœur de Léa est dans un état incohérent ou un port est occupé par un processus non géré.'
+    } elseif ($hasStarting) {
+        $stateName = 'starting'
+        $message = 'Démarrage du cœur de Léa en cours.'
+    } else {
+        $stateName = 'error'
+        $message = "L’état du cœur de Léa est inconnu."
+    }
+
+    return [pscustomobject]@{
+        state = $stateName
+        model = $componentStates.model
+        backend = $componentStates.backend
+        message = $message
+    }
+}
+
 function Write-LeaStatus {
     param($State)
 
     Write-Host 'Léa'
     if ($null -eq $State) {
-        foreach ($componentName in @('model', 'backend', 'frontend')) {
+        foreach ($componentName in $AllComponentNames) {
             $definition = $ComponentDefinitions[$componentName]
             $owners = @(Get-ListeningPids -Port $definition.Port)
             if ($owners.Count -eq 0) {
@@ -818,16 +1034,21 @@ function Write-LeaStatus {
         return
     }
 
-    $summary = Get-StateSummary -State $State
-    foreach ($componentName in @('model', 'backend', 'frontend')) {
+    $summary = Get-StateSummary -State $State -ComponentNames $AllComponentNames
+    foreach ($componentName in $AllComponentNames) {
         $definition = $ComponentDefinitions[$componentName]
         $item = $summary.Items[$componentName]
         if ($item.Active -and $item.LauncherCheck.Exists -and $item.LauncherCheck.Verified) {
             Write-Host ("{0,-10}: actif (PID {1})" -f $definition.Label, (Get-ObjectValue -Object $item.Record -Name 'pid'))
         } elseif ($item.LauncherCheck.Exists -and $item.LauncherCheck.Verified -and $null -eq $item.Record) {
             Write-Host ("{0,-10}: démarrage en cours" -f $definition.Label)
-        } elseif (-not $item.Check.Exists) {
-            Write-Host ("{0,-10}: arrêté" -f $definition.Label)
+        } elseif (-not $item.Check.Exists -and -not $item.LauncherCheck.Exists) {
+            $owners = @(Get-ListeningPids -Port $definition.Port)
+            if ($owners.Count -eq 0) {
+                Write-Host ("{0,-10}: arrêté" -f $definition.Label)
+            } else {
+                Write-Host ("{0,-10}: inconnu (port {1} occupé par PID {2})" -f $definition.Label, $definition.Port, ($owners -join ', '))
+            }
         } else {
             Write-Host ("{0,-10}: état incohérent — {1}" -f $definition.Label, $item.Check.Reason)
         }
@@ -836,6 +1057,21 @@ function Write-LeaStatus {
     if ($summary.AllActive) {
         Write-Host 'Interface : http://127.0.0.1:5173'
     }
+}
+
+function Show-CoreStatus {
+    param([switch]$JsonOutput)
+
+    $status = Get-CoreStatus -State (Read-LeaState)
+    if ($JsonOutput) {
+        $status | ConvertTo-Json -Compress
+        return
+    }
+
+    Write-Host 'Cœur Léa'
+    Write-Host ("Modèle   : {0}" -f $status.model)
+    Write-Host ("Backend  : {0}" -f $status.backend)
+    Write-Host $status.message
 }
 
 function Stop-ManagedRecord {
@@ -1024,14 +1260,31 @@ function Stop-ComponentFromState {
     Stop-ManagedRecord -Record $listener -ComponentLabel $ComponentLabel
 }
 
+function Remove-StoppedComponentStates {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)][string[]]$ComponentNames
+    )
+
+    $summary = Get-StateSummary -State $State -ComponentNames $ComponentNames
+    foreach ($componentName in $ComponentNames) {
+        $item = $summary.Items[$componentName]
+        if (-not $item.Check.Exists -and -not $item.LauncherCheck.Exists) {
+            Remove-ComponentState -State $State -ComponentName $componentName
+        }
+    }
+}
+
 function Stop-LeaFromState {
     param(
         [Parameter(Mandatory = $true)]$State,
+        [string[]]$ComponentNames = $AllComponentNames,
         [switch]$KeepLogs
     )
 
-    $summary = Get-StateSummary -State $State
-    foreach ($componentName in @('model', 'backend', 'frontend')) {
+    $summary = Get-StateSummary -State $State -ComponentNames $ComponentNames
+    $ownedComponentNames = @()
+    foreach ($componentName in $ComponentNames) {
         $item = $summary.Items[$componentName]
         if ($item.Check.Exists -and -not $item.Check.Verified) {
             $definition = $ComponentDefinitions[$componentName]
@@ -1042,15 +1295,21 @@ function Stop-LeaFromState {
             $definition = $ComponentDefinitions[$componentName]
             throw "Refus d’arrêter Léa : l’état du lanceur de $($definition.Label) est ambigu. Aucun processus ne sera tué."
         }
+
+        if ($item.Check.Exists -or $item.LauncherCheck.Exists) {
+            $ownedComponentNames += $componentName
+        }
     }
 
-    $modelRecord = $summary.Items.model.Record
-    if ($null -eq $modelRecord) {
-        $modelRecord = $summary.Items.model.LauncherRecord
-    }
     $modelPid = $null
-    if ($null -ne $modelRecord) {
-        $modelPid = [int](Get-ObjectValue -Object $modelRecord -Name 'pid')
+    if ($ComponentNames -contains 'model') {
+        $modelRecord = $summary.Items.model.Record
+        if ($null -eq $modelRecord) {
+            $modelRecord = $summary.Items.model.LauncherRecord
+        }
+        if ($null -ne $modelRecord) {
+            $modelPid = [int](Get-ObjectValue -Object $modelRecord -Name 'pid')
+        }
     }
 
     $stopErrors = @()
@@ -1059,6 +1318,15 @@ function Stop-LeaFromState {
             [pscustomobject]@{ Name = 'backend'; Label = 'backend FastAPI' },
             [pscustomobject]@{ Name = 'model'; Label = 'modèle local' }
         )) {
+        if ($ComponentNames -notcontains $componentToStop.Name) {
+            continue
+        }
+
+        $item = $summary.Items[$componentToStop.Name]
+        if (-not $item.Check.Exists -and -not $item.LauncherCheck.Exists) {
+            continue
+        }
+
         try {
             Stop-ComponentFromState -State $State -ComponentName $componentToStop.Name -ComponentLabel $componentToStop.Label
         } catch {
@@ -1066,20 +1334,20 @@ function Stop-LeaFromState {
         }
     }
 
-    foreach ($componentName in @('frontend', 'backend', 'model')) {
+    foreach ($componentName in $ownedComponentNames) {
         $definition = $ComponentDefinitions[$componentName]
-        $owners = @(Get-ListeningPids -Port $definition.Port)
-        if ($owners.Count -eq 0) {
+        if (Wait-ForPortRelease -Port $definition.Port -TimeoutSeconds 10) {
             Write-Host "Port $($definition.Port) libéré."
         } else {
+            $owners = @(Get-ListeningPids -Port $definition.Port)
             $portMessage = "Le port $($definition.Port) reste utilisé par le PID $($owners -join ', '). Aucun processus inconnu n’a été arrêté."
             Write-Warning $portMessage
             $stopErrors += $portMessage
         }
     }
 
-    $remainingSummary = Get-StateSummary -State $State
-    foreach ($componentName in @('model', 'backend', 'frontend')) {
+    $remainingSummary = Get-StateSummary -State $State -ComponentNames $ComponentNames
+    foreach ($componentName in $ComponentNames) {
         $remainingItem = $remainingSummary.Items[$componentName]
         if ($remainingItem.Check.Exists -or $remainingItem.LauncherCheck.Exists) {
             $definition = $ComponentDefinitions[$componentName]
@@ -1095,16 +1363,31 @@ function Stop-LeaFromState {
         Confirm-ModelVramReleased -ModelPid $modelPid
     }
 
-    Remove-LeaState -KeepLogs:$KeepLogs
+    Remove-StoppedComponentStates -State $State -ComponentNames $ComponentNames
+    if (@(Get-RecordedComponentNames -State $State).Count -eq 0) {
+        Remove-LeaState -KeepLogs:$KeepLogs
+    } else {
+        Set-ObjectValue -Object $State -Name 'phase' -Value 'partial'
+        Write-LeaState -State $State
+    }
 }
 
 function Assert-RequiredFiles {
-    $requiredFiles = @(
-        [pscustomobject]@{ Description = 'llama-server.exe'; Path = $ModelExecutable },
-        [pscustomobject]@{ Description = 'le modèle Qwen'; Path = $ModelPath },
-        [pscustomobject]@{ Description = 'le Python de backend/.venv'; Path = $BackendPython },
-        [pscustomobject]@{ Description = 'package.json'; Path = $PackageFile }
-    )
+    param([string[]]$ComponentNames = $AllComponentNames)
+
+    $requiredFiles = @()
+    if ($ComponentNames -contains 'model') {
+        $requiredFiles += [pscustomobject]@{ Description = 'llama-server.exe'; Path = $ModelExecutable }
+        $requiredFiles += [pscustomobject]@{ Description = 'le modèle général Huihui'; Path = $ModelPath }
+    }
+
+    if ($ComponentNames -contains 'backend') {
+        $requiredFiles += [pscustomobject]@{ Description = 'le Python de backend/.venv'; Path = $BackendPython }
+    }
+
+    if ($ComponentNames -contains 'frontend') {
+        $requiredFiles += [pscustomobject]@{ Description = 'package.json'; Path = $PackageFile }
+    }
 
     foreach ($requiredFile in $requiredFiles) {
         if (-not (Test-Path -LiteralPath $requiredFile.Path -PathType Leaf)) {
@@ -1112,58 +1395,146 @@ function Assert-RequiredFiles {
         }
     }
 
-    try {
-        Get-Command npm.cmd -ErrorAction Stop | Out-Null
-    } catch {
-        throw 'npm.cmd est introuvable. Installez Node.js avant de démarrer Léa.'
+    if ($ComponentNames -contains 'frontend') {
+        try {
+            Get-Command npm.cmd -ErrorAction Stop | Out-Null
+        } catch {
+            throw 'npm.cmd est introuvable. Installez Node.js avant de démarrer Léa.'
+        }
     }
 }
 
-function Start-Lea {
-    Assert-RequiredFiles
+function Get-ComponentsToStart {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)][string[]]$ComponentNames
+    )
 
-    $existingState = Read-LeaState
-    if ($null -ne $existingState) {
-        $existingSummary = Get-StateSummary -State $existingState
-        if ($existingSummary.AllActive -and (Test-AllEndpointsReady)) {
-            Write-Host 'Léa est déjà démarrée.'
-            Write-LeaStatus -State $existingState
+    $summary = Get-StateSummary -State $State -ComponentNames $ComponentNames
+    $componentsToStart = @()
+    foreach ($componentName in $ComponentNames) {
+        $item = $summary.Items[$componentName]
+        $definition = $ComponentDefinitions[$componentName]
+
+        if ($item.Check.Exists -and -not $item.Check.Verified) {
+            throw "L’état de $($definition.Label) est ambigu. Exécutez .\lea.ps1 stop avant un nouveau démarrage."
+        }
+
+        if ($item.LauncherCheck.Exists -and -not $item.LauncherCheck.Verified) {
+            throw "L’état du lanceur de $($definition.Label) est ambigu. Exécutez .\lea.ps1 stop avant un nouveau démarrage."
+        }
+
+        if ($item.Active -and $item.LauncherCheck.Exists -and $item.LauncherCheck.Verified) {
+            if (-not (Test-Endpoint -Uri $definition.Endpoint -ExpectedContent $definition.ExpectedContent)) {
+                throw "$($definition.Label) est enregistré comme actif mais son point de contrôle ne répond pas. Exécutez .\lea.ps1 stop avant un nouveau démarrage."
+            }
+
+            continue
+        }
+
+        if ($item.Check.Exists -or $item.LauncherCheck.Exists) {
+            throw "L’état de $($definition.Label) est incomplet. Exécutez .\lea.ps1 stop avant un nouveau démarrage."
+        }
+
+        Remove-ComponentState -State $State -ComponentName $componentName
+        $componentsToStart += $componentName
+    }
+
+    return @($componentsToStart)
+}
+
+function Start-ComponentFromState {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)][string]$ComponentName
+    )
+
+    switch ($ComponentName) {
+        'model' {
+            Start-Model -State $State
             return
         }
+        'backend' {
+            Start-Backend -State $State
+            return
+        }
+        'frontend' {
+            Start-Frontend -State $State
+            return
+        }
+        default {
+            throw "Composant Léa inconnu : $ComponentName"
+        }
+    }
+}
 
-        if ($existingSummary.AllStopped) {
+function Start-LeaComponents {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$ComponentNames,
+        [Parameter(Mandatory = $true)][string]$ReadyMessage,
+        [Parameter(Mandatory = $true)][string]$AlreadyStartedMessage
+    )
+
+    Assert-RequiredFiles -ComponentNames $ComponentNames
+
+    $state = Read-LeaState
+    if ($null -eq $state) {
+        Clear-PreviousLogs
+        $state = New-LeaState
+        $componentsToStart = @($ComponentNames)
+    } else {
+        $componentsToStart = @(Get-ComponentsToStart -State $state -ComponentNames $ComponentNames)
+        if (@(Get-RecordedComponentNames -State $state).Count -eq 0) {
             Remove-LeaState -KeepLogs
+            Clear-PreviousLogs
+            $state = New-LeaState
+            $componentsToStart = @($ComponentNames)
         } else {
-            throw "L’état de Léa est incomplet ou incohérent. Exécutez .\lea.ps1 stop avant un nouveau démarrage."
+            Write-LeaState -State $state
         }
     }
 
-    foreach ($componentName in @('model', 'backend', 'frontend')) {
-        $definition = $ComponentDefinitions[$componentName]
-        Assert-PortFree -Port $definition.Port -ComponentLabel $definition.Label
+    if ($componentsToStart.Count -eq 0) {
+        Write-Host $AlreadyStartedMessage
+        return
     }
 
-    Clear-PreviousLogs
     Ensure-EmptyStandardInputFile
-    $state = New-LeaState
+    Set-ObjectValue -Object $state -Name 'phase' -Value 'starting'
+    Write-LeaState -State $state
+
+    $attemptedComponentNames = @()
     try {
-        Start-Model -State $state
-        Start-Backend -State $state
-        Start-Frontend -State $state
-        $state.phase = 'running'
+        foreach ($componentName in $componentsToStart) {
+            $attemptedComponentNames += $componentName
+            Start-ComponentFromState -State $state -ComponentName $componentName
+        }
+
+        $requestedSummary = Get-StateSummary -State $state -ComponentNames $ComponentNames
+        if (-not $requestedSummary.AllActive -or -not (Test-AllEndpointsReady -ComponentNames $ComponentNames)) {
+            throw 'Les composants demandés ne sont pas tous prêts après leur démarrage.'
+        }
+
+        $allSummary = Get-StateSummary -State $state -ComponentNames $AllComponentNames
+        $phase = if ($allSummary.AllActive -and (Test-AllEndpointsReady -ComponentNames $AllComponentNames)) { 'running' } else { 'partial' }
+        Set-ObjectValue -Object $state -Name 'phase' -Value $phase
         Write-LeaState -State $state
 
         Write-Host ''
-        Write-Host 'Léa est prête.'
-        Write-Host 'Interface : http://127.0.0.1:5173'
-        Write-Host 'Modèle   : actif'
-        Write-Host 'Backend  : actif'
-        Write-Host 'Frontend : actif'
+        Write-Host $ReadyMessage
+        foreach ($componentName in $ComponentNames) {
+            Write-Host ("{0,-10}: actif" -f $ComponentDefinitions[$componentName].Label)
+        }
+        if ($phase -eq 'running') {
+            Write-Host 'Interface : http://127.0.0.1:5173'
+        }
     } catch {
         $failureMessage = $_.Exception.Message
         Write-Host "Échec du démarrage : $failureMessage" -ForegroundColor Red
         try {
-            Stop-LeaFromState -State $state -KeepLogs
+            if ($attemptedComponentNames.Count -gt 0) {
+                Stop-LeaFromState -State $state -ComponentNames $attemptedComponentNames -KeepLogs
+            }
         } catch {
             $cleanupMessage = $_.Exception.Message
             Write-Warning "Nettoyage incomplet : $cleanupMessage"
@@ -1174,10 +1545,18 @@ function Start-Lea {
     }
 }
 
+function Start-Lea {
+    Start-LeaComponents -ComponentNames $AllComponentNames -ReadyMessage 'Léa est prête.' -AlreadyStartedMessage 'Léa est déjà démarrée.'
+}
+
+function Start-Core {
+    Start-LeaComponents -ComponentNames $CoreComponentNames -ReadyMessage 'Le cœur de Léa est prêt.' -AlreadyStartedMessage 'Le cœur de Léa est déjà démarré.'
+}
+
 function Show-LeaStatus {
     $state = Read-LeaState
     if ($null -ne $state) {
-        $summary = Get-StateSummary -State $state
+        $summary = Get-StateSummary -State $state -ComponentNames $AllComponentNames
         if ($summary.AllStopped) {
             Remove-LeaState -KeepLogs
             $state = $null
@@ -1194,8 +1573,19 @@ function Stop-Lea {
         return
     }
 
-    Stop-LeaFromState -State $state
+    Stop-LeaFromState -State $state -ComponentNames $AllComponentNames
     Write-Host 'Léa est arrêtée.'
+}
+
+function Stop-Core {
+    $state = Read-LeaState
+    if ($null -eq $state) {
+        Write-Host 'Le cœur de Léa est déjà arrêté.'
+        return
+    }
+
+    Stop-LeaFromState -State $state -ComponentNames $CoreComponentNames
+    Write-Host 'Le cœur de Léa est arrêté.'
 }
 
 try {
@@ -1217,13 +1607,35 @@ try {
             Stop-Lea
             return
         }
+        'start-core' {
+            Start-Core
+            return
+        }
+        'status-core' {
+            Show-CoreStatus -JsonOutput:$Json
+            return
+        }
+        'stop-core' {
+            Stop-Core
+            return
+        }
         default {
             Write-Usage
             exit 1
         }
     }
 } catch {
-    Write-Host "Erreur : $($_.Exception.Message)" -ForegroundColor Red
+    if ($Json) {
+        [pscustomobject]@{
+            state = 'error'
+            model = 'error'
+            backend = 'error'
+            message = $_.Exception.Message
+        } | ConvertTo-Json -Compress
+    } else {
+        Write-Host "Erreur : $($_.Exception.Message)" -ForegroundColor Red
+    }
+
     exit 1
 }
 
