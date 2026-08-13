@@ -40,7 +40,9 @@ Après modification :
 
 ## Étape actuelle
 
-Étape 6 — simplifier et fiabiliser le démarrage, l’état et l’arrêt local de Léa.
+Étape 8 terminée — conversations locales persistantes, fiables et contrôlées.
+
+Attendre la validation de l'utilisateur avant toute étape suivante.
 
 ## Interdictions actuelles
 
@@ -49,8 +51,6 @@ Ne crée PAS :
 - un nouveau serveur Python ;
 - un nouveau modèle local ;
 - une nouvelle installation de llama.cpp ;
-- mémoire ;
-- base de données ;
 - RAG ;
 - accès à IA_WORKSPACE ;
 - accès Internet ;
@@ -63,10 +63,16 @@ Ne crée PAS :
 ## Validation de l'étape
 
 L'étape est terminée uniquement si :
-- `.\lea.ps1 start` démarre le modèle, FastAPI puis Vite sans erreur ;
-- `.\lea.ps1 status` reflète correctement leur état ;
-- l'interface locale répond et affiche une vraie réponse de Léa ;
-- `.\lea.ps1 stop` arrête uniquement les processus gérés et libère les ports ;
+- le modèle fonctionne avec une fenêtre de 8 192 tokens, un seul slot et sans
+  raisonnement interne exposé ou persisté ;
+- SQLite conserve les conversations dans `data/lea.sqlite3`, avec migrations,
+  WAL, clés étrangères, révisions et reprise sûre des générations interrompues ;
+- le backend reste l'unique autorité de l'historique envoyé au modèle ;
+- l'interface permet de créer, retrouver, rechercher, renommer, supprimer,
+  modifier, régénérer et réessayer les conversations ;
+- les conflits entre onglets sont refusés sans écrasement silencieux ;
+- `.\lea.ps1 start`, `status` et `stop` restent fiables et sûrs ;
+- les tests backend, frontend et Microsoft Edge Stable passent ;
 - aucune fonctionnalité de l'étape suivante n'a été ajoutée ;
 - aucune fonctionnalité supplémentaire n'a été ajoutée.
 

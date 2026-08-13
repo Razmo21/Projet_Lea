@@ -24,6 +24,7 @@ $ModelPath = Join-Path $ProjectRoot 'models\general\Huihui-Qwen3-4B-abliterated-
 $BackendDirectory = Join-Path $ProjectRoot 'backend'
 $BackendPython = Join-Path $BackendDirectory '.venv\Scripts\python.exe'
 $PackageFile = Join-Path $ProjectRoot 'package.json'
+$ContextSize = 8192
 
 $ComponentDefinitions = [ordered]@{
     model = [ordered]@{
@@ -771,8 +772,9 @@ function Start-Model {
     Assert-PortFree -Port $definition.Port -ComponentLabel $definition.Label
     Write-Host 'Démarrage du modèle local...'
 
-    # Raisonnement équilibré : budget interne borné à 512 tokens.
-    $arguments = '-m "' + $ModelPath + '" -ngl 99 -c 4096 --host 127.0.0.1 --port 8080 --jinja --alias lea-general --reasoning on --reasoning-budget 512'
+    # Un seul slot conversationnel utilise la fenêtre native validée. Le mode
+    # sans réflexion est imposé par /no_think dans la copie interne du backend.
+    $arguments = '-m "' + $ModelPath + '" -ngl 99 -c ' + $ContextSize + ' -np 1 --host 127.0.0.1 --port 8080 --jinja --alias lea-general'
     $process = $null
     try {
         $process = Start-Process -FilePath $ModelExecutable -ArgumentList $arguments -WorkingDirectory $ProjectRoot -PassThru -WindowStyle Hidden -RedirectStandardInput $StandardInputFile -RedirectStandardOutput (Join-Path $StateDirectory 'model.stdout.log') -RedirectStandardError (Join-Path $StateDirectory 'model.stderr.log')
@@ -811,8 +813,14 @@ function Start-Backend {
     Write-Host 'Démarrage du backend FastAPI...'
 
     $process = $null
+    $previousContextSize = [Environment]::GetEnvironmentVariable('LEA_CONTEXT_SIZE', 'Process')
     try {
-        $process = Start-Process -FilePath $BackendPython -ArgumentList '-m uvicorn app.main:app --host 127.0.0.1 --port 8000' -WorkingDirectory $BackendDirectory -PassThru -WindowStyle Hidden -RedirectStandardInput $StandardInputFile -RedirectStandardOutput (Join-Path $StateDirectory 'backend.stdout.log') -RedirectStandardError (Join-Path $StateDirectory 'backend.stderr.log')
+        try {
+            [Environment]::SetEnvironmentVariable('LEA_CONTEXT_SIZE', [string]$ContextSize, 'Process')
+            $process = Start-Process -FilePath $BackendPython -ArgumentList '-m uvicorn app.main:app --host 127.0.0.1 --port 8000' -WorkingDirectory $BackendDirectory -PassThru -WindowStyle Hidden -RedirectStandardInput $StandardInputFile -RedirectStandardOutput (Join-Path $StateDirectory 'backend.stdout.log') -RedirectStandardError (Join-Path $StateDirectory 'backend.stderr.log')
+        } finally {
+            [Environment]::SetEnvironmentVariable('LEA_CONTEXT_SIZE', $previousContextSize, 'Process')
+        }
         $launcherRecord = New-ProcessRecord -ProcessId $process.Id -ExpectedName $definition.ExpectedName -ExpectedPath $definition.ExpectedPath
         Set-ComponentState -State $State -ComponentName 'backend' -Value ([ordered]@{
             launcher = $launcherRecord

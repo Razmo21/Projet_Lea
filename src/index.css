@@ -20,7 +20,7 @@ main {
 }
 
 .chat {
-  width: min(100%, 640px);
+  width: min(100%, 760px);
   padding: 32px;
   background: #ffffff;
   border: 1px solid #d8dee9;
@@ -60,11 +60,13 @@ form {
   gap: 12px;
 }
 
+input,
 textarea,
 button {
   font: inherit;
 }
 
+input,
 textarea {
   width: 100%;
   padding: 12px;
@@ -108,6 +110,45 @@ button:disabled {
   border-radius: 6px;
 }
 
+.conversation-browser {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 24px;
+  padding: 16px;
+  background: #f8fafc;
+  border: 1px solid #d8dee9;
+  border-radius: 6px;
+}
+
+.conversation-summaries {
+  display: grid;
+  gap: 8px;
+  max-height: 210px;
+  overflow-y: auto;
+}
+
+.conversation-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  color: #1f2937;
+  text-align: left;
+  background: #ffffff;
+  border: 1px solid #d8dee9;
+}
+
+.conversation-summary:hover,
+.conversation-summary.active {
+  color: #ffffff;
+  background: #2563eb;
+}
+
+.conversation-summary small {
+  flex: none;
+}
+
 .conversation-header {
   display: flex;
   align-items: center;
@@ -115,13 +156,51 @@ button:disabled {
   gap: 12px;
 }
 
+.conversation-actions,
+.message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .conversation-header h2 {
   margin: 0;
   font-size: 1rem;
 }
 
+.inline-editor {
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+}
+
+.message-editor {
+  margin-top: 8px;
+}
+
+.editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .new-conversation-button {
   padding: 8px 12px;
+}
+
+.compact-button {
+  padding: 7px 10px;
+}
+
+.danger-button {
+  background: #b42318;
+}
+
+.danger-button:hover {
+  background: #912018;
 }
 
 .conversation-empty,
@@ -163,10 +242,35 @@ button:disabled {
   white-space: pre-wrap;
 }
 
+.message-actions {
+  margin-top: 8px;
+}
+
+.text-button {
+  padding: 3px 0;
+  color: #2563eb;
+  background: transparent;
+}
+
+.text-button:hover {
+  color: #1d4ed8;
+  background: transparent;
+  text-decoration: underline;
+}
+
+.message-error {
+  color: #b42318;
+}
+
 .conversation-pending {
   color: #475569;
 }
 
-.chat-error {
+.chat-error,
+.copy-feedback {
   color: #b42318;
+}
+
+.copy-feedback {
+  color: #166534;
 }

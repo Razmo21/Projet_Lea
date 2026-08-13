@@ -4,11 +4,12 @@ Léa est une plateforme personnelle d'intelligence artificielle locale.
 
 ## Objectif actuel
 
-Construire une base locale minimale et stable : interface React, backend FastAPI et modèle local restent limités à cette machine.
+Construire une base locale minimale et stable : interface React, backend
+FastAPI, base SQLite et modèle local restent limités à cette machine.
 
-L’étape 7 ajoute un raisonnement équilibré, le contrôle local du cœur depuis
-l’interface et un contexte de conversation strictement temporaire, sans
-mémoire persistante.
+L’étape 8 ajoute des conversations persistantes fiables. Le backend est
+l’unique autorité de l’historique, SQLite conserve les échanges localement et
+l’interface permet de reprendre, rechercher et gérer les conversations.
 
 ## Philosophie
 
@@ -21,10 +22,10 @@ On ne commence jamais une nouvelle fonctionnalité tant que l'étape actuelle n'
 - React + TypeScript + Vite
 - Python + FastAPI
 - llama.cpp avec le modèle local Qwen
+- SQLite
 
 ## Technologies prévues plus tard
 
-- SQLite
 - Qdrant
 - Tauri
 
@@ -37,6 +38,7 @@ On ne commence jamais une nouvelle fonctionnalité tant que l'étape actuelle n'
 5. Connexion du modèle au backend — terminée.
 6. Démarrage et arrêt local — terminée.
 7. Raisonnement, contrôle local et contexte temporaire — terminée.
+8. Conversations locales persistantes et fiables — terminée.
 
 ## Démarrage local
 
@@ -70,26 +72,40 @@ Les mêmes opérations sont disponibles en ligne de commande :
 
 Les commandes existantes `start`, `status` et `stop` continuent de gérer la pile complète, y compris Vite lorsqu’il a été lancé par Léa.
 
-## Contexte temporaire de conversation
+## Conversations persistantes
 
-Les messages affichés sont conservés uniquement dans l’état React de la page
-ouverte. À chaque question, le navigateur renvoie au backend les paires
-complètes `user` / `assistant` déjà réussies. Le backend ne conserve aucun
-historique : recharger ou fermer la page efface naturellement le contexte.
-Le bouton `Nouvelle conversation` l’efface immédiatement dans l’interface.
+Les conversations sont enregistrées dans `data/lea.sqlite3`. Elles survivent
+à l’actualisation de la page, à l’arrêt du cœur et au redémarrage de Léa. Une
+nouvelle conversation vide n’est créée qu’au premier message valide.
 
-Il n’y a ni fichier de conversation, ni `localStorage`, ni `IndexedDB`, ni
-base de données. Une erreur technique et le raisonnement interne du modèle ne
-sont jamais ajoutés à l’historique.
+L’interface permet de lister, rechercher, ouvrir, renommer et supprimer une
+conversation. Elle permet aussi de réessayer une génération échouée, modifier
+un ancien message utilisateur ou régénérer une réponse ; ces deux dernières
+opérations suppriment volontairement la suite devenue incohérente. Les
+révisions empêchent un onglet périmé d’écraser silencieusement un autre onglet.
 
-Le modèle utilise une fenêtre `-c 4096`. Le backend réserve 1 024 tokens pour
-la réponse finale, 512 pour le raisonnement et 512 pour les instructions et le
-template. Pour les 2 048 tokens restants, il emploie une borne haute prudente
-d’un octet UTF-8 par token avec un coût fixe par message, conserve toujours la
-question actuelle et retire d’abord les paires les plus anciennes.
+Le navigateur ne transmet jamais l’historique, un rôle `system` ou
+`/no_think`. Le backend relit uniquement les messages validés dans SQLite,
+sélectionne les paires complètes les plus récentes et construit lui-même la
+requête du modèle. Aucun échange n’est stocké dans `localStorage`,
+`sessionStorage` ou `IndexedDB`.
 
-Tout le reste est reporté : historique persistant, mémoire, Développement,
-Santé animale, Vision, Web, RAG, voix, accès aux fichiers, automatisation.
+Le modèle utilise une fenêtre `-c 8192` avec un seul slot. Le backend réserve
+1 024 tokens pour la réponse finale et 512 pour les instructions et le
+template, puis applique une borne conservatrice d’un octet UTF-8 par token.
+La directive `/no_think` existe uniquement dans la copie interne envoyée au
+modèle : ni elle, ni les balises de pensée, ni une pensée interne ne sont
+renvoyées à l’interface ou enregistrées dans SQLite.
+
+Pour isoler une base lors d’un test :
+
+```powershell
+$env:LEA_DB_PATH = 'data/lea-test.sqlite3'
+```
+
+Tout le reste est reporté : refonte visuelle complète, mémoire sémantique,
+Développement, Santé animale, Vision, Web, RAG, voix, accès aux fichiers et
+automatisation.
 
 ## Stockage actuel
 

@@ -23,14 +23,20 @@
 - [x] Ajouter un contexte de conversation temporaire en mémoire vive seulement.
 - [x] Réduire l’historique par paires complètes dans la fenêtre de contexte.
 
-## Étape 8 — Prochaine étape
+## ÉTAPE 8 — Conversations locales persistantes et fiables — terminée
 
-Refonte visuelle complète.
-
-## Étape 9 — Planifiée
-
-Historique local persistant et gestion des conversations.
+- [x] Désactiver le raisonnement visible avec une directive interne jamais persistée.
+- [x] Utiliser une fenêtre de contexte de 8 192 tokens et un seul slot modèle.
+- [x] Ajouter SQLite avec migrations, WAL, clés étrangères et contraintes.
+- [x] Faire du backend l’unique autorité de l’historique du modèle.
+- [x] Persister, lister, rechercher, ouvrir, renommer et supprimer les conversations.
+- [x] Gérer les échecs, interruptions et réessais sans faux message assistant.
+- [x] Modifier et régénérer de façon destructive, sans branche implicite.
+- [x] Protéger les écritures par révision et sérialiser les générations d’une conversation.
+- [x] Valider les migrations, l’API, le contexte, l’interface et Microsoft Edge Stable.
+- [x] Vérifier directement l’intégrité et le contenu de la base SQLite.
 
 ## Plus tard
 
-Développement, Santé animale, Vision, Web, RAG, voix et autres fonctions.
+Refonte visuelle complète, mémoire sémantique, Développement, Santé animale,
+Vision, Web, RAG, voix et autres fonctions.

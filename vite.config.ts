@@ -235,7 +235,7 @@ export default defineConfig(async () => {
       port: 5173,
       strictPort: true,
       watch: {
-        ignored: ['**/.lea/**'],
+        ignored: ['**/.lea/**', '**/.test-runtime/**', '**/data/**'],
       },
     },
   }

@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build"
+    "build": "tsc -b && vite build",
+    "test:frontend": "node --experimental-strip-types --test tests/frontend/*.test.ts",
+    "test:edge": "node tests/e2e/edge-stage8.mjs"
   },
   "dependencies": {
     "react": "^19.0.0",
