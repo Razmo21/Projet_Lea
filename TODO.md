@@ -36,7 +36,32 @@
 - [x] Valider les migrations, l’API, le contexte, l’interface et Microsoft Edge Stable.
 - [x] Vérifier directement l’intégrité et le contenu de la base SQLite.
 
+## ÉTAPE 9 — Mémoire générale explicite — terminée
+
+- [x] Ajouter les migrations SQLite pour `memories` et sa provenance
+  informative `memory_sources`.
+- [x] Reconnaître les commandes explicites de mémorisation et d’oubli.
+- [x] Normaliser les faits sans rapprochement sémantique et éviter les doublons.
+- [x] Mémoriser ou oublier atomiquement sans appeler le modèle.
+- [x] Injecter tous les souvenirs actifs comme données JSON dans le budget 8 192.
+- [x] Exclure les tours de gestion mémoire du contexte tout en les conservant visibles.
+- [x] Préserver les souvenirs globaux lors de la suppression d’une conversation
+  et les supprimer uniquement par une commande explicite `Oublie que`.
+- [x] Valider migrations, concurrence, capacité, modèle réel et Microsoft Edge Stable.
+
+## ÉTAPE 10 — Multi-modèles et profil Programmation — prochaine étape
+
+Plan uniquement, aucune implémentation commencée :
+
+1. définition d’un registre centralisé des modèles ;
+2. téléchargement et validation d’un modèle Programmation ;
+3. candidat actuellement prévu : `Qwen2.5-Coder-7B-Instruct Q4_K_M` ;
+4. commutation propre Général ↔ Programmation ;
+5. déchargement d’un modèle avant chargement de l’autre ;
+6. liste déroulante dans le frontend ;
+7. profil Programmation strictement limité au développement.
+
 ## Plus tard
 
-Refonte visuelle complète, mémoire sémantique, Développement, Santé animale,
+Refonte visuelle complète, mémoire automatique ou sémantique, Santé animale,
 Vision, Web, RAG, voix et autres fonctions.

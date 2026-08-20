@@ -38,6 +38,7 @@ export function allowsDestructiveMessageAction(
   return message.kind === 'conversation'
 }
 
+// Le navigateur n'envoie jamais l'historique : SQLite et le backend restent autoritaires.
 export type SendMessagePayload = {
   conversation_id: string | null
   message: string
@@ -45,6 +46,7 @@ export type SendMessagePayload = {
 }
 
 export function createLatestRequestGate() {
+  // Un ticket invalide les réponses arrivées après une navigation plus récente.
   let latestRequest = 0
 
   return {

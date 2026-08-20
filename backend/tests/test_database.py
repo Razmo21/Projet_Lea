@@ -68,6 +68,7 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
         self.assertIn("idx_conversations_updated_at", indexes)
         self.assertIn("idx_messages_conversation_position", indexes)
         self.assertIn("idx_memories_normalized_content", indexes)
+        self.assertIn("idx_memory_sources_conversation_id", indexes)
 
         with self.database.connection() as connection:
             tables = {
@@ -82,8 +83,23 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
                 if row[1] == "kind"
             )
         self.assertIn("memories", tables)
+        self.assertIn("memory_sources", tables)
         self.assertEqual(kind[3], 1)
         self.assertEqual(kind[4], "'conversation'")
+        with self.database.connection() as connection:
+            source_foreign_keys = {
+                (row[3], row[2], row[4], row[6])
+                for row in connection.execute(
+                    "PRAGMA foreign_key_list(memory_sources)"
+                ).fetchall()
+            }
+        self.assertEqual(
+            source_foreign_keys,
+            {
+                ("memory_id", "memories", "id", "CASCADE"),
+                ("conversation_id", "conversations", "id", "CASCADE"),
+            },
+        )
 
     def test_initialize_wraps_sqlite_open_errors(self) -> None:
         database = Database(Path(self.temporary_directory.name))
@@ -120,7 +136,7 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
             )
             connection.executemany(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?, 'partial')",
-                ((1,), (2,)),
+                ((1,), (2,), (3,)),
             )
             connection.commit()
         finally:
@@ -129,7 +145,7 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "incomplet"):
             self.database.initialize()
 
-    def test_stage_8_database_migrates_to_v2_without_data_loss(self) -> None:
+    def test_stage_8_database_migrates_to_latest_schema_without_data_loss(self) -> None:
         self.database_path.parent.mkdir(parents=True)
         connection = sqlite3.connect(self.database_path, isolation_level=None)
         try:
@@ -156,7 +172,7 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
         finally:
             connection.close()
 
-        self.assertEqual(self.database.initialize(), 2)
+        self.assertEqual(self.database.initialize(), SCHEMA_VERSION)
         detail = self.database.get_conversation("conversation-v1")
         self.assertEqual(detail["title"], "Titre v1")
         self.assertEqual(detail["revision"], 7)
@@ -170,7 +186,128 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
                     "SELECT version FROM schema_migrations ORDER BY version"
                 ).fetchall()
             ]
-            self.assertEqual(versions, [1, 2])
+            self.assertEqual(versions, [1, 2, 3])
+            self.assertEqual(migrated.execute("PRAGMA quick_check").fetchone()[0], "ok")
+            self.assertEqual(migrated.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_stage_9_database_backfills_sources_and_preserves_global_memories(self) -> None:
+        self.database_path.parent.mkdir(parents=True)
+        connection = sqlite3.connect(self.database_path, isolation_level=None)
+        try:
+            connection.execute("PRAGMA foreign_keys = ON")
+            self.assertEqual(
+                apply_migrations(connection, {1: MIGRATIONS[1], 2: MIGRATIONS[2]}),
+                2,
+            )
+            connection.execute(
+                """
+                INSERT INTO conversations(
+                    id, title, title_origin, created_at, updated_at,
+                    revision, generation_active
+                ) VALUES ('source-v2', 'Souvenir v2', 'automatic',
+                          '2026-01-01T00:00:00.000Z',
+                          '2026-01-01T00:00:00.000Z', 1, 0)
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO conversations(
+                    id, title, title_origin, created_at, updated_at,
+                    revision, generation_active
+                ) VALUES ('duplicate-source-v2', 'Doublon v2', 'automatic',
+                          '2026-01-02T00:00:00.000Z',
+                          '2026-01-02T00:00:00.000Z', 1, 0)
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO memories(
+                    id, content, normalized_content, created_at, updated_at
+                ) VALUES ('memory-live', 'mon chien s''appelle Rex.',
+                          'mon chien s''appelle rex',
+                          '2026-01-01T00:00:00.000Z',
+                          '2026-01-01T00:00:00.000Z')
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO memories(
+                    id, content, normalized_content, created_at, updated_at
+                ) VALUES ('memory-orphan', 'ancien fait', 'ancien fait',
+                          '2025-01-01T00:00:00.000Z',
+                          '2025-01-01T00:00:00.000Z')
+                """
+            )
+            connection.executemany(
+                """
+                INSERT INTO messages(
+                    id, conversation_id, position, role, content, status,
+                    error_code, created_at, updated_at, kind
+                ) VALUES (?, ?, ?, ?, ?, 'completed', NULL, ?, ?, 'memory')
+                """,
+                (
+                    (
+                        "memory-user-v2",
+                        "source-v2",
+                        1,
+                        "user",
+                        "Retiens que mon chien s'appelle Rex.",
+                        "2026-01-01T00:00:00.000Z",
+                        "2026-01-01T00:00:00.000Z",
+                    ),
+                    (
+                        "memory-assistant-v2",
+                        "source-v2",
+                        2,
+                        "assistant",
+                        MEMORY_REMEMBERED_CONFIRMATION,
+                        "2026-01-01T00:00:00.000Z",
+                        "2026-01-01T00:00:00.000Z",
+                    ),
+                    (
+                        "duplicate-user-v2",
+                        "duplicate-source-v2",
+                        1,
+                        "user",
+                        "Mémorise que mon chien s'appelle Rex !",
+                        "2026-01-02T00:00:00.000Z",
+                        "2026-01-02T00:00:00.000Z",
+                    ),
+                    (
+                        "duplicate-assistant-v2",
+                        "duplicate-source-v2",
+                        2,
+                        "assistant",
+                        MEMORY_DUPLICATE_CONFIRMATION,
+                        "2026-01-02T00:00:00.000Z",
+                        "2026-01-02T00:00:00.000Z",
+                    ),
+                ),
+            )
+        finally:
+            connection.close()
+
+        self.assertEqual(self.database.initialize(), SCHEMA_VERSION)
+        self.assertEqual(
+            [memory["normalized_content"] for memory in self.database.list_memories()],
+            ["ancien fait", "mon chien s'appelle rex"],
+        )
+        with self.database.connection() as migrated:
+            self.assertEqual(
+                [
+                    tuple(row)
+                    for row in migrated.execute(
+                        """
+                        SELECT memory_id, conversation_id FROM memory_sources
+                        ORDER BY conversation_id
+                        """
+                    ).fetchall()
+                ],
+                [
+                    ("memory-live", "duplicate-source-v2"),
+                    ("memory-live", "source-v2"),
+                ],
+            )
             self.assertEqual(migrated.execute("PRAGMA quick_check").fetchone()[0], "ok")
             self.assertEqual(migrated.execute("PRAGMA foreign_key_check").fetchall(), [])
 
@@ -231,6 +368,47 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
         self.assertEqual(message, ("Contenu intact",))
         self.assertEqual(quick_check, "ok")
         self.assertEqual(foreign_key_violations, [])
+
+    def test_stage_9_provenance_migration_rolls_back_completely(self) -> None:
+        self.database_path.parent.mkdir(parents=True)
+        connection = sqlite3.connect(self.database_path, isolation_level=None)
+        try:
+            connection.execute("PRAGMA foreign_keys = ON")
+            self.assertEqual(
+                apply_migrations(connection, {1: MIGRATIONS[1], 2: MIGRATIONS[2]}),
+                2,
+            )
+            connection.execute(
+                """
+                INSERT INTO memories(
+                    id, content, normalized_content, created_at, updated_at
+                ) VALUES ('orphan-before-failure', 'fait intact', 'fait intact',
+                          'created', 'updated')
+                """
+            )
+            # L'instruction invalide vient après le backfill : le test prouve
+            # que la provenance et la version migrée sont annulées ensemble.
+            failing_v3 = tuple(MIGRATIONS[3]) + ("INVALID SQL",)
+            with self.assertRaises(MigrationError):
+                apply_migrations(
+                    connection,
+                    {1: MIGRATIONS[1], 2: MIGRATIONS[2], 3: failing_v3},
+                )
+            versions = connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            ).fetchall()
+            source_table = connection.execute(
+                "SELECT name FROM sqlite_master WHERE name = 'memory_sources'"
+            ).fetchone()
+            memory = connection.execute(
+                "SELECT content FROM memories WHERE id = 'orphan-before-failure'"
+            ).fetchone()
+        finally:
+            connection.close()
+
+        self.assertEqual(versions, [(1,), (2,)])
+        self.assertIsNone(source_table)
+        self.assertEqual(memory, ("fait intact",))
 
     def test_failed_migration_rolls_back_its_schema_changes(self) -> None:
         self.database_path.parent.mkdir(parents=True)
@@ -379,6 +557,11 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
         )
         self.assertEqual(len(self.database.list_memories()), 1)
         self.assertEqual(self.database.list_memories()[0]["content"], "je m'appelle Stan.")
+        with self.database.connection() as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM memory_sources").fetchone()[0],
+                1,
+            )
 
         duplicate = parse_memory_command("  RETIENS que je m’appelle Stan !")
         self.assertIsNotNone(duplicate)
@@ -391,6 +574,11 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
         duplicated = self.database.get_conversation(conversation_id)
         self.assertEqual(duplicated["messages"][-1]["content"], MEMORY_DUPLICATE_CONFIRMATION)
         self.assertEqual(len(self.database.list_memories()), 1)
+        with self.database.connection() as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM memory_sources").fetchone()[0],
+                1,
+            )
 
         semantic_miss = parse_memory_command("Oublie que mon prénom est Stan.")
         self.assertIsNotNone(semantic_miss)
@@ -415,8 +603,13 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
         forgotten = self.database.get_conversation(conversation_id)
         self.assertEqual(forgotten["messages"][-1]["content"], MEMORY_FORGOTTEN_CONFIRMATION)
         self.assertEqual(self.database.list_memories(), [])
+        with self.database.connection() as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM memory_sources").fetchone()[0],
+                0,
+            )
 
-    def test_deleting_source_conversation_does_not_delete_memory(self) -> None:
+    def test_deleting_the_only_source_conversation_keeps_global_memory(self) -> None:
         self.database.initialize()
         command = parse_memory_command("Mémorise que mon chien s'appelle Rex.")
         self.assertIsNotNone(command)
@@ -430,13 +623,63 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
 
         self.database.delete_conversation(conversation_id, detail["revision"])
 
-        self.assertEqual(len(self.database.list_memories()), 1)
         self.assertEqual(
-            self.database.list_memories()[0]["normalized_content"],
-            "mon chien s'appelle rex",
+            [memory["normalized_content"] for memory in self.database.list_memories()],
+            ["mon chien s'appelle rex"],
         )
         with self.database.connection() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 0)
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM memory_sources").fetchone()[0],
+                0,
+            )
+
+    def test_memory_survives_deletion_of_all_source_conversations(self) -> None:
+        self.database.initialize()
+        command = parse_memory_command("Retiens que mon chien s'appelle Rex.")
+        self.assertIsNotNone(command)
+        first_conversation = self.database.apply_memory_command(
+            command,
+            "Retiens que mon chien s'appelle Rex.",
+            None,
+            None,
+        )
+        duplicate_command = parse_memory_command("Mémorise que mon chien s'appelle Rex.")
+        self.assertIsNotNone(duplicate_command)
+        second_conversation = self.database.apply_memory_command(
+            duplicate_command,
+            "Mémorise que mon chien s'appelle Rex.",
+            None,
+            None,
+        )
+
+        with self.database.connection() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM memories").fetchone()[0], 1)
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM memory_sources").fetchone()[0],
+                2,
+            )
+
+        first_revision = self.database.get_conversation(first_conversation)["revision"]
+        self.database.delete_conversation(first_conversation, first_revision)
+        self.assertEqual(len(self.database.list_memories()), 1)
+        with self.database.connection() as connection:
+            self.assertEqual(
+                connection.execute("SELECT conversation_id FROM memory_sources").fetchone()[0],
+                second_conversation,
+            )
+
+        second_revision = self.database.get_conversation(second_conversation)["revision"]
+        self.database.delete_conversation(second_conversation, second_revision)
+        self.assertEqual(
+            [memory["normalized_content"] for memory in self.database.list_memories()],
+            ["mon chien s'appelle rex"],
+        )
+        with self.database.connection() as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM memory_sources").fetchone()[0],
+                0,
+            )
 
     def test_memory_command_rolls_back_if_confirmation_cannot_be_stored(self) -> None:
         self.database.initialize()
@@ -464,6 +707,7 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
 
         with self.database.connection() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM memories").fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM memory_sources").fetchone()[0], 0)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM conversations").fetchone()[0], 0)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 0)
 

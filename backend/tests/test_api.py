@@ -344,21 +344,100 @@ class ApiTestCase(unittest.TestCase):
             ["conversation", "conversation"],
         )
 
-    def test_memory_survives_source_deletion_and_backend_restart(self) -> None:
+    def test_memory_survives_source_deletion_and_restart_until_explicit_forget(self) -> None:
         source = self.send("Souviens-toi que mon chien s'appelle Rex.").json()
-        deleted = self.client.request(
+        renamed = self.client.patch(
+            f"/api/conversations/{source['id']}",
+            json={"title": "Source récente", "expected_revision": source["revision"]},
+        ).json()
+        stale_delete = self.client.request(
             "DELETE",
             f"/api/conversations/{source['id']}",
             json={"expected_revision": source["revision"]},
         )
+        self.assertEqual(stale_delete.status_code, 409)
+        self.assertEqual(len(self.application.state.database.list_memories()), 1)
+        deleted = self.client.request(
+            "DELETE",
+            f"/api/conversations/{source['id']}",
+            json={"expected_revision": renamed["revision"]},
+        )
         self.assertEqual(deleted.status_code, 204)
         self.assertEqual(len(self.application.state.database.list_memories()), 1)
+        with self.application.state.database.connection() as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM memory_sources").fetchone()[0],
+                0,
+            )
 
-        restarted_application = create_app(self.database_path, FakeModelGateway())
-        with TestClient(restarted_application):
+        restarted_gateway = FakeModelGateway()
+        restarted_application = create_app(self.database_path, restarted_gateway)
+        with TestClient(restarted_application) as restarted_client:
             memories = restarted_application.state.database.list_memories()
+            recalled = restarted_client.post(
+                "/api/conversations/messages",
+                json={
+                    "conversation_id": None,
+                    "message": "Quel souvenir est enregistré ?",
+                    "expected_revision": None,
+                },
+            )
+            forgotten = restarted_client.post(
+                "/api/conversations/messages",
+                json={
+                    "conversation_id": None,
+                    "message": "Oublie que mon chien s'appelle Rex.",
+                    "expected_revision": None,
+                },
+            )
+            after_forget = restarted_client.post(
+                "/api/conversations/messages",
+                json={
+                    "conversation_id": None,
+                    "message": "Quel souvenir est enregistré maintenant ?",
+                    "expected_revision": None,
+                },
+            )
         self.assertEqual(len(memories), 1)
-        self.assertEqual(memories[0]["normalized_content"], "mon chien s'appelle rex")
+        self.assertEqual(recalled.status_code, 200)
+        self.assertEqual(forgotten.status_code, 200)
+        self.assertEqual(
+            forgotten.json()["messages"][-1]["content"],
+            MEMORY_FORGOTTEN_CONFIRMATION,
+        )
+        self.assertEqual(after_forget.status_code, 200)
+        self.assertEqual(len(restarted_gateway.calls), 2)
+        serialized_payload = str(restarted_gateway.calls[0])
+        self.assertIn("Rex", serialized_payload)
+        self.assertIn("faits_explicites", serialized_payload)
+        payload_after_forget = str(restarted_gateway.calls[1])
+        self.assertNotIn("Rex", payload_after_forget)
+        self.assertNotIn("faits_explicites", payload_after_forget)
+        self.assertEqual(restarted_application.state.database.list_memories(), [])
+
+    def test_forget_from_another_conversation_is_global(self) -> None:
+        source = self.send("Retiens que je m'appelle Stan.").json()
+
+        forgotten_response = self.send("Oublie que je m'appelle Stan.")
+
+        self.assertEqual(forgotten_response.status_code, 200)
+        forgotten = forgotten_response.json()
+        self.assertNotEqual(forgotten["id"], source["id"])
+        self.assertEqual(
+            forgotten["messages"][-1]["content"],
+            MEMORY_FORGOTTEN_CONFIRMATION,
+        )
+        self.assertEqual(self.application.state.database.list_memories(), [])
+        self.assertEqual(
+            self.application.state.database.get_conversation(source["id"])["id"],
+            source["id"],
+        )
+        with self.application.state.database.connection() as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM memory_sources").fetchone()[0],
+                0,
+            )
+        self.assertEqual(self.gateway.calls, [])
 
     def test_stale_revision_cannot_change_memory(self) -> None:
         conversation = self.send("Question normale").json()
@@ -607,6 +686,11 @@ class ConcurrentApiTests(unittest.TestCase):
                 {MEMORY_REMEMBERED_CONFIRMATION, MEMORY_DUPLICATE_CONFIRMATION},
             )
             self.assertEqual(len(application.state.database.list_memories()), 1)
+            with application.state.database.connection() as connection:
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM memory_sources").fetchone()[0],
+                    2,
+                )
             self.assertEqual(gateway.calls, [])
         finally:
             temporary_directory.cleanup()

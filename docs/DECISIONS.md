@@ -48,9 +48,9 @@ ne sont ni exposées ni enregistrées.
 ## D-012 — SQLite comme source des conversations
 La base locale officielle est `data/lea.sqlite3`, remplaçable en test par
 `LEA_DB_PATH`. Le schéma évolue par migrations transactionnelles et utilise
-WAL, clés étrangères, contraintes et index. Seules les tables de migration,
-de conversations et de messages sont créées. Le backend relit les messages
-validés dans SQLite et construit lui-même le contexte du modèle.
+WAL, clés étrangères, contraintes et index. À l’étape 8, les tables de
+migration, de conversations et de messages sont créées. Le backend relit les
+messages validés dans SQLite et construit lui-même le contexte du modèle.
 
 ## D-013 — Mutations destructives et concurrence explicite
 Modifier un message utilisateur ou régénérer une réponse supprime la suite de
@@ -59,3 +59,50 @@ Chaque mutation exige la révision attendue, et une seule génération peut êtr
 active par conversation. Les appels au modèle sont exécutés hors transaction
 SQLite longue. Une génération interrompue est récupérée comme échec sûr au
 prochain démarrage.
+
+## D-014 — Mémoire générale explicite et indépendante
+Le schéma v2 ajoute `memories`, sans clé étrangère vers une conversation, et
+classe les messages en tours `conversation` ou `memory`. Seules les commandes
+françaises explicites `Retiens que`, `Souviens-toi que`, `Mémorise que` et
+`Oublie que` modifient cette mémoire. La normalisation est déterministe et
+l’oubli exige une égalité exacte ; aucune extraction automatique, recherche
+sémantique, mémoire implicite, RAG ou embeddings n’est utilisé.
+
+Les commandes et confirmations mémoire restent visibles, mais sont exclues de
+l’historique envoyé au modèle. Les souvenirs actifs sont injectés intégralement
+comme valeurs JSON échappées dans le dernier message utilisateur et ne sont
+jamais traités comme des directives système. Leur capacité dédiée est de 1 800
+tokens estimés ; tout dépassement est refusé sans troncature ni suppression.
+Les écritures mémoire, les messages de confirmation et la révision de la
+conversation sont validés dans une même transaction courte, sans appel modèle.
+
+Une mémoire générale est indépendante de la conversation où elle a été créée.
+La suppression d’une conversation ne la retire pas ; seule une commande exacte
+`Oublie que` le fait globalement.
+
+## D-015 — Provenance et suppression définitive — remplacée par D-016
+Cette décision décrivait le comportement transitoire suivant.
+
+Le schéma v3 ajoute `memory_sources`, qui relie un souvenir unique à chacune des
+conversations où il a été explicitement retenu. La suppression d’une
+conversation retire ses messages et ses liens de provenance dans une seule
+transaction. Si ce lien était la dernière source du fait, la ligne `memories`
+est également supprimée ; si une autre conversation l’a retenu, elle reste.
+
+La migration transitoire devait relier les souvenirs v2 aux commandes encore
+présentes et purger les souvenirs déjà orphelins. `Oublie que` conserve son
+égalité normalisée
+exacte et supprime le fait ainsi que toutes ses provenances. Aucun effacement
+flou, automatique ou sémantique n’est introduit.
+
+## D-016 — Provenance informative, mémoire globale
+`memory_sources` reste une provenance utile tant que les conversations sources
+existent, mais ne représente plus la propriété ni la durée de vie d’un fait.
+La cascade d’une conversation retire ses messages et ses liens, jamais la ligne
+`memories`. Un souvenir sans source est valide, persiste entre conversations et
+redémarrages, et reste injecté au modèle.
+
+`Oublie que` est l’unique suppression d’un souvenir : l’égalité normalisée doit
+être exacte, puis la suppression s’applique globalement et cascade ses liens de
+provenance. Cette décision rétablit la sémantique indépendante de D-014 sans
+ajouter de mémoire implicite ni de suppression sémantique.

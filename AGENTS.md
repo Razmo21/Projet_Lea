@@ -40,7 +40,8 @@ Après modification :
 
 ## Étape actuelle
 
-Étape 8 terminée — conversations locales persistantes, fiables et contrôlées.
+Étape 9 terminée — mémoire générale explicite, locale, persistante et rattachée
+à ses conversations sources.
 
 Attendre la validation de l'utilisateur avant toute étape suivante.
 
@@ -58,7 +59,9 @@ Ne crée PAS :
 - Tauri ;
 - Docker ;
 - authentification ;
-- télémétrie.
+- télémétrie ;
+- mémoire automatique ou sémantique ;
+- profil ou modèle supplémentaire de l’étape 10.
 
 ## Validation de l'étape
 
@@ -67,7 +70,14 @@ L'étape est terminée uniquement si :
   raisonnement interne exposé ou persisté ;
 - SQLite conserve les conversations dans `data/lea.sqlite3`, avec migrations,
   WAL, clés étrangères, révisions et reprise sûre des générations interrompues ;
+- `memories` conserve uniquement les faits ajoutés par une commande explicite,
+  `memory_sources` en conserve la provenance informative et les oublis utilisent une
+  égalité normalisée exacte ;
+- supprimer une conversation ne supprime jamais un souvenir global ; seule une
+  commande explicite `Oublie que` retire le fait dans toutes les conversations ;
 - le backend reste l'unique autorité de l'historique envoyé au modèle ;
+- les souvenirs actifs sont injectés comme données JSON bornées, tandis que
+  les tours de gestion mémoire restent visibles mais exclus du contexte modèle ;
 - l'interface permet de créer, retrouver, rechercher, renommer, supprimer,
   modifier, régénérer et réessayer les conversations ;
 - les conflits entre onglets sont refusés sans écrasement silencieux ;

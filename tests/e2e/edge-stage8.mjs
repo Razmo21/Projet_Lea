@@ -188,6 +188,10 @@ function messagesExpression() {
 
 async function sendMessage(page, message, expectedMessageCount, expectedAnswer) {
   await page.setValue('#question', message)
+  return submitMessage(page, message, expectedMessageCount, expectedAnswer)
+}
+
+async function submitMessage(page, message, expectedMessageCount, expectedAnswer) {
   await page.trustedClick('button', 'Envoyer')
   const result = await page.waitFor(
     `(() => {
@@ -201,6 +205,20 @@ async function sendMessage(page, message, expectedMessageCount, expectedAnswer) 
     assert.match(result.at(-1).content, expectedAnswer)
   }
   return result
+}
+
+async function sendFocusedMessage(page, message, expectedMessageCount, expectedAnswer) {
+  await page.waitFor(
+    `document.activeElement?.id === 'question' && !document.querySelector('#question')?.disabled`,
+    'le retour du focus dans la zone de saisie',
+  )
+  await page.send('Input.insertText', { text: message })
+  assert.equal(
+    await page.evaluate(`document.querySelector('#question')?.value`),
+    message,
+    'La saisie clavier Edge doit atteindre la zone de question après suppression.',
+  )
+  return submitMessage(page, message, expectedMessageCount, expectedAnswer)
 }
 
 const page = await primaryPage()
@@ -243,7 +261,11 @@ try {
 
   await page.send('Page.reload', { ignoreCache: true })
   await page.waitFor(
-    `document.body.innerText.includes('Rex') && document.querySelectorAll('.message').length === 4`,
+    `document.body.innerText.includes('Rex') &&
+      document.querySelectorAll('.message').length === 4 &&
+      [...document.querySelectorAll('button')].some((button) =>
+        button.textContent.trim() === 'Arrêter Léa' && !button.disabled
+      )`,
     'la restauration après actualisation',
   )
 
@@ -440,15 +462,15 @@ try {
     [[0]],
   )
 
-  // Étape 9 : mémoire générale explicite, indépendante des conversations.
-  await page.setValue('#conversation-search', '')
-  await page.trustedClick('button', 'Nouvelle conversation')
-  await sendMessage(
+  // La suppression rend immédiatement le clavier à une conversation vide :
+  // ce chemin utilise une vraie saisie CDP, sans setter DOM de test.
+  await sendFocusedMessage(
     page,
-    "Retiens que je m'appelle Stan.",
+    'Retiens que pour moi, 1 + 1 = 3.',
     2,
     /retenu/i,
   )
+  await page.setValue('#conversation-search', '')
   const memorySourceConversationId = await page.evaluate(
     `new URL(location.href).searchParams.get('conversation')`,
   )
@@ -457,8 +479,15 @@ try {
     databaseRows(
       'SELECT content, normalized_content FROM memories ORDER BY created_at, id',
     ),
-    [["je m'appelle Stan.", "je m'appelle stan"]],
+    [['pour moi, 1 + 1 = 3.', 'pour moi, 1 + 1 = 3']],
     'La commande doit créer exactement un souvenir normalisé.',
+  )
+  assert.deepEqual(
+    databaseRows(
+      'SELECT conversation_id FROM memory_sources ORDER BY conversation_id',
+    ),
+    [[memorySourceConversationId]],
+    'Le souvenir doit enregistrer sa conversation source.',
   )
   assert.deepEqual(
     databaseRows(
@@ -481,9 +510,9 @@ try {
   await page.trustedClick('button', 'Nouvelle conversation')
   await sendMessage(
     page,
-    "Comment je m'appelle ? Réponds uniquement par le prénom.",
+    'Selon moi, combien font 1 + 1 ? Réponds uniquement par le nombre.',
     2,
-    /Stan/i,
+    /\b3\b/,
   )
   const memoryConsumerConversationId = await page.evaluate(
     `new URL(location.href).searchParams.get('conversation')`,
@@ -491,7 +520,7 @@ try {
   assert.match(memoryConsumerConversationId, /^[0-9a-f-]{36}$/i)
   assert.notEqual(memoryConsumerConversationId, memorySourceConversationId)
 
-  await page.trustedClick('.conversation-summary', "Retiens que je m'appelle Stan.")
+  await page.trustedClick('.conversation-summary', 'Retiens que pour moi, 1 + 1 = 3.')
   await page.waitFor(
     `new URL(location.href).searchParams.get('conversation') === ${JSON.stringify(memorySourceConversationId)}`,
     'la réouverture de la conversation source de la mémoire',
@@ -510,44 +539,60 @@ try {
     [[1]],
     'La mémoire générale doit survivre à la suppression de sa conversation source.',
   )
+  assert.deepEqual(
+    databaseRows('SELECT COUNT(*) FROM memory_sources'),
+    [[0]],
+    'Le lien de provenance disparaît avec la conversation, pas le souvenir global.',
+  )
 
+  // Le redémarrage prouve que le souvenir global reste dans SQLite sans sa source.
   await page.trustedClick('button', 'Arrêter Léa')
   await page.waitFor(
     `document.body.innerText.includes('Léa est arrêtée.')`,
-    "l'arrêt du cœur avant le test de persistance mémoire",
+    "l'arrêt du cœur avant le contrôle de persistance mémoire",
   )
   await page.trustedClick('button', 'Démarrer Léa')
   await page.waitFor(
     `document.body.innerText.includes('Léa est prête.')`,
-    'le redémarrage du cœur avec la mémoire persistante',
+    'le redémarrage du cœur avec mémoire globale',
   )
+  assert.deepEqual(databaseRows('SELECT COUNT(*) FROM memories'), [[1]])
+  assert.deepEqual(databaseRows('SELECT COUNT(*) FROM memory_sources'), [[0]])
   await page.trustedClick('button', 'Nouvelle conversation')
   await sendMessage(
     page,
-    'Quel est mon prénom ? Réponds uniquement par le prénom.',
+    'Selon moi, combien font 1 + 1 ? Réponds uniquement par le nombre.',
     2,
-    /Stan/i,
+    /\b3\b/,
   )
   const postRestartConversationId = await page.evaluate(
     `new URL(location.href).searchParams.get('conversation')`,
   )
   assert.match(postRestartConversationId, /^[0-9a-f-]{36}$/i)
 
+  // L'oubli explicite depuis une autre conversation est la seule suppression
+  // globale du fait et ne nécessite aucun appel au modèle.
+  await page.trustedClick('button', 'Nouvelle conversation')
   await sendMessage(
     page,
-    "Oublie que je m'appelle Stan.",
-    4,
+    'Oublie que pour moi, 1 + 1 = 3.',
+    2,
     /oublié/i,
   )
+  const forgetConversationId = await page.evaluate(
+    `new URL(location.href).searchParams.get('conversation')`,
+  )
+  assert.match(forgetConversationId, /^[0-9a-f-]{36}$/i)
   assert.deepEqual(
     databaseRows('SELECT COUNT(*) FROM memories'),
     [[0]],
     "L'oubli exact doit retirer le souvenir de SQLite.",
   )
+  assert.deepEqual(databaseRows('SELECT COUNT(*) FROM memory_sources'), [[0]])
   assert.deepEqual(
     databaseRows(
-      'SELECT kind, status FROM messages WHERE conversation_id = ? ORDER BY position DESC LIMIT 2',
-      [postRestartConversationId],
+      'SELECT kind, status FROM messages WHERE conversation_id = ? ORDER BY position',
+      [forgetConversationId],
     ),
     [
       ['memory', 'completed'],
@@ -555,19 +600,26 @@ try {
     ],
   )
   assert.deepEqual(
-    await page.evaluate(`[...document.querySelectorAll('.message')].slice(-2).map((message) =>
+    await page.evaluate(`[...document.querySelectorAll('.message')].map((message) =>
       [...message.querySelectorAll('.message-actions button')].map((button) => button.textContent.trim())
     )`),
     [['Copier'], ['Copier']],
     "L'oubli reste visible mais n'offre aucune action destructive.",
   )
 
+  await sendMessage(
+    page,
+    'Combien font 1 + 1 ? Réponds uniquement par le nombre.',
+    4,
+    /\b2\b/,
+  )
+
   await page.trustedClick('button', 'Nouvelle conversation')
   await sendMessage(
     page,
-    'Réponds uniquement par le mot OK.',
+    'Combien font 1 + 1 ? Réponds uniquement par le nombre.',
     2,
-    /OK/i,
+    /\b2\b/,
   )
   const afterForgetConversationId = await page.evaluate(
     `new URL(location.href).searchParams.get('conversation')`,
@@ -614,10 +666,13 @@ try {
     const { text, url = '' } = event.params.entry
     const missingFavicon =
       url === `${appUrl}/favicon.ico` && text.includes('404 (Not Found)')
+    const deletedConversationInStaleTab =
+      url === `http://127.0.0.1:8000/api/conversations/${conversationId}` &&
+      text.includes('404 (Not Found)')
     const intentionalBackendFailure =
       url.startsWith('http://127.0.0.1:8000/api/conversations') &&
       (text.includes('409 (Conflict)') || text.includes('ERR_CONNECTION_REFUSED'))
-    return missingFavicon || intentionalBackendFailure
+    return missingFavicon || deletedConversationInStaleTab || intentionalBackendFailure
   })
   const unexplainedLogErrors = logErrors.filter(
     (event) => !explainedLogErrors.includes(event),
@@ -652,6 +707,11 @@ try {
         event.method === 'Network.responseReceived' &&
         event.params.response.status >= 400 &&
         event.params.response.status !== 409 &&
+        !(
+          event.params.response.status === 404 &&
+          event.params.response.url ===
+            `http://127.0.0.1:8000/api/conversations/${conversationId}`
+        ) &&
         event.params.response.url !== `${appUrl}/favicon.ico`,
     )
     .map((event) => ({

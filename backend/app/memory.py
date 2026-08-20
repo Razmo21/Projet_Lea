@@ -9,6 +9,15 @@ from typing import Literal, Sequence
 
 MemoryAction = Literal["remember", "forget"]
 
+# Limites et textes partagés par le stockage, l'API et les migrations.
+# Les confirmations sont déterministes : elles permettent de distinguer les
+# tours de gestion mémoire des réponses produites par le modèle.
+MEMORY_REMEMBERED_CONFIRMATION = "C'est retenu."
+MEMORY_DUPLICATE_CONFIRMATION = "Je le savais déjà."
+MEMORY_FORGOTTEN_CONFIRMATION = "C'est oublié."
+MEMORY_NOT_FOUND_CONFIRMATION = (
+    "Je n'ai trouvé aucun souvenir correspondant exactement."
+)
 MEMORY_CONTEXT_TOKEN_LIMIT = 1800
 MEMORY_MESSAGE_TOKEN_OVERHEAD = 8
 MEMORY_CONTEXT_HEADER = (
@@ -56,6 +65,8 @@ class MemoryCommand:
     normalized_content: str
 
 
+# La forme affichée reste proche du texte de l'utilisateur. La clé normalisée
+# sert uniquement à l'égalité exacte et n'effectue aucun rapprochement flou.
 def normalize_memory_display(content: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", content).strip().split())
 
@@ -67,6 +78,8 @@ def normalize_memory_content(content: str) -> str:
 
 
 def parse_memory_command(message: str) -> MemoryCommand | None:
+    """Reconnaît uniquement une commande explicite placée au début du message."""
+
     for action, pattern in (
         ("remember", _REMEMBER_PATTERN),
         ("forget", _FORGET_PATTERN),
@@ -91,6 +104,8 @@ def parse_memory_command(message: str) -> MemoryCommand | None:
 
 
 def build_memory_context(contents: Sequence[str]) -> str:
+    """Sérialise les faits comme données JSON, jamais comme instructions système."""
+
     if not contents:
         return ""
     serialized = json.dumps(

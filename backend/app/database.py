@@ -10,6 +10,10 @@ from typing import Any, Iterator
 
 from .memory import (
     EmptyMemoryCommandError,
+    MEMORY_DUPLICATE_CONFIRMATION,
+    MEMORY_FORGOTTEN_CONFIRMATION,
+    MEMORY_NOT_FOUND_CONFIRMATION,
+    MEMORY_REMEMBERED_CONFIRMATION,
     MemoryCommand,
     ensure_memory_capacity,
     parse_memory_command,
@@ -43,14 +47,6 @@ class ConversationOperationError(RuntimeError):
     pass
 
 
-MEMORY_REMEMBERED_CONFIRMATION = "C'est retenu."
-MEMORY_DUPLICATE_CONFIRMATION = "Je le savais déjà."
-MEMORY_FORGOTTEN_CONFIRMATION = "C'est oublié."
-MEMORY_NOT_FOUND_CONFIRMATION = (
-    "Je n'ai trouvé aucun souvenir correspondant exactement."
-)
-
-
 def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -76,6 +72,9 @@ def resolve_database_path(path: str | Path | None = None) -> Path:
 
 
 class Database:
+    """Autorité SQLite des conversations, messages et souvenirs de Léa."""
+
+    # Connexions courtes : WAL autorise les lectures pendant une écriture.
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = resolve_database_path(path)
 
@@ -118,6 +117,8 @@ class Database:
                 connection.commit()
 
     def initialize(self) -> int:
+        """Prépare le fichier, applique les migrations et vérifie ses invariants."""
+
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.connection() as connection:
@@ -139,15 +140,19 @@ class Database:
 
     @staticmethod
     def _validate_schema(connection: sqlite3.Connection) -> None:
+        # Les noms seuls ne suffisent pas : les contraintes de provenance et
+        # les cascades font partie des garanties structurelles du stockage.
         required_objects = {
             "schema_migrations": "table",
             "conversations": "table",
             "messages": "table",
             "memories": "table",
+            "memory_sources": "table",
             "idx_conversations_updated_at": "index",
             "idx_messages_conversation_position": "index",
             "idx_messages_conversation_status": "index",
             "idx_memories_normalized_content": "index",
+            "idx_memory_sources_conversation_id": "index",
         }
         rows = connection.execute(
             "SELECT name, type FROM sqlite_master WHERE name IN ({})".format(
@@ -190,6 +195,28 @@ class Database:
         }
         if memory_indexes.get("idx_memories_normalized_content") is not True:
             raise RuntimeError("L’unicité de la mémoire SQLite est absente.")
+        source_columns = {
+            str(row[1]): row
+            for row in connection.execute("PRAGMA table_info(memory_sources)").fetchall()
+        }
+        if (
+            set(source_columns) != {"memory_id", "conversation_id", "created_at"}
+            or any(int(source_columns[name][3]) != 1 for name in source_columns)
+            or int(source_columns["memory_id"][5]) != 1
+            or int(source_columns["conversation_id"][5]) != 2
+        ):
+            raise RuntimeError("La provenance des souvenirs SQLite est incohérente.")
+        source_foreign_keys = {
+            (str(row[3]), str(row[2]), str(row[4]), str(row[6]).upper())
+            for row in connection.execute(
+                "PRAGMA foreign_key_list(memory_sources)"
+            ).fetchall()
+        }
+        if source_foreign_keys != {
+            ("memory_id", "memories", "id", "CASCADE"),
+            ("conversation_id", "conversations", "id", "CASCADE"),
+        }:
+            raise RuntimeError("Les cascades de provenance SQLite sont incohérentes.")
         quick_check = connection.execute("PRAGMA quick_check").fetchone()
         if quick_check is None or str(quick_check[0]).lower() != "ok":
             raise RuntimeError("Le contrôle d’intégrité SQLite a échoué.")
@@ -345,6 +372,7 @@ class Database:
         return [self._summary_from_row(row) for row in rows]
 
     def get_conversation(self, conversation_id: str) -> dict[str, Any]:
+        # Les deux SELECT partagent un snapshot pour garder compteur et messages cohérents.
         with self.connection() as connection:
             connection.execute("BEGIN")
             try:
@@ -379,6 +407,7 @@ class Database:
         return detail
 
     def list_memories(self) -> list[dict[str, str]]:
+        # Cette liste est l'unique mémoire générale injectée au modèle.
         with self.connection() as connection:
             rows = connection.execute(
                 "SELECT * FROM memories ORDER BY created_at ASC, id ASC"
@@ -396,6 +425,8 @@ class Database:
         user_message_id = str(uuid.uuid4())
         assistant_message_id = str(uuid.uuid4())
 
+        # Mémoire, provenance informative, conversation et confirmation sont
+        # commitées ou annulées ensemble. BEGIN IMMEDIATE sérialise les writers.
         with self.transaction() as connection:
             is_new_conversation = conversation_id is None
             if conversation_id is None:
@@ -436,12 +467,14 @@ class Database:
                     ).fetchone()[0]
                 )
 
+            memory_id: str | None = None
             if command.action == "remember":
                 existing = connection.execute(
                     "SELECT id FROM memories WHERE normalized_content = ?",
                     (command.normalized_content,),
                 ).fetchone()
                 if existing is None:
+                    memory_id = str(uuid.uuid4())
                     existing_contents = [
                         str(row[0])
                         for row in connection.execute(
@@ -456,7 +489,7 @@ class Database:
                         ) VALUES (?, ?, ?, ?, ?)
                         """,
                         (
-                            str(uuid.uuid4()),
+                            memory_id,
                             command.content,
                             command.normalized_content,
                             now,
@@ -465,6 +498,7 @@ class Database:
                     )
                     confirmation = MEMORY_REMEMBERED_CONFIRMATION
                 else:
+                    memory_id = str(existing["id"])
                     confirmation = MEMORY_DUPLICATE_CONFIRMATION
             else:
                 deleted = connection.execute(
@@ -495,6 +529,18 @@ class Database:
                     WHERE id = ?
                     """,
                     (now, conversation_id),
+                )
+
+            if memory_id is not None:
+                # Un fait unique peut avoir plusieurs conversations sources.
+                # La clé composée évite de compter deux fois la même source.
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO memory_sources(
+                        memory_id, conversation_id, created_at
+                    ) VALUES (?, ?, ?)
+                    """,
+                    (memory_id, conversation_id, now),
                 )
 
             connection.execute(
@@ -794,6 +840,8 @@ class Database:
             )
 
     def delete_conversation(self, conversation_id: str, expected_revision: int) -> None:
+        # La conversation et ses messages disparaissent par cascade. Les faits
+        # de mémoire sont globaux : seule une commande « Oublie que » les retire.
         with self.transaction() as connection:
             conversation = self._conversation_row(connection, conversation_id)
             self._assert_mutation_allowed(conversation, expected_revision)

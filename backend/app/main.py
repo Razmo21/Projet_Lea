@@ -76,6 +76,7 @@ THINK_MARKER_PATTERN = re.compile(
 NO_THINK_PATTERN = re.compile(r"/\s*no_think\b", re.IGNORECASE)
 
 
+# Erreurs internes converties plus bas en messages publics sans détail sensible.
 class ModelUnavailableError(RuntimeError):
     pass
 
@@ -153,6 +154,8 @@ def normalize_title(title: str) -> str:
 
 
 def remove_thinking(content: str) -> str:
+    """Retire défensivement les blocs de pensée, même imbriqués ou incomplets."""
+
     visible_parts: list[str] = []
     marker_stack: list[str] = []
     cursor = 0
@@ -335,6 +338,8 @@ class EditMessageRequest(RevisionRequest):
 
 
 class ConversationLockRegistry:
+    """Un verrou de génération par conversation, distinct du verrou mémoire."""
+
     def __init__(self) -> None:
         self._locks: dict[str, asyncio.Lock] = {}
 
@@ -442,6 +447,7 @@ def create_app(
     application.state.conversation_locks = ConversationLockRegistry()
     application.state.memory_lock = asyncio.Lock()
 
+    # L'API reste locale ; toute origine navigateur déclarée doit être connue.
     application.add_middleware(
         CORSMiddleware,
         allow_origins=sorted(ALLOWED_BROWSER_ORIGINS),
@@ -524,6 +530,8 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(error)) from error
 
         if memory_command is not None:
+            # Les commandes explicites contournent entièrement le modèle : la
+            # base écrit le souvenir, sa provenance et la confirmation atomiquement.
             async with _memory_lock(request):
                 conversation_id = database_instance.apply_memory_command(
                     memory_command,
@@ -606,15 +614,18 @@ def create_app(
         return database_instance.get_conversation(str(conversation_id))
 
     @application.delete("/api/conversations/{conversation_id}", status_code=204)
-    def delete_conversation(
+    async def delete_conversation(
         conversation_id: UUID,
         body: RevisionRequest,
         request: Request,
         _local: None = Depends(require_local_mutation),
     ) -> Response:
-        _database(request).delete_conversation(
-            str(conversation_id), body.expected_revision
-        )
+        # La provenance éventuelle disparaît avec la conversation, mais le fait
+        # global reste intact. Le verrou garde cet ordre avec retenir/oublier.
+        async with _memory_lock(request):
+            _database(request).delete_conversation(
+                str(conversation_id), body.expected_revision
+            )
         return Response(status_code=204)
 
     @application.post(

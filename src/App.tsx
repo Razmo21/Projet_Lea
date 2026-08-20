@@ -103,6 +103,7 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 function App() {
+  // État visible : brouillon, liste locale, conversation active et éditeurs.
   const [question, setQuestion] = useState('')
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [activeConversation, setActiveConversation] = useState<ConversationDetail | null>(null)
@@ -117,11 +118,14 @@ function App() {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState('')
   const [isRenaming, setIsRenaming] = useState(false)
+
+  // Verrous synchrones : ils bloquent les doubles clics avant le prochain rendu React.
   const generationLock = useRef(false)
   const renameLock = useRef(false)
   const listRequestNumber = useRef(0)
   const conversationRequests = useRef(createLatestRequestGate())
   const conversationLoadingLock = useRef(false)
+  const questionInput = useRef<HTMLTextAreaElement>(null)
   const activeConversationRef = useRef<ConversationDetail | null>(null)
   const [coreStatus, setCoreStatus] = useState<CoreStatus>(initialCoreStatus)
   const [isCoreTransition, setIsCoreTransition] = useState(false)
@@ -133,10 +137,17 @@ function App() {
     setEditDraft('')
   }, [])
 
+  const focusQuestion = useCallback(() => {
+    // Le bouton supprimé perd le focus avec son panneau. Attendre le rendu
+    // permet de rendre immédiatement le clavier à la zone de saisie.
+    window.requestAnimationFrame(() => questionInput.current?.focus())
+  }, [])
+
   useEffect(() => {
     activeConversationRef.current = activeConversation
   }, [activeConversation])
 
+  // Contrôle du cœur local (modèle + backend), servi par le middleware Vite limité.
   const refreshCoreStatus = useCallback(async () => {
     try {
       const controllerResponse = await fetch('/api/core/status', { cache: 'no-store' })
@@ -151,6 +162,7 @@ function App() {
     }
   }, [])
 
+  // Chargement et navigation : seule la requête la plus récente peut modifier l'écran.
   const loadConversations = useCallback(async (searchTerm = '') => {
     const requestNumber = ++listRequestNumber.current
     setIsListLoading(true)
@@ -206,6 +218,7 @@ function App() {
     return requestNumber
   }, [closeEditors])
 
+  // Synchronise l'interface avec les redémarrages du cœur et l'URL du navigateur.
   useEffect(() => {
     void refreshCoreStatus()
     const intervalId = window.setInterval(() => {
@@ -301,6 +314,7 @@ function App() {
     await loadConversations(search)
   }
 
+  // Un conflit 409 recharge la version SQLite autoritaire au lieu d'écraser l'autre onglet.
   async function handleMutationError(
     error: unknown,
     navigationRequest: number,
@@ -328,6 +342,8 @@ function App() {
     }
   }
 
+  // Chemin commun aux envois, modifications, régénérations et réessais.
+  // Le message pending reste purement visuel jusqu'à la réponse du backend.
   async function runGeneration(
     operation: () => Promise<ConversationDetail>,
     pending = '',
@@ -402,8 +418,10 @@ function App() {
     setPendingText('')
     setConversationError('')
     setConversationInUrl(null)
+    focusQuestion()
   }
 
+  // Mutations versionnées de la conversation active.
   function handleRename() {
     if (
       !activeConversation ||
@@ -468,7 +486,11 @@ function App() {
       conversationLoadingLock.current ||
       renameLock.current
     ) return
-    if (!window.confirm(`Supprimer « ${activeConversation.title} » et tous ses messages ?`)) return
+    // Le backend applique la révision et supprime la conversation avec ses
+    // messages. Les souvenirs globaux ne répondent qu'à « Oublie que… ».
+    if (!window.confirm(
+      `Supprimer définitivement « ${activeConversation.title} » et tous ses messages ?`,
+    )) return
     const navigationRequest = conversationRequests.current.current()
     try {
       await apiRequest<void>(`/api/conversations/${activeConversation.id}`, {
@@ -483,6 +505,7 @@ function App() {
         closeEditors()
         setConversationInUrl(null)
         setConversationError('')
+        focusQuestion()
       }
       await loadConversations(search)
     } catch (error) {
@@ -593,6 +616,7 @@ function App() {
     window.setTimeout(() => setCopyFeedback(''), 1800)
   }
 
+  // Rendu : le frontend affiche l'état SQLite reçu, sans reconstruire l'historique.
   return (
     <main>
       <section className="chat" aria-labelledby="page-title">
@@ -713,7 +737,7 @@ function App() {
 
         <form onSubmit={handleSubmit}>
           <label htmlFor="question">Votre question</label>
-          <textarea id="question" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Écrivez votre question" rows={5} disabled={isGenerating || isConversationLoading || isRenaming || coreStatus.state !== 'ready'} />
+          <textarea ref={questionInput} id="question" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Écrivez votre question" rows={5} disabled={isGenerating || isConversationLoading || isRenaming || coreStatus.state !== 'ready'} />
           <button type="submit" disabled={isGenerating || isConversationLoading || isRenaming || coreStatus.state !== 'ready'}>{isGenerating ? 'Envoi...' : 'Envoyer'}</button>
         </form>
       </section>

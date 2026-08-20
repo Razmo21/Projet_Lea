@@ -1,12 +1,77 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+
+from .memory import (
+    EmptyMemoryCommandError,
+    MEMORY_DUPLICATE_CONFIRMATION,
+    MEMORY_REMEMBERED_CONFIRMATION,
+    parse_memory_command,
+)
 
 
-SCHEMA_VERSION = 2
+MigrationOperation = str | Callable[[sqlite3.Connection], None]
+SCHEMA_VERSION = 3
 
-MIGRATIONS: Mapping[int, Sequence[str]] = {
+
+def _backfill_memory_sources(connection: sqlite3.Connection) -> None:
+    """Relie les souvenirs v2 aux commandes encore présentes quand c'est possible.
+
+    Le schéma v2 ne mémorisait pas la provenance. Les horodatages et la paire
+    commande/confirmation permettent de retrouver les sources encore vivantes.
+    La provenance reste informative : un souvenir sans conversation source est
+    valide, global, et ne doit surtout pas être effacé par une migration.
+    """
+
+    memories = connection.execute(
+        "SELECT id, normalized_content, created_at FROM memories"
+    ).fetchall()
+    for memory_id, normalized_content, memory_created_at in memories:
+        candidates = connection.execute(
+            """
+            SELECT user.conversation_id, user.content, user.created_at
+            FROM messages AS user
+            JOIN messages AS assistant
+              ON assistant.conversation_id = user.conversation_id
+             AND assistant.position = user.position + 1
+            WHERE user.role = 'user'
+              AND user.status = 'completed'
+              AND user.kind = 'memory'
+              AND assistant.role = 'assistant'
+              AND assistant.status = 'completed'
+              AND assistant.kind = 'memory'
+              AND assistant.content IN (?, ?)
+              AND user.created_at >= ?
+            ORDER BY user.created_at ASC, user.id ASC
+            """,
+            (
+                MEMORY_REMEMBERED_CONFIRMATION,
+                MEMORY_DUPLICATE_CONFIRMATION,
+                memory_created_at,
+            ),
+        ).fetchall()
+        for conversation_id, original_message, source_created_at in candidates:
+            try:
+                command = parse_memory_command(str(original_message))
+            except EmptyMemoryCommandError:
+                continue
+            if (
+                command is not None
+                and command.action == "remember"
+                and command.normalized_content == str(normalized_content)
+            ):
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO memory_sources(
+                        memory_id, conversation_id, created_at
+                    ) VALUES (?, ?, ?)
+                    """,
+                    (memory_id, conversation_id, source_created_at),
+                )
+
+MIGRATIONS: Mapping[int, Sequence[MigrationOperation]] = {
+    # v1 : conversations persistantes de l'étape 8.
     1: (
         """
         CREATE TABLE conversations (
@@ -63,6 +128,7 @@ MIGRATIONS: Mapping[int, Sequence[str]] = {
         ON messages(conversation_id, status)
         """,
     ),
+    # v2 : mémoire explicite globale et classification des tours mémoire.
     2: (
         """
         CREATE TABLE conversations_v2 (
@@ -159,6 +225,24 @@ MIGRATIONS: Mapping[int, Sequence[str]] = {
         ON memories(normalized_content)
         """,
     ),
+    # v3 : provenance informative des commandes explicites encore visibles.
+    3: (
+        """
+        CREATE TABLE memory_sources (
+            memory_id TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(memory_id, conversation_id),
+            FOREIGN KEY(memory_id) REFERENCES memories(id) ON DELETE CASCADE,
+            FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        )
+        """,
+        """
+        CREATE INDEX idx_memory_sources_conversation_id
+        ON memory_sources(conversation_id, memory_id)
+        """,
+        _backfill_memory_sources,
+    ),
 }
 
 
@@ -168,7 +252,7 @@ class MigrationError(RuntimeError):
 
 def apply_migrations(
     connection: sqlite3.Connection,
-    migrations: Mapping[int, Sequence[str]] = MIGRATIONS,
+    migrations: Mapping[int, Sequence[MigrationOperation]] = MIGRATIONS,
 ) -> int:
     connection.execute(
         """
@@ -199,15 +283,18 @@ def apply_migrations(
 
         try:
             connection.execute("BEGIN IMMEDIATE")
-            for statement in migrations[version]:
-                connection.execute(statement)
+            for operation in migrations[version]:
+                if isinstance(operation, str):
+                    connection.execute(operation)
+                else:
+                    operation(connection)
             connection.execute(
                 "INSERT INTO schema_migrations(version, applied_at) "
                 "VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
                 (version,),
             )
             connection.commit()
-        except sqlite3.Error as error:
+        except Exception as error:
             connection.rollback()
             raise MigrationError(
                 f"La migration SQLite {version} a échoué et a été annulée."
