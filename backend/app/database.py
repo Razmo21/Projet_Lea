@@ -47,6 +47,10 @@ class ConversationOperationError(RuntimeError):
     pass
 
 
+class ProjectNotFoundError(LookupError):
+    """Signale un identifiant absent du registre local de projets."""
+
+
 def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -153,6 +157,9 @@ class Database:
             "idx_messages_conversation_status": "index",
             "idx_memories_normalized_content": "index",
             "idx_memory_sources_conversation_id": "index",
+            "projects": "table",
+            "idx_projects_single_active": "index",
+            "idx_projects_name": "index",
         }
         rows = connection.execute(
             "SELECT name, type FROM sqlite_master WHERE name IN ({})".format(
@@ -174,6 +181,8 @@ class Database:
             or str(kind_column[4]).strip("'") != "conversation"
         ):
             raise RuntimeError("La classification des messages SQLite est incohérente.")
+        if "model_id" not in message_columns or "profile_id" not in message_columns:
+            raise RuntimeError("L’identité du modèle des messages SQLite est absente.")
         memory_columns = {
             str(row[1]): row
             for row in connection.execute("PRAGMA table_info(memories)").fetchall()
@@ -217,6 +226,28 @@ class Database:
             ("conversation_id", "conversations", "id", "CASCADE"),
         }:
             raise RuntimeError("Les cascades de provenance SQLite sont incohérentes.")
+        project_columns = {
+            str(row[1]): row
+            for row in connection.execute("PRAGMA table_info(projects)").fetchall()
+        }
+        if set(project_columns) != {
+            "id",
+            "name",
+            "relative_path",
+            "created_at",
+            "updated_at",
+            "active",
+        } or any(
+            int(project_columns[name][3]) != 1
+            for name in ("name", "relative_path", "created_at", "updated_at", "active")
+        ):
+            raise RuntimeError("Le registre SQLite des projets est incohérent.")
+        project_indexes = {
+            str(row[1]): bool(row[2])
+            for row in connection.execute("PRAGMA index_list(projects)").fetchall()
+        }
+        if project_indexes.get("idx_projects_single_active") is not True:
+            raise RuntimeError("L'unicité du projet actif est absente.")
         quick_check = connection.execute("PRAGMA quick_check").fetchone()
         if quick_check is None or str(quick_check[0]).lower() != "ok":
             raise RuntimeError("Le contrôle d’intégrité SQLite a échoué.")
@@ -296,6 +327,8 @@ class Database:
             "created_at": str(row["created_at"]),
             "updated_at": str(row["updated_at"]),
             "kind": str(row["kind"]),
+            "model_id": str(row["model_id"]) if row["model_id"] is not None else None,
+            "profile_id": str(row["profile_id"]) if row["profile_id"] is not None else None,
         }
 
     @staticmethod
@@ -413,6 +446,88 @@ class Database:
                 "SELECT * FROM memories ORDER BY created_at ASC, id ASC"
             ).fetchall()
         return [self._memory_from_row(row) for row in rows]
+
+    def list_projects(self) -> list[dict[str, Any]]:
+        """Retourne uniquement les métadonnées relatives du registre de projets."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, name, relative_path, created_at, updated_at, active
+                FROM projects
+                ORDER BY name COLLATE NOCASE ASC, id ASC
+                """
+            ).fetchall()
+        return [{**dict(row), "active": bool(row["active"])} for row in rows]
+
+    def sync_projects(self, projects: list[tuple[str, str]]) -> list[dict[str, Any]]:
+        """Synchronise atomiquement les dossiers déjà validés par WorkspaceGuard."""
+
+        now = utc_now()
+        with self.transaction() as connection:
+            retained_ids: list[str] = []
+            for name, relative_path in projects:
+                existing = connection.execute(
+                    "SELECT id, name, relative_path FROM projects WHERE relative_path = ? COLLATE NOCASE",
+                    (relative_path,),
+                ).fetchone()
+                if existing is None:
+                    project_id = str(uuid.uuid4())
+                    connection.execute(
+                        """
+                        INSERT INTO projects(
+                            id, name, relative_path, created_at, updated_at, active
+                        ) VALUES (?, ?, ?, ?, ?, 0)
+                        """,
+                        (project_id, name, relative_path, now, now),
+                    )
+                else:
+                    project_id = str(existing["id"])
+                    if str(existing["name"]) != name or str(existing["relative_path"]) != relative_path:
+                        connection.execute(
+                            "UPDATE projects SET name = ?, relative_path = ?, updated_at = ? WHERE id = ?",
+                            (name, relative_path, now, project_id),
+                        )
+                retained_ids.append(project_id)
+
+            if retained_ids:
+                placeholders = ",".join("?" for _ in retained_ids)
+                connection.execute(
+                    f"DELETE FROM projects WHERE id NOT IN ({placeholders})",
+                    tuple(retained_ids),
+                )
+            else:
+                connection.execute("DELETE FROM projects")
+        return self.list_projects()
+
+    def activate_project(self, project_id: str) -> dict[str, Any]:
+        """Sélectionne exactement un projet connu dans une transaction sérialisée."""
+
+        with self.transaction() as connection:
+            project = connection.execute(
+                "SELECT id FROM projects WHERE id = ?",
+                (project_id,),
+            ).fetchone()
+            if project is None:
+                raise ProjectNotFoundError("Le projet demandé n'existe plus.")
+            connection.execute("UPDATE projects SET active = 0 WHERE active = 1")
+            connection.execute(
+                "UPDATE projects SET active = 1, updated_at = ? WHERE id = ?",
+                (utc_now(), project_id),
+            )
+        return next(project for project in self.list_projects() if project["id"] == project_id)
+
+    def get_active_project(self) -> dict[str, Any] | None:
+        """Retourne l'unique projet actif ou None sans construire son chemin absolu."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT id, name, relative_path, created_at, updated_at, active
+                FROM projects WHERE active = 1
+                """
+            ).fetchone()
+        return None if row is None else {**dict(row), "active": True}
 
     def apply_memory_command(
         self,
@@ -750,7 +865,12 @@ class Database:
         )
 
     def complete_generation(
-        self, conversation_id: str, user_message_id: str, answer: str
+        self,
+        conversation_id: str,
+        user_message_id: str,
+        answer: str,
+        model_id: str | None = None,
+        profile_id: str | None = None,
     ) -> None:
         assistant_id = str(uuid.uuid4())
         now = utc_now()
@@ -770,10 +890,19 @@ class Database:
                 """
                 INSERT INTO messages(
                     id, conversation_id, position, role, content, status,
-                    error_code, created_at, updated_at
-                ) VALUES (?, ?, ?, 'assistant', ?, 'completed', NULL, ?, ?)
+                    error_code, created_at, updated_at, model_id, profile_id
+                ) VALUES (?, ?, ?, 'assistant', ?, 'completed', NULL, ?, ?, ?, ?)
                 """,
-                (assistant_id, conversation_id, assistant_position, answer, now, now),
+                (
+                    assistant_id,
+                    conversation_id,
+                    assistant_position,
+                    answer,
+                    now,
+                    now,
+                    model_id,
+                    profile_id,
+                ),
             )
             connection.execute(
                 """

@@ -17,16 +17,22 @@ python -m venv .venv
 
 ## Démarrage
 
-Lance d’abord le serveur du modèle depuis la racine du projet :
+Depuis la racine du projet, utilise le lanceur unique :
 
 ```powershell
-.\runtime\llama.cpp\llama-server.exe -m .\models\general\Huihui-Qwen3-4B-abliterated-v2-Q4_K_M.gguf -ngl 99 -c 8192 -np 1 --host 127.0.0.1 --port 8080 --jinja --alias lea-general
+.\lea.ps1 start-core
 ```
 
-Ensuite, depuis le dossier `backend` :
+Le modèle, son port, son contexte, son alias et ses paramètres runtime sont
+lus exclusivement depuis `config/models.json`. Ne démarre pas manuellement
+`llama-server` avec une commande recopiée : elle deviendrait contradictoire
+avec le registre central.
+
+Pour le backend seul pendant un diagnostic local, utilise le même registre :
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+$env:LEA_MODEL_REGISTRY = 'config/models.json'
+.\backend\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 ## Routes
@@ -103,8 +109,8 @@ conserve le fait global jusqu’à une commande exacte `Oublie que`.
 
 ## Fenêtre de contexte et pensée interne
 
-Avec `-c 8192`, le backend réserve 1 024 tokens pour la réponse finale et 512
-pour les instructions et le template. Il estime prudemment un token par octet
+Pour le profil Général (`-c 8192`), le backend réserve 1 024 tokens pour la réponse finale et 512
+pour les instructions et le template. Les autres budgets proviennent de `config/models.json`. Il estime prudemment un token par octet
 UTF-8, garde toujours la question courante et sélectionne les paires complètes
 les plus récentes dans la limite restante, sans supprimer les anciens messages
 de la base.

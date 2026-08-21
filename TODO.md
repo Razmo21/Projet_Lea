@@ -49,17 +49,15 @@
   et les supprimer uniquement par une commande explicite `Oublie que`.
 - [x] Valider migrations, concurrence, capacité, modèle réel et Microsoft Edge Stable.
 
-## ÉTAPE 10 — Multi-modèles et profil Programmation — prochaine étape
+## ÉTAPE 10 — Multi-modèles et profil Programmation — en cours
 
-Plan uniquement, aucune implémentation commencée :
-
-1. définition d’un registre centralisé des modèles ;
-2. téléchargement et validation d’un modèle Programmation ;
-3. candidat actuellement prévu : `Qwen2.5-Coder-7B-Instruct Q4_K_M` ;
-4. commutation propre Général ↔ Programmation ;
-5. déchargement d’un modèle avant chargement de l’autre ;
-6. liste déroulante dans le frontend ;
-7. profil Programmation strictement limité au développement.
+- [x] 10A — Centraliser modèles, profils, prompts, capacités et ressources.
+- [x] 10B — Valider `Qwen3-Coder-30B-A3B-Instruct-Q3_K_M` à 16 000 tokens.
+- [x] 10C — Commuter sûrement Général ↔ Programmation avec rollback.
+- [x] 10D — Ajouter le sélecteur frontend sans recharger la conversation.
+- [x] 10E — Appliquer le domaine strict et le contrat commun de fiabilité.
+- [x] 10F — Enregistrer et sélectionner les projets confinés à `L:\IA_WORKSPACE`.
+- [ ] 10G à 10P — Outils typés, boucle agent, checkpoints, audit, ressources et Edge.
 
 ## Plus tard
 

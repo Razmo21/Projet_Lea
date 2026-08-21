@@ -21,6 +21,7 @@ from app.main import (  # noqa: E402
     ModelUnavailableError,
     create_app,
 )
+from app.model_controller import ModelControllerError  # noqa: E402
 from app.database import (  # noqa: E402
     MEMORY_DUPLICATE_CONFIRMATION,
     MEMORY_FORGOTTEN_CONFIRMATION,
@@ -55,6 +56,22 @@ class BlockingModelGateway:
         return "Réponse concurrente"
 
 
+class FakeModelController:
+    """Simule la bascule de processus sans lancer PowerShell dans les tests API."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.failure: ModelControllerError | None = None
+
+    async def activate(self, profile_id: str) -> str:
+        """Enregistre la cible ou reproduit un échec avec rollback supposé."""
+
+        self.calls.append(profile_id)
+        if self.failure is not None:
+            raise self.failure
+        return profile_id
+
+
 class ApiTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory(
@@ -62,7 +79,12 @@ class ApiTestCase(unittest.TestCase):
         )
         self.database_path = Path(self.temporary_directory.name) / "api.sqlite3"
         self.gateway = FakeModelGateway()
-        self.application = create_app(self.database_path, self.gateway)
+        self.controller = FakeModelController()
+        self.application = create_app(
+            self.database_path,
+            self.gateway,
+            model_controller=self.controller,
+        )
         self.client_context = TestClient(self.application)
         self.client = self.client_context.__enter__()
 
@@ -101,6 +123,32 @@ class ApiTestCase(unittest.TestCase):
         self.assertNotIn("/no_think", persisted)
         self.assertNotIn("<think>", persisted.lower())
         self.assertNotIn("system", roles)
+
+    def test_model_activation_is_atomic_and_attributes_following_responses(self) -> None:
+        """L'API publie Programmation seulement après succès du contrôleur."""
+
+        activated = self.client.post("/api/models/development/activate")
+        self.assertEqual(activated.status_code, 200)
+        self.assertEqual(activated.json()["active_profile_id"], "development")
+        self.assertEqual(self.controller.calls, ["development"])
+        self.assertEqual(
+            self.client.get("/api/models").json()["active_profile_id"],
+            "development",
+        )
+
+        conversation = self.send("const n: number = 3").json()
+        assistant = conversation["messages"][-1]
+        self.assertEqual(assistant["model_id"], "lea-development")
+        self.assertEqual(assistant["profile_id"], "development")
+        self.assertFalse(self.gateway.calls[-1][-1]["content"].endswith("/no_think"))
+
+        self.controller.failure = ModelControllerError("Échec simulé.")
+        failed = self.client.post("/api/models/general/activate")
+        self.assertEqual(failed.status_code, 503)
+        self.assertEqual(
+            self.client.get("/api/models/status").json()["active_profile_id"],
+            "development",
+        )
 
     def test_list_read_search_rename_and_delete(self) -> None:
         conversation = self.send("Éléphant spécial").json()
@@ -619,7 +667,12 @@ class ConcurrentApiTests(unittest.TestCase):
         try:
             database_path = Path(temporary_directory.name) / "concurrent.sqlite3"
             gateway = BlockingModelGateway()
-            application = create_app(database_path, gateway)
+            controller = FakeModelController()
+            application = create_app(
+                database_path,
+                gateway,
+                model_controller=controller,
+            )
             with TestClient(application) as client, ThreadPoolExecutor(max_workers=1) as pool:
                 first_future = pool.submit(
                     client.post,
@@ -631,6 +684,9 @@ class ConcurrentApiTests(unittest.TestCase):
                     },
                 )
                 self.assertTrue(gateway.started.wait(5))
+                switch = client.post("/api/models/development/activate")
+                self.assertEqual(switch.status_code, 409)
+                self.assertEqual(controller.calls, [])
                 database = application.state.database
                 pending = database.list_conversations()[0]
                 second = client.post(

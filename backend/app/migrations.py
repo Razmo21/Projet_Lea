@@ -12,7 +12,7 @@ from .memory import (
 
 
 MigrationOperation = str | Callable[[sqlite3.Connection], None]
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 
 def _backfill_memory_sources(connection: sqlite3.Connection) -> None:
@@ -242,6 +242,35 @@ MIGRATIONS: Mapping[int, Sequence[MigrationOperation]] = {
         ON memory_sources(conversation_id, memory_id)
         """,
         _backfill_memory_sources,
+    ),
+    # v4 : identité nullable du cerveau ayant produit chaque réponse assistant.
+    4: (
+        "ALTER TABLE messages ADD COLUMN model_id TEXT",
+        "ALTER TABLE messages ADD COLUMN profile_id TEXT",
+    ),
+    # v5 : registre minimal des projets confinés à IA_WORKSPACE.
+    5: (
+        """
+        CREATE TABLE projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 255),
+            relative_path TEXT NOT NULL COLLATE NOCASE UNIQUE
+                CHECK(length(relative_path) BETWEEN 1 AND 1024),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 0 CHECK(active IN (0, 1)),
+            CHECK(instr(name, char(0)) = 0),
+            CHECK(instr(relative_path, char(0)) = 0)
+        )
+        """,
+        """
+        CREATE UNIQUE INDEX idx_projects_single_active
+        ON projects(active) WHERE active = 1
+        """,
+        """
+        CREATE INDEX idx_projects_name
+        ON projects(name COLLATE NOCASE, id)
+        """,
     ),
 }
 

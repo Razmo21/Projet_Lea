@@ -106,3 +106,22 @@ redémarrages, et reste injecté au modèle.
 être exacte, puis la suppression s’applique globalement et cascade ses liens de
 provenance. Cette décision rétablit la sémantique indépendante de D-014 sans
 ajouter de mémoire implicite ni de suppression sémantique.
+
+## D-017 — Profils centralisés et projets confinés
+Les modèles, profils, capacités, prompts, budgets et politiques de ressources
+proviennent de `config/models.json`. Général reste le profil de démarrage ; une
+bascule vers Programmation arrête totalement l'ancien modèle, vérifie la
+readiness du nouveau et restaure l'ancien profil en cas d'échec. Une seule
+génération ou un seul run agent peut posséder le runtime à la fois.
+
+Les projets de programmation sont exclusivement des sous-dossiers réels de
+`L:\IA_WORKSPACE`. SQLite n'enregistre que leur chemin relatif et leur sélection.
+Les chemins absolus, remontées, autres lecteurs, UNC, liens symboliques,
+junctions et reparse points sont refusés, et l'identité du dossier est
+revalidée avant une opération sensible.
+
+Ce confinement applicatif borne strictement les outils de fichiers. L'exécution
+du code d'un projet accepté reste plus risquée qu'une lecture : il s'agit d'une
+exécution locale contrôlée, pas d'un sandbox noyau Windows mathématiquement
+parfait. Seuls des projets que l'utilisateur accepte d'exécuter doivent être
+sélectionnés.

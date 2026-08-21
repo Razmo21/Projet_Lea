@@ -55,6 +55,42 @@ h1 {
   gap: 8px;
 }
 
+.model-selector {
+  display: grid;
+  gap: 6px;
+}
+
+.model-profile-status {
+  margin: 0;
+  color: #475569;
+}
+
+.model-profile-status.core-error {
+  color: #b42318;
+}
+
+.project-controls {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 24px;
+  padding: 16px;
+  background: #f8fafc;
+  border: 1px solid #d8dee9;
+  border-radius: 6px;
+}
+
+.project-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.project-header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
 form {
   display: grid;
   gap: 12px;
@@ -62,12 +98,14 @@ form {
 
 input,
 textarea,
+select,
 button {
   font: inherit;
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   padding: 12px;
   border: 1px solid #9ca3af;
@@ -223,6 +261,12 @@ button:disabled {
   padding: 12px;
   border: 1px solid #d8dee9;
   border-radius: 6px;
+}
+
+.message-profile {
+  margin-left: 8px;
+  color: #64748b;
+  font-weight: normal;
 }
 
 .message-user {

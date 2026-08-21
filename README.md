@@ -129,7 +129,7 @@ automatiquement. Il n’existe ni panneau mémoire, ni extraction automatique, n
 RAG ou embeddings à cette étape. Pour oublier un fait, il faut employer
 `Oublie que ...` avec le même fait après normalisation déterministe.
 
-Le modèle utilise une fenêtre `-c 8192` avec un seul slot. Le backend réserve
+Le profil Général utilise une fenêtre `-c 8192` avec un seul slot. Le backend réserve
 1 024 tokens pour la réponse finale et 512 pour les instructions et le
 template, puis applique une borne conservatrice d’un octet UTF-8 par token.
 La directive `/no_think` existe uniquement dans la copie interne envoyée au
@@ -141,7 +141,7 @@ données utilisateur, jamais comme des directives système. Leur capacité dédi
 est de 1 800 tokens estimés avec la borne conservatrice actuelle d’un octet
 UTF-8 par token. Un ajout qui dépasserait cette capacité est refusé sans
 supprimer ni tronquer les souvenirs existants ; la mémoire compte aussi dans le
-budget global de 8 192 tokens avant la sélection des paires d’historique.
+budget global de 8 192 tokens du profil Général avant la sélection des paires d’historique.
 
 Pour isoler une base lors d’un test :
 
@@ -155,17 +155,35 @@ Toutes ces données résident dans `data/lea.sqlite3` : les conversations dans
 `memory_sources`. Une mémoire globale peut donc ne plus avoir de source après
 la suppression de sa conversation d’origine.
 
-Tout le reste est reporté : refonte visuelle complète, mémoire automatique ou
-sémantique, Santé animale, Vision, Web, RAG, voix, accès aux fichiers et
-automatisation. L’étape 10 planifiera seulement le multi-modèles et un profil
-Programmation ; elle n’est pas commencée.
+## Profils et projets de programmation
+
+Le registre `config/models.json` décrit les profils Général et Programmation,
+leurs modèles, prompts, capacités et limites. Général reste toujours le profil
+du prochain démarrage complet. L'interface peut charger Programmation, revenir
+à Général et poursuivre la même conversation ; chaque réponse assistant garde
+le profil et l'alias du modèle qui l'a produite.
+
+En profil Programmation, la liste des projets provient uniquement des
+sous-dossiers réels de `L:\IA_WORKSPACE`. Le registre SQLite conserve un UUID,
+un nom, un chemin relatif et l'unique sélection active ; aucun chemin absolu
+n'est exposé au navigateur. L'actualisation refuse les remontées, autres
+lecteurs, chemins UNC, liens symboliques, junctions et reparse points.
+
+Le confinement des futurs outils de fichiers repose sur ces validations et sur
+une revalidation d'identité avant les opérations sensibles. Exécuter le code
+d'un projet reste plus risqué que le lire : Léa fournit une exécution locale
+contrôlée, pas une garantie mathématique d'isolation du noyau Windows. Ne
+sélectionne pour exécution que des projets dont tu acceptes le code.
+
+Le reste demeure reporté : refonte visuelle complète, mémoire automatique ou
+sémantique, Santé animale, Vision, Web, RAG et voix.
 
 ## Stockage actuel
 
 Projet :
 `L:\Projet_Lea`
 
-Workspace futur :
+Workspace des projets de programmation :
 `L:\IA_WORKSPACE`
 
 Jeux :

@@ -19,6 +19,7 @@ from app.database import (  # noqa: E402
     MEMORY_FORGOTTEN_CONFIRMATION,
     MEMORY_NOT_FOUND_CONFIRMATION,
     MEMORY_REMEMBERED_CONFIRMATION,
+    ProjectNotFoundError,
     RevisionConflictError,
 )
 from app.memory import (  # noqa: E402
@@ -69,6 +70,8 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
         self.assertIn("idx_messages_conversation_position", indexes)
         self.assertIn("idx_memories_normalized_content", indexes)
         self.assertIn("idx_memory_sources_conversation_id", indexes)
+        self.assertIn("idx_projects_single_active", indexes)
+        self.assertIn("idx_projects_name", indexes)
 
         with self.database.connection() as connection:
             tables = {
@@ -84,6 +87,7 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
             )
         self.assertIn("memories", tables)
         self.assertIn("memory_sources", tables)
+        self.assertIn("projects", tables)
         self.assertEqual(kind[3], 1)
         self.assertEqual(kind[4], "'conversation'")
         with self.database.connection() as connection:
@@ -136,7 +140,7 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
             )
             connection.executemany(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?, 'partial')",
-                ((1,), (2,), (3,)),
+                ((1,), (2,), (3,), (4,)),
             )
             connection.commit()
         finally:
@@ -178,6 +182,8 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
         self.assertEqual(detail["revision"], 7)
         self.assertEqual(detail["messages"][0]["content"], "Contenu v1")
         self.assertEqual(detail["messages"][0]["kind"], "conversation")
+        self.assertIsNone(detail["messages"][0]["model_id"])
+        self.assertIsNone(detail["messages"][0]["profile_id"])
 
         with self.database.connection() as migrated:
             versions = [
@@ -186,9 +192,46 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
                     "SELECT version FROM schema_migrations ORDER BY version"
                 ).fetchall()
             ]
-            self.assertEqual(versions, [1, 2, 3])
+            self.assertEqual(versions, [1, 2, 3, 4, 5])
             self.assertEqual(migrated.execute("PRAGMA quick_check").fetchone()[0], "ok")
             self.assertEqual(migrated.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_stage_10_project_migration_rolls_back_without_touching_existing_data(self) -> None:
+        """Une panne v5 ne laisse ni table partielle ni perte dans les conversations."""
+
+        self.database_path.parent.mkdir(parents=True)
+        connection = sqlite3.connect(self.database_path, isolation_level=None)
+        try:
+            self.assertEqual(
+                apply_migrations(connection, {version: MIGRATIONS[version] for version in range(1, 5)}),
+                4,
+            )
+            connection.execute(
+                """
+                INSERT INTO conversations(
+                    id, title, title_origin, created_at, updated_at, revision, generation_active
+                ) VALUES ('before-v5', 'Avant v5', 'manual', 'created', 'updated', 0, 0)
+                """
+            )
+            broken = {version: MIGRATIONS[version] for version in range(1, 5)}
+            broken[5] = (*MIGRATIONS[5], "INSERT INTO missing_stage10_table VALUES (1)")
+            with self.assertRaises(MigrationError):
+                apply_migrations(connection, broken)
+            self.assertIsNone(
+                connection.execute(
+                    "SELECT name FROM sqlite_master WHERE name = 'projects'"
+                ).fetchone()
+            )
+            self.assertEqual(
+                connection.execute("SELECT title FROM conversations WHERE id = 'before-v5'").fetchone()[0],
+                "Avant v5",
+            )
+            self.assertEqual(
+                [row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")],
+                [1, 2, 3, 4],
+            )
+        finally:
+            connection.close()
 
     def test_stage_9_database_backfills_sources_and_preserves_global_memories(self) -> None:
         self.database_path.parent.mkdir(parents=True)
@@ -447,6 +490,7 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
                     """,
                     (conversation_id,),
                 )
+
             connection.execute(
                 """
                 INSERT INTO messages(
@@ -534,6 +578,28 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
                 ).fetchone()[0],
                 0,
             )
+
+    def test_assistant_response_records_its_nullable_model_identity(self) -> None:
+        """Les nouveaux assistants sont attribués, les lignes legacy restent nullables."""
+
+        self.database.initialize()
+        first_conversation, first_user = self.database.create_pending_conversation("Question")
+        self.database.complete_generation(first_conversation, first_user, "Réponse legacy")
+        second_conversation, second_user = self.database.create_pending_conversation("Code")
+        self.database.complete_generation(
+            second_conversation,
+            second_user,
+            "Réponse code",
+            model_id="lea-development",
+            profile_id="development",
+        )
+
+        legacy = self.database.get_conversation(first_conversation)["messages"][-1]
+        attributed = self.database.get_conversation(second_conversation)["messages"][-1]
+        self.assertIsNone(legacy["model_id"])
+        self.assertIsNone(legacy["profile_id"])
+        self.assertEqual(attributed["model_id"], "lea-development")
+        self.assertEqual(attributed["profile_id"], "development")
 
     def test_memory_commands_are_atomic_exact_and_visible(self) -> None:
         self.database.initialize()
@@ -867,6 +933,30 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
         self.assertEqual(
             self.database.get_conversation(conversation_id)["title"], "Premier onglet"
         )
+
+    def test_project_registry_syncs_case_insensitively_and_keeps_one_active(self) -> None:
+        """Le registre conserve des chemins relatifs uniques et une seule sélection."""
+
+        self.database.initialize()
+        projects = self.database.sync_projects(
+            [("Alpha", "Alpha"), ("Projet Été", "Projet Été")]
+        )
+        self.assertEqual([project["name"] for project in projects], ["Alpha", "Projet Été"])
+        first_id, second_id = (project["id"] for project in projects)
+        self.database.activate_project(first_id)
+        self.database.activate_project(second_id)
+        active = [project for project in self.database.list_projects() if project["active"]]
+        self.assertEqual([project["id"] for project in active], [second_id])
+
+        refreshed = self.database.sync_projects([("ALPHA renommé", "alpha")])
+        self.assertEqual(len(refreshed), 1)
+        self.assertEqual(refreshed[0]["id"], first_id)
+        self.assertEqual(refreshed[0]["relative_path"], "alpha")
+        self.assertFalse(refreshed[0]["active"])
+
+        self.assertEqual(self.database.sync_projects([]), [])
+        with self.assertRaises(ProjectNotFoundError):
+            self.database.activate_project(first_id)
 
     def test_pending_generation_is_recovered_as_failed_on_restart(self) -> None:
         self.database.initialize()

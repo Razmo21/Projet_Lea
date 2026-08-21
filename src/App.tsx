@@ -15,6 +15,15 @@ import type {
   ConversationMessage,
   ConversationSummary,
 } from './conversations'
+import {
+  activeModelProfile,
+  canActivateModel,
+  isModelCatalog,
+  isModelRuntimeStatus,
+} from './models'
+import type { ModelCatalog, ModelRuntimeStatus } from './models'
+import { isProjectCatalog } from './projects'
+import type { ProjectCatalog } from './projects'
 
 type CoreState = 'stopped' | 'starting' | 'ready' | 'stopping' | 'error'
 
@@ -128,7 +137,17 @@ function App() {
   const questionInput = useRef<HTMLTextAreaElement>(null)
   const activeConversationRef = useRef<ConversationDetail | null>(null)
   const [coreStatus, setCoreStatus] = useState<CoreStatus>(initialCoreStatus)
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null)
+  const [modelStatus, setModelStatus] = useState<ModelRuntimeStatus | null>(null)
+  const [modelError, setModelError] = useState('')
+  const [requestedProfileId, setRequestedProfileId] = useState<string | null>(null)
+  const [isModelTransition, setIsModelTransition] = useState(false)
+  const [projectCatalog, setProjectCatalog] = useState<ProjectCatalog | null>(null)
+  const [projectError, setProjectError] = useState('')
+  const [isProjectTransition, setIsProjectTransition] = useState(false)
   const [isCoreTransition, setIsCoreTransition] = useState(false)
+  const modelTransitionLock = useRef(false)
+  const projectTransitionLock = useRef(false)
   const previousCoreState = useRef<CoreState>('stopped')
 
   const closeEditors = useCallback(() => {
@@ -149,16 +168,76 @@ function App() {
 
   // Contrôle du cœur local (modèle + backend), servi par le middleware Vite limité.
   const refreshCoreStatus = useCallback(async () => {
+    if (modelTransitionLock.current) {
+      return
+    }
     try {
       const controllerResponse = await fetch('/api/core/status', { cache: 'no-store' })
-      setCoreStatus(await readCoreStatus(controllerResponse))
+      const status = await readCoreStatus(controllerResponse)
+      if (!modelTransitionLock.current) {
+        setCoreStatus(status)
+      }
     } catch {
-      setCoreStatus({
-        state: 'error',
-        model: 'error',
-        backend: 'error',
-        message: 'Le contrôleur local de Léa n’est pas disponible.',
-      })
+      if (!modelTransitionLock.current) {
+        setCoreStatus({
+          state: 'error',
+          model: 'error',
+          backend: 'error',
+          message: 'Le contrôleur local de Léa n’est pas disponible.',
+        })
+      }
+    }
+  }, [])
+
+  // Le registre public vient du backend ; aucun profil n'est recopié dans React.
+  const loadModelCatalog = useCallback(async () => {
+    try {
+      const catalog = await apiRequest<unknown>('/api/models')
+      if (!isModelCatalog(catalog)) {
+        throw new Error('Le catalogue des profils est invalide.')
+      }
+      setModelCatalog(catalog)
+      setModelError('')
+    } catch (error) {
+      setModelCatalog(null)
+      setModelError(error instanceof Error ? error.message : 'Catalogue des profils indisponible.')
+    }
+  }, [])
+
+  // Le statut runtime est distinct du catalogue afin d'exposer les bascules longues.
+  const refreshModelStatus = useCallback(async () => {
+    try {
+      const status = await apiRequest<unknown>('/api/models/status')
+      if (!isModelRuntimeStatus(status)) {
+        throw new Error('Le runtime a renvoyé un état de modèle invalide.')
+      }
+      setModelStatus(status)
+      if (status.state === 'error') {
+        setModelError(status.message)
+      }
+      return status
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'État du modèle indisponible.'
+      setModelStatus(null)
+      setModelError(message)
+      return null
+    }
+  }, [])
+
+  // Les projets viennent du registre SQLite ; aucun chemin absolu n'atteint React.
+  const loadProjects = useCallback(async () => {
+    try {
+      const catalog = await apiRequest<unknown>('/api/projects')
+      if (!isProjectCatalog(catalog)) {
+        throw new Error('Le registre des projets est invalide.')
+      }
+      setProjectCatalog(catalog)
+      setProjectError('')
+      return catalog
+    } catch (error) {
+      setProjectCatalog(null)
+      setProjectError(error instanceof Error ? error.message : 'Registre des projets indisponible.')
+      return null
     }
   }, [])
 
@@ -231,6 +310,8 @@ function App() {
 
   useEffect(() => {
     if (coreStatus.state === 'ready' && previousCoreState.current !== 'ready') {
+      void loadModelCatalog()
+      void refreshModelStatus()
       void loadConversations(search)
       const requestedConversation =
         conversationIdFromSearch(window.location.search) ?? activeConversationRef.current?.id
@@ -239,7 +320,27 @@ function App() {
       }
     }
     previousCoreState.current = coreStatus.state
-  }, [coreStatus.state, loadConversation, loadConversations, search])
+  }, [coreStatus.state, loadConversation, loadConversations, loadModelCatalog, refreshModelStatus, search])
+
+  useEffect(() => {
+    if (coreStatus.state !== 'ready') {
+      setModelStatus(null)
+      setRequestedProfileId(null)
+      return
+    }
+    const intervalId = window.setInterval(() => void refreshModelStatus(), 2000)
+    return () => window.clearInterval(intervalId)
+  }, [coreStatus.state, refreshModelStatus])
+
+  useEffect(() => {
+    const profile = modelCatalog ? activeModelProfile(modelCatalog) : null
+    if (coreStatus.state === 'ready' && profile?.capabilities.includes('workspace_projects')) {
+      void loadProjects()
+    } else {
+      setProjectCatalog(null)
+      setProjectError('')
+    }
+  }, [coreStatus.state, loadProjects, modelCatalog])
 
   useEffect(() => {
     if (coreStatus.state !== 'ready') {
@@ -300,6 +401,87 @@ function App() {
       })
     } finally {
       setIsCoreTransition(false)
+    }
+  }
+
+  async function handleModelChange(profileId: string) {
+    if (
+      modelTransitionLock.current ||
+      isModelTransition ||
+      isGenerating ||
+      coreStatus.state !== 'ready' ||
+      !canActivateModel(modelStatus, profileId)
+    ) return
+
+    modelTransitionLock.current = true
+    setIsModelTransition(true)
+    setRequestedProfileId(profileId)
+    setModelError('')
+    setModelStatus((current) => current && ({
+      ...current,
+      state: 'loading',
+      loading_profile_id: profileId,
+      message: 'Chargement du profil sélectionné…',
+    }))
+    try {
+      const activated = await apiRequest<unknown>(`/api/models/${encodeURIComponent(profileId)}/activate`, {
+        method: 'POST',
+      })
+      if (!isModelRuntimeStatus(activated)) {
+        throw new Error('Le backend n’a pas confirmé le nouveau profil.')
+      }
+      setModelStatus(activated)
+      setModelError('')
+      await loadModelCatalog()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Le changement de profil a échoué.'
+      await Promise.all([loadModelCatalog(), refreshModelStatus()])
+      setModelError(message)
+    } finally {
+      modelTransitionLock.current = false
+      setIsModelTransition(false)
+      setRequestedProfileId(null)
+    }
+  }
+
+  async function refreshProjects() {
+    if (projectTransitionLock.current || isProjectTransition || isGenerating) return
+    projectTransitionLock.current = true
+    setIsProjectTransition(true)
+    setProjectError('')
+    try {
+      const catalog = await apiRequest<unknown>('/api/projects/refresh', { method: 'POST' })
+      if (!isProjectCatalog(catalog)) {
+        throw new Error('Le backend n’a pas confirmé l’actualisation des projets.')
+      }
+      setProjectCatalog(catalog)
+    } catch (error) {
+      setProjectError(error instanceof Error ? error.message : 'Actualisation des projets échouée.')
+    } finally {
+      projectTransitionLock.current = false
+      setIsProjectTransition(false)
+    }
+  }
+
+  async function selectProject(projectId: string) {
+    if (!projectId || projectTransitionLock.current || isProjectTransition || isGenerating) return
+    projectTransitionLock.current = true
+    setIsProjectTransition(true)
+    setProjectError('')
+    try {
+      const catalog = await apiRequest<unknown>(`/api/projects/${encodeURIComponent(projectId)}/activate`, {
+        method: 'POST',
+      })
+      if (!isProjectCatalog(catalog)) {
+        throw new Error('Le backend n’a pas confirmé le projet actif.')
+      }
+      setProjectCatalog(catalog)
+    } catch (error) {
+      setProjectError(error instanceof Error ? error.message : 'Sélection du projet échouée.')
+      await loadProjects()
+    } finally {
+      projectTransitionLock.current = false
+      setIsProjectTransition(false)
     }
   }
 
@@ -617,6 +799,21 @@ function App() {
   }
 
   // Rendu : le frontend affiche l'état SQLite reçu, sans reconstruire l'historique.
+  const activeProfile = modelCatalog ? activeModelProfile(modelCatalog) : null
+  const loadingProfile = modelCatalog?.profiles.find(
+    (profile) => profile.id === (modelStatus?.loading_profile_id ?? requestedProfileId),
+  ) ?? null
+  const selectedProfileId = loadingProfile?.id ?? modelStatus?.active_profile_id ?? activeProfile?.id ?? ''
+  const modelChangeBlocked = Boolean(
+    isModelTransition ||
+    isGenerating ||
+    coreStatus.state !== 'ready' ||
+    !modelStatus ||
+    modelStatus.state !== 'ready' ||
+    modelStatus.generation_active ||
+    modelStatus.agent_run_active,
+  )
+  const projectCapabilityActive = Boolean(activeProfile?.capabilities.includes('workspace_projects'))
   return (
     <main>
       <section className="chat" aria-labelledby="page-title">
@@ -626,6 +823,34 @@ function App() {
           <p className={coreStatus.state === 'error' ? 'core-status core-error' : 'core-status'} aria-live="polite">
             {coreStatus.message}
           </p>
+          {modelCatalog && (
+            <div className="model-selector">
+              <label htmlFor="model-profile">Profil de Léa</label>
+              <select
+                id="model-profile"
+                value={selectedProfileId}
+                onChange={(event) => void handleModelChange(event.target.value)}
+                disabled={modelChangeBlocked}
+              >
+                {modelCatalog.profiles
+                  .filter((profile) => profile.enabled)
+                  .sort((left, right) => left.display_order - right.display_order)
+                  .map((profile) => (
+                    <option key={profile.id} value={profile.id}>{profile.display_name}</option>
+                  ))}
+              </select>
+              <p className={modelError ? 'model-profile-status core-error' : 'model-profile-status'} aria-live="polite">
+                {loadingProfile
+                  ? `Chargement : ${loadingProfile.display_name}…`
+                  : activeProfile && modelStatus?.state === 'ready'
+                    ? `${activeProfile.display_name} est prêt.`
+                    : modelError || 'État du profil indisponible.'}
+              </p>
+            </div>
+          )}
+          {!modelCatalog && coreStatus.state === 'ready' && modelError && (
+            <p className="model-profile-status core-error" role="alert">{modelError}</p>
+          )}
           <div className="core-buttons">
             <button type="button" onClick={() => void handleCoreAction('start')} disabled={isCoreTransition || coreStatus.state === 'ready' || coreStatus.state === 'starting'}>
               Démarrer Léa
@@ -635,6 +860,36 @@ function App() {
             </button>
           </div>
         </section>
+
+        {projectCapabilityActive && (
+          <section className="project-controls" aria-label="Projet de programmation actif">
+            <div className="project-header">
+              <h2>Projet</h2>
+              <button type="button" className="secondary-button compact-button" onClick={() => void refreshProjects()} disabled={isProjectTransition || isGenerating}>
+                {isProjectTransition ? 'Actualisation…' : 'Actualiser'}
+              </button>
+            </div>
+            {projectCatalog && projectCatalog.projects.length > 0 ? (
+              <>
+                <label htmlFor="active-project">Projet actif dans IA_WORKSPACE</label>
+                <select
+                  id="active-project"
+                  value={projectCatalog.active_project_id ?? ''}
+                  onChange={(event) => void selectProject(event.target.value)}
+                  disabled={isProjectTransition || isGenerating || isModelTransition}
+                >
+                  <option value="">Sélectionner un projet</option>
+                  {projectCatalog.projects.map((project) => (
+                    <option key={project.id} value={project.id}>{project.name}</option>
+                  ))}
+                </select>
+              </>
+            ) : (
+              <p className="conversation-empty">Aucun projet dans IA_WORKSPACE.</p>
+            )}
+            {projectError && <p className="chat-error" role="alert">{projectError}</p>}
+          </section>
+        )}
 
         <section className="conversation-browser" aria-label="Conversations locales">
           <label htmlFor="conversation-search">Rechercher une conversation</label>
@@ -691,6 +946,11 @@ function App() {
             {activeConversation?.messages.map((message) => (
               <article className={`message message-${message.role} message-${message.status}`} key={message.id}>
                 <strong>{message.role === 'user' ? 'Vous' : 'Léa'}</strong>
+                {message.role === 'assistant' && message.profile_id && (
+                  <small className="message-profile">
+                    {modelCatalog?.profiles.find((profile) => profile.id === message.profile_id)?.display_name ?? message.profile_id}
+                  </small>
+                )}
                 {editingMessageId === message.id ? (
                   <form className="inline-editor message-editor" onSubmit={(event) => void handleEditSubmit(event, message)}>
                     <label htmlFor={`message-edit-${message.id}`}>Modifier votre message</label>

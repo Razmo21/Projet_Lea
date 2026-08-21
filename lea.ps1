@@ -1,6 +1,7 @@
 ﻿param(
     [Parameter(Position = 0)]
     [string]$Action,
+    [string]$ProfileId,
     [switch]$Json
 )
 
@@ -19,21 +20,218 @@ $StandardInputFile = Join-Path $StateDirectory 'stdin.empty'
 $TaskkillExecutable = Join-Path $env:SystemRoot 'System32\taskkill.exe'
 $NetstatExecutable = Join-Path $env:SystemRoot 'System32\netstat.exe'
 
-$ModelExecutable = Join-Path $ProjectRoot 'runtime\llama.cpp\llama-server.exe'
-$ModelPath = Join-Path $ProjectRoot 'models\general\Huihui-Qwen3-4B-abliterated-v2-Q4_K_M.gguf'
+function Resolve-RegistryFile {
+    # Résout un chemin relatif du registre et refuse toute sortie de la racine autorisée.
+    param(
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][string]$AllowedRoot,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RelativePath) -or [System.IO.Path]::IsPathRooted($RelativePath)) {
+        throw "$Label doit être un chemin relatif au projet."
+    }
+
+    $parts = @($RelativePath -split '[\\/]+' | Where-Object { $_ -ne '' })
+    if ($parts -contains '..') {
+        throw "$Label ne peut pas contenir '..'."
+    }
+
+    $resolvedAllowedRoot = [System.IO.Path]::GetFullPath($AllowedRoot).TrimEnd('\')
+    $resolved = [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot ($RelativePath -replace '/', '\')))
+    if (-not $resolved.StartsWith($resolvedAllowedRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Label sort de sa racine autorisée."
+    }
+
+    return $resolved
+}
+
+function Get-RegistryProfile {
+    # Retourne exactement le profil demandé sans bascule silencieuse vers Général.
+    param(
+        [Parameter(Mandatory = $true)]$Registry,
+        [Parameter(Mandatory = $true)][string]$ProfileId
+    )
+
+    $matches = @($Registry.profiles | Where-Object { $_.id -eq $ProfileId })
+    if ($matches.Count -ne 1) {
+        throw "Profil de modèle introuvable ou dupliqué : $ProfileId"
+    }
+
+    return $matches[0]
+}
+
+function Read-ModelRegistry {
+    # Valide les champs critiques utilisés par PowerShell avant tout lancement de processus.
+    param([Parameter(Mandatory = $true)][string]$RegistryPath)
+
+    if (-not (Test-Path -LiteralPath $RegistryPath -PathType Leaf)) {
+        throw "Registre des modèles introuvable : $RegistryPath"
+    }
+
+    try {
+        $registry = Get-Content -Raw -Encoding UTF8 -LiteralPath $RegistryPath | ConvertFrom-Json
+    } catch {
+        throw "Registre des modèles invalide : $($_.Exception.Message)"
+    }
+
+    $schemaVersion = $registry.PSObject.Properties['schema_version']
+    $defaultProfileId = $registry.PSObject.Properties['default_profile_id']
+    if ($null -eq $schemaVersion -or
+        ($schemaVersion.Value -isnot [int] -and $schemaVersion.Value -isnot [long]) -or
+        [int64]$schemaVersion.Value -lt 1 -or
+        $null -eq $defaultProfileId -or
+        $defaultProfileId.Value -isnot [string] -or
+        [string]::IsNullOrWhiteSpace([string]$defaultProfileId.Value)) {
+        throw 'Le registre des modèles ne possède pas de version ou de profil par défaut valide.'
+    }
+
+    # Le lanceur utilise ces valeurs pour l'unique serveur llama.cpp : elles ne
+    # peuvent donc ni désigner une écoute publique ni diverger de ses routes API.
+    $runtimeProperty = $registry.PSObject.Properties['runtime']
+    if ($null -eq $runtimeProperty -or $null -eq $runtimeProperty.Value) {
+        throw 'Le registre des modèles ne définit pas le runtime llama.cpp.'
+    }
+    $runtime = $runtimeProperty.Value
+    $runtimeHost = $runtime.PSObject.Properties['host']
+    $runtimePort = $runtime.PSObject.Properties['port']
+    $chatPath = $runtime.PSObject.Properties['chat_completions_path']
+    $modelsPath = $runtime.PSObject.Properties['models_path']
+    if ($null -eq $runtimeHost -or [string]$runtimeHost.Value -ne '127.0.0.1') {
+        throw 'Le runtime doit écouter exclusivement sur 127.0.0.1.'
+    }
+    if ($null -eq $runtimePort -or
+        ($runtimePort.Value -isnot [int] -and $runtimePort.Value -isnot [long]) -or
+        [int64]$runtimePort.Value -lt 1 -or [int64]$runtimePort.Value -gt 65535) {
+        throw 'Le port du runtime doit être compris entre 1 et 65535.'
+    }
+    if ($null -eq $chatPath -or $null -eq $modelsPath -or
+        -not ([string]$chatPath.Value).StartsWith('/') -or
+        -not ([string]$modelsPath.Value).StartsWith('/')) {
+        throw "Les routes du runtime doivent commencer par '/'."
+    }
+
+    $profileIds = @{}
+    $aliases = @{}
+    $knownTypes = @($registry.model_types)
+    $knownCapabilities = @($registry.capability_catalog.PSObject.Properties.Name)
+    $knownTools = @($registry.tool_catalog)
+    $knownPermissions = @($registry.workspace_permissions.PSObject.Properties.Name)
+    $knownPolicies = @($registry.resource_policies.PSObject.Properties.Name)
+
+    foreach ($profile in @($registry.profiles)) {
+        $enabled = $profile.PSObject.Properties['enabled']
+        $contextTokens = $profile.PSObject.Properties['context_tokens']
+        $runtimeDefinition = $profile.PSObject.Properties['runtime']
+        if ($null -eq $enabled -or $enabled.Value -isnot [bool] -or
+            $null -eq $contextTokens -or
+            ($contextTokens.Value -isnot [int] -and $contextTokens.Value -isnot [long]) -or
+            $null -eq $runtimeDefinition -or $null -eq $runtimeDefinition.Value) {
+            throw 'Un profil contient un type JSON invalide.'
+        }
+        $profileRuntime = $runtimeDefinition.Value
+        $parallelSlots = $profileRuntime.PSObject.Properties['parallel_slots']
+        if ($null -eq $parallelSlots -or
+            ($parallelSlots.Value -isnot [int] -and $parallelSlots.Value -isnot [long])) {
+            throw 'Le nombre de slots du profil doit être un entier JSON.'
+        }
+        foreach ($booleanName in @('jinja', 'mmap', 'fit')) {
+            $booleanProperty = $profileRuntime.PSObject.Properties[$booleanName]
+            if ($null -eq $booleanProperty -or $booleanProperty.Value -isnot [bool]) {
+                throw "Le champ $booleanName du profil doit être un booléen JSON."
+            }
+        }
+        $profileId = [string]$profile.id
+        if ($profileId -notmatch '^[a-z][a-z0-9_-]{1,31}$' -or $profileIds.ContainsKey($profileId)) {
+            throw "Identifiant de profil invalide ou dupliqué : $profileId"
+        }
+        $profileIds[$profileId] = $true
+
+        $alias = [string]$profile.runtime.alias
+        if ([string]::IsNullOrWhiteSpace($alias) -or $aliases.ContainsKey($alias)) {
+            throw "Alias llama.cpp vide ou dupliqué : $alias"
+        }
+        $aliases[$alias] = $true
+
+        if ([string]::IsNullOrWhiteSpace([string]$profile.display_name) -or $knownTypes -notcontains [string]$profile.model_type) {
+            throw "Nom ou type invalide pour le profil $profileId."
+        }
+        if ([int64]$contextTokens.Value -le 0 -or [int64]$parallelSlots.Value -ne 1) {
+            throw "Contexte ou nombre de slots invalide pour le profil $profileId."
+        }
+        $gpuLayers = [string]$profile.runtime.gpu_layers
+        if ($gpuLayers -ne 'auto' -and $gpuLayers -notmatch '^\d{1,3}$') {
+            throw "Nombre de couches GPU invalide pour le profil $profileId."
+        }
+        if ($gpuLayers -eq 'auto' -and -not [bool]$profile.runtime.fit) {
+            throw "Le profil $profileId ne peut utiliser gpu_layers=auto sans --fit."
+        }
+        if ([bool]$profile.runtime.fit -and [int]$profile.runtime.fit_context_min_tokens -ne [int]$profile.context_tokens) {
+            throw "Le profil $profileId autoriserait --fit à réduire silencieusement son contexte."
+        }
+        if (@('f16', 'q8_0', 'q4_0') -notcontains [string]$profile.runtime.cache_type_k -or @('f16', 'q8_0', 'q4_0') -notcontains [string]$profile.runtime.cache_type_v) {
+            throw "Cache KV invalide pour le profil $profileId."
+        }
+        if ([string]$profile.expected_sha256 -notmatch '^[0-9a-f]{64}$') {
+            throw "SHA-256 attendu invalide pour le profil $profileId."
+        }
+        if ($knownPermissions -notcontains [string]$profile.workspace_permission -or $knownPolicies -notcontains [string]$profile.resource_policy) {
+            throw "Permission workspace ou politique de ressources inconnue pour $profileId."
+        }
+        foreach ($capability in @($profile.capabilities)) {
+            if ($knownCapabilities -notcontains [string]$capability) {
+                throw "Capacité inconnue pour $profileId : $capability"
+            }
+        }
+        foreach ($tool in @($profile.tools)) {
+            if ($knownTools -notcontains [string]$tool) {
+                throw "Outil inconnu pour $profileId : $tool"
+            }
+        }
+
+        $modelFile = Resolve-RegistryFile -RelativePath ([string]$profile.model_path) -AllowedRoot (Join-Path $ProjectRoot 'models') -Label "Modèle $profileId"
+        if ([bool]$profile.enabled -and -not (Test-Path -LiteralPath $modelFile -PathType Leaf)) {
+            throw "Modèle activé introuvable pour $profileId : $modelFile"
+        }
+        foreach ($promptPath in @($profile.prompt.reliability_path, $profile.prompt.profile_path, $profile.prompt.memory_path)) {
+            $promptFile = Resolve-RegistryFile -RelativePath ([string]$promptPath) -AllowedRoot (Join-Path $ProjectRoot 'config\prompts') -Label "Prompt $profileId"
+            if (-not (Test-Path -LiteralPath $promptFile -PathType Leaf)) {
+                throw "Prompt introuvable pour $profileId : $promptFile"
+            }
+        }
+    }
+
+    if (-not $profileIds.ContainsKey([string]$registry.default_profile_id)) {
+        throw 'Le profil par défaut du registre est introuvable.'
+    }
+    $defaultProfile = Get-RegistryProfile -Registry $registry -ProfileId ([string]$registry.default_profile_id)
+    if (-not [bool]$defaultProfile.enabled) {
+        throw 'Le profil par défaut doit être activé.'
+    }
+
+    return $registry
+}
+
+$ModelRegistryPath = Join-Path $ProjectRoot 'config\models.json'
+$ModelRegistry = Read-ModelRegistry -RegistryPath $ModelRegistryPath
+$DefaultProfileId = [string]$ModelRegistry.default_profile_id
+$DefaultProfile = Get-RegistryProfile -Registry $ModelRegistry -ProfileId $DefaultProfileId
+$ModelExecutable = Resolve-RegistryFile -RelativePath ([string]$ModelRegistry.runtime.executable) -AllowedRoot (Join-Path $ProjectRoot 'runtime\llama.cpp') -Label 'Runtime llama.cpp'
+$ModelRuntimeHost = [string]$ModelRegistry.runtime.host
+$ModelRuntimePort = [int]$ModelRegistry.runtime.port
+$ModelRuntimeModelsEndpoint = 'http://{0}:{1}{2}' -f $ModelRuntimeHost, $ModelRuntimePort, [string]$ModelRegistry.runtime.models_path
 $BackendDirectory = Join-Path $ProjectRoot 'backend'
 $BackendPython = Join-Path $BackendDirectory '.venv\Scripts\python.exe'
 $PackageFile = Join-Path $ProjectRoot 'package.json'
-$ContextSize = 8192
 
 $ComponentDefinitions = [ordered]@{
     model = [ordered]@{
         Label = 'Modèle'
-        Port = 8080
+        Port = $ModelRuntimePort
         ExpectedName = 'llama-server'
         ExpectedPath = $ModelExecutable
-        Endpoint = 'http://127.0.0.1:8080/v1/models'
-        ExpectedContent = 'lea-general'
+        Endpoint = $ModelRuntimeModelsEndpoint
+        ExpectedContent = $null
     }
     backend = [ordered]@{
         Label = 'Backend'
@@ -263,6 +461,7 @@ function Write-Usage {
     Write-Host '  .\lea.ps1 start-core'
     Write-Host '  .\lea.ps1 status-core [-Json]'
     Write-Host '  .\lea.ps1 stop-core'
+    Write-Host '  .\lea.ps1 switch-model -ProfileId <id> [-Json]'
 }
 
 function Get-ObjectValue {
@@ -766,25 +965,56 @@ function Stop-JustStartedProcess {
 }
 
 function Start-Model {
-    param([Parameter(Mandatory = $true)]$State)
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)][string]$ProfileId
+    )
 
     $definition = $ComponentDefinitions.model
+    $profile = Get-RegistryProfile -Registry $ModelRegistry -ProfileId $ProfileId
+    $modelPath = Resolve-RegistryFile -RelativePath ([string]$profile.model_path) -AllowedRoot (Join-Path $ProjectRoot 'models') -Label "Modèle $ProfileId"
+    $modelAlias = [string]$profile.runtime.alias
+    $contextSize = [int]$profile.context_tokens
     Assert-PortFree -Port $definition.Port -ComponentLabel $definition.Label
-    Write-Host 'Démarrage du modèle local...'
+    Write-Host "Démarrage du modèle local $([string]$profile.display_name)..."
 
-    # Un seul slot conversationnel utilise la fenêtre native validée. Le mode
-    # sans réflexion est imposé par /no_think dans la copie interne du backend.
-    $arguments = '-m "' + $ModelPath + '" -ngl 99 -c ' + $ContextSize + ' -np 1 --host 127.0.0.1 --port 8080 --jinja --alias lea-general'
+    # Tous les paramètres significatifs proviennent du profil central validé.
+    $runtime = $profile.runtime
+    $arguments = '-m "' + $modelPath + '" -c ' + $contextSize + ' -np ' + [int]$runtime.parallel_slots + ' --host ' + [string]$ModelRegistry.runtime.host + ' --port ' + [int]$ModelRegistry.runtime.port + ' --threads ' + [int]$runtime.threads + ' --batch-size ' + [int]$runtime.batch_size + ' --ubatch-size ' + [int]$runtime.ubatch_size + ' --cache-type-k ' + [string]$runtime.cache_type_k + ' --cache-type-v ' + [string]$runtime.cache_type_v + ' --prio ' + [int]$runtime.priority + ' --alias ' + $modelAlias
+    if ([string]$runtime.gpu_layers -ne 'auto') {
+        $arguments += ' --gpu-layers ' + [int]$runtime.gpu_layers
+    }
+    if ([bool]$runtime.jinja) {
+        $arguments += ' --jinja'
+    }
+    if (-not [bool]$runtime.mmap) {
+        $arguments += ' --no-mmap'
+    }
+    if ([bool]$runtime.fit) {
+        $arguments += ' --fit on --fit-target ' + [int]$runtime.fit_target_mib + ' --fit-ctx ' + [int]$runtime.fit_context_min_tokens
+    }
     $process = $null
     try {
         $process = Start-Process -FilePath $ModelExecutable -ArgumentList $arguments -WorkingDirectory $ProjectRoot -PassThru -WindowStyle Hidden -RedirectStandardInput $StandardInputFile -RedirectStandardOutput (Join-Path $StateDirectory 'model.stdout.log') -RedirectStandardError (Join-Path $StateDirectory 'model.stderr.log')
+        $resourcePolicyName = [string]$profile.resource_policy
+        $resourcePolicy = Get-ObjectValue -Object $ModelRegistry.resource_policies -Name $resourcePolicyName
+        if ($null -eq $resourcePolicy) {
+            throw "Politique de ressources introuvable : $resourcePolicyName"
+        }
+        switch ([string]$resourcePolicy.cpu_priority) {
+            'idle' { $process.PriorityClass = 'Idle' }
+            'below_normal' { $process.PriorityClass = 'BelowNormal' }
+            'normal' { $process.PriorityClass = 'Normal' }
+            default { throw "Priorité CPU inconnue : $($resourcePolicy.cpu_priority)" }
+        }
         $launcherRecord = New-ProcessRecord -ProcessId $process.Id -ExpectedName $definition.ExpectedName -ExpectedPath $definition.ExpectedPath
         Set-ComponentState -State $State -ComponentName 'model' -Value ([ordered]@{
             launcher = $launcherRecord
             listener = $null
+            profileId = $ProfileId
         })
         Write-LeaState -State $State
-        Wait-ForEndpoint -ComponentLabel $definition.Label -Uri $definition.Endpoint -ExpectedContent $definition.ExpectedContent -TimeoutSeconds 120
+        Wait-ForEndpoint -ComponentLabel $definition.Label -Uri $definition.Endpoint -ExpectedContent $modelAlias -TimeoutSeconds 180
         $listenerPids = @(Get-ListeningPids -Port $definition.Port)
         if ($listenerPids.Count -ne 1) {
             throw "Le modèle n’a pas un PID d’écoute unique sur le port $($definition.Port)."
@@ -813,13 +1043,13 @@ function Start-Backend {
     Write-Host 'Démarrage du backend FastAPI...'
 
     $process = $null
-    $previousContextSize = [Environment]::GetEnvironmentVariable('LEA_CONTEXT_SIZE', 'Process')
+    $previousRegistryPath = [Environment]::GetEnvironmentVariable('LEA_MODEL_REGISTRY', 'Process')
     try {
         try {
-            [Environment]::SetEnvironmentVariable('LEA_CONTEXT_SIZE', [string]$ContextSize, 'Process')
+            [Environment]::SetEnvironmentVariable('LEA_MODEL_REGISTRY', $ModelRegistryPath, 'Process')
             $process = Start-Process -FilePath $BackendPython -ArgumentList '-m uvicorn app.main:app --host 127.0.0.1 --port 8000' -WorkingDirectory $BackendDirectory -PassThru -WindowStyle Hidden -RedirectStandardInput $StandardInputFile -RedirectStandardOutput (Join-Path $StateDirectory 'backend.stdout.log') -RedirectStandardError (Join-Path $StateDirectory 'backend.stderr.log')
         } finally {
-            [Environment]::SetEnvironmentVariable('LEA_CONTEXT_SIZE', $previousContextSize, 'Process')
+            [Environment]::SetEnvironmentVariable('LEA_MODEL_REGISTRY', $previousRegistryPath, 'Process')
         }
         $launcherRecord = New-ProcessRecord -ProcessId $process.Id -ExpectedName $definition.ExpectedName -ExpectedPath $definition.ExpectedPath
         Set-ComponentState -State $State -ComponentName 'backend' -Value ([ordered]@{
@@ -887,6 +1117,37 @@ function Start-Frontend {
     }
 }
 
+function Get-ModelProfileIdFromState {
+    # Les anciens états sans profil restent lisibles comme profil Général.
+    param($State)
+
+    if ($null -eq $State) {
+        return $DefaultProfileId
+    }
+    $components = Get-ObjectValue -Object $State -Name 'components'
+    $modelState = Get-ObjectValue -Object $components -Name 'model'
+    $recordedProfileId = Get-ObjectValue -Object $modelState -Name 'profileId'
+    if ([string]::IsNullOrWhiteSpace([string]$recordedProfileId)) {
+        return $DefaultProfileId
+    }
+    [void](Get-RegistryProfile -Registry $ModelRegistry -ProfileId ([string]$recordedProfileId))
+    return [string]$recordedProfileId
+}
+
+function Get-EndpointExpectedContent {
+    # L'alias attendu du modèle suit l'état actif, jamais une constante du frontend.
+    param(
+        [Parameter(Mandatory = $true)][string]$ComponentName,
+        $State
+    )
+
+    if ($ComponentName -ne 'model') {
+        return $ComponentDefinitions[$ComponentName].ExpectedContent
+    }
+    $profileId = Get-ModelProfileIdFromState -State $State
+    return [string](Get-RegistryProfile -Registry $ModelRegistry -ProfileId $profileId).runtime.alias
+}
+
 function Get-StateSummary {
     param(
         [Parameter(Mandatory = $true)]$State,
@@ -931,11 +1192,15 @@ function Get-StateSummary {
 }
 
 function Test-AllEndpointsReady {
-    param([string[]]$ComponentNames = $AllComponentNames)
+    param(
+        [string[]]$ComponentNames = $AllComponentNames,
+        $State
+    )
 
     foreach ($componentName in $ComponentNames) {
         $definition = $ComponentDefinitions[$componentName]
-        if (-not (Test-Endpoint -Uri $definition.Endpoint -ExpectedContent $definition.ExpectedContent)) {
+        $expectedContent = Get-EndpointExpectedContent -ComponentName $componentName -State $State
+        if (-not (Test-Endpoint -Uri $definition.Endpoint -ExpectedContent $expectedContent)) {
             return $false
         }
     }
@@ -973,7 +1238,8 @@ function Get-CoreStatus {
             } elseif ($item.LauncherCheck.Exists -and -not $item.LauncherCheck.Verified) {
                 $componentStatus = 'error'
             } elseif ($item.Active -and $item.LauncherCheck.Exists -and $item.LauncherCheck.Verified) {
-                if (Test-Endpoint -Uri $definition.Endpoint -ExpectedContent $definition.ExpectedContent) {
+                $expectedContent = Get-EndpointExpectedContent -ComponentName $componentName -State $State
+                if (Test-Endpoint -Uri $definition.Endpoint -ExpectedContent $expectedContent) {
                     $componentStatus = 'ready'
                 } else {
                     $componentStatus = 'error'
@@ -1020,6 +1286,7 @@ function Get-CoreStatus {
         state = $stateName
         model = $componentStates.model
         backend = $componentStates.backend
+        active_profile_id = if ($null -ne $State -and $null -ne (Get-ObjectValue -Object (Get-StateComponents -State $State) -Name 'model')) { Get-ModelProfileIdFromState -State $State } else { $null }
         message = $message
     }
 }
@@ -1381,12 +1648,18 @@ function Stop-LeaFromState {
 }
 
 function Assert-RequiredFiles {
-    param([string[]]$ComponentNames = $AllComponentNames)
+    param(
+        [string[]]$ComponentNames = $AllComponentNames,
+        [string]$ModelProfileId = $DefaultProfileId
+    )
 
     $requiredFiles = @()
+    $modelProfile = Get-RegistryProfile -Registry $ModelRegistry -ProfileId $ModelProfileId
+    $modelPath = Resolve-RegistryFile -RelativePath ([string]$modelProfile.model_path) -AllowedRoot (Join-Path $ProjectRoot 'models') -Label "Modèle $ModelProfileId"
     if ($ComponentNames -contains 'model') {
+        $requiredFiles += [pscustomobject]@{ Description = 'le registre des modèles'; Path = $ModelRegistryPath }
         $requiredFiles += [pscustomobject]@{ Description = 'llama-server.exe'; Path = $ModelExecutable }
-        $requiredFiles += [pscustomobject]@{ Description = 'le modèle général Huihui'; Path = $ModelPath }
+        $requiredFiles += [pscustomobject]@{ Description = "le modèle $([string]$modelProfile.display_name)"; Path = $modelPath }
     }
 
     if ($ComponentNames -contains 'backend') {
@@ -1400,6 +1673,17 @@ function Assert-RequiredFiles {
     foreach ($requiredFile in $requiredFiles) {
         if (-not (Test-Path -LiteralPath $requiredFile.Path -PathType Leaf)) {
             throw "Fichier requis introuvable : $($requiredFile.Path) ($($requiredFile.Description))."
+        }
+    }
+
+    if ($ComponentNames -contains 'model') {
+        $actualSize = (Get-Item -LiteralPath $modelPath).Length
+        if ($actualSize -ne [int64]$modelProfile.expected_size_bytes) {
+            throw "Taille invalide pour le modèle $ModelProfileId : $actualSize octets."
+        }
+        $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $modelPath).Hash.ToLowerInvariant()
+        if ($actualHash -ne [string]$modelProfile.expected_sha256) {
+            throw "SHA-256 invalide pour le modèle $ModelProfileId."
         }
     }
 
@@ -1433,7 +1717,8 @@ function Get-ComponentsToStart {
         }
 
         if ($item.Active -and $item.LauncherCheck.Exists -and $item.LauncherCheck.Verified) {
-            if (-not (Test-Endpoint -Uri $definition.Endpoint -ExpectedContent $definition.ExpectedContent)) {
+            $expectedContent = Get-EndpointExpectedContent -ComponentName $componentName -State $State
+            if (-not (Test-Endpoint -Uri $definition.Endpoint -ExpectedContent $expectedContent)) {
                 throw "$($definition.Label) est enregistré comme actif mais son point de contrôle ne répond pas. Exécutez .\lea.ps1 stop avant un nouveau démarrage."
             }
 
@@ -1454,12 +1739,13 @@ function Get-ComponentsToStart {
 function Start-ComponentFromState {
     param(
         [Parameter(Mandatory = $true)]$State,
-        [Parameter(Mandatory = $true)][string]$ComponentName
+        [Parameter(Mandatory = $true)][string]$ComponentName,
+        [string]$ModelProfileId = $DefaultProfileId
     )
 
     switch ($ComponentName) {
         'model' {
-            Start-Model -State $State
+            Start-Model -State $State -ProfileId $ModelProfileId
             return
         }
         'backend' {
@@ -1480,10 +1766,11 @@ function Start-LeaComponents {
     param(
         [Parameter(Mandatory = $true)][string[]]$ComponentNames,
         [Parameter(Mandatory = $true)][string]$ReadyMessage,
-        [Parameter(Mandatory = $true)][string]$AlreadyStartedMessage
+        [Parameter(Mandatory = $true)][string]$AlreadyStartedMessage,
+        [string]$ModelProfileId = $DefaultProfileId
     )
 
-    Assert-RequiredFiles -ComponentNames $ComponentNames
+    Assert-RequiredFiles -ComponentNames $ComponentNames -ModelProfileId $ModelProfileId
 
     $state = Read-LeaState
     if ($null -eq $state) {
@@ -1515,16 +1802,16 @@ function Start-LeaComponents {
     try {
         foreach ($componentName in $componentsToStart) {
             $attemptedComponentNames += $componentName
-            Start-ComponentFromState -State $state -ComponentName $componentName
+            Start-ComponentFromState -State $state -ComponentName $componentName -ModelProfileId $ModelProfileId
         }
 
         $requestedSummary = Get-StateSummary -State $state -ComponentNames $ComponentNames
-        if (-not $requestedSummary.AllActive -or -not (Test-AllEndpointsReady -ComponentNames $ComponentNames)) {
+        if (-not $requestedSummary.AllActive -or -not (Test-AllEndpointsReady -ComponentNames $ComponentNames -State $state)) {
             throw 'Les composants demandés ne sont pas tous prêts après leur démarrage.'
         }
 
         $allSummary = Get-StateSummary -State $state -ComponentNames $AllComponentNames
-        $phase = if ($allSummary.AllActive -and (Test-AllEndpointsReady -ComponentNames $AllComponentNames)) { 'running' } else { 'partial' }
+        $phase = if ($allSummary.AllActive -and (Test-AllEndpointsReady -ComponentNames $AllComponentNames -State $state)) { 'running' } else { 'partial' }
         Set-ObjectValue -Object $state -Name 'phase' -Value $phase
         Write-LeaState -State $state
 
@@ -1596,6 +1883,155 @@ function Stop-Core {
     Write-Host 'Le cœur de Léa est arrêté.'
 }
 
+function Switch-LeaModel {
+    # Bascule en série : ancien modèle totalement arrêté avant le nouveau, avec rollback.
+    param(
+        [Parameter(Mandatory = $true)][string]$TargetProfileId,
+        [switch]$JsonOutput
+    )
+
+    $targetProfile = Get-RegistryProfile -Registry $ModelRegistry -ProfileId $TargetProfileId
+    if (-not [bool]$targetProfile.enabled) {
+        throw "Le profil $TargetProfileId est désactivé."
+    }
+    $state = Read-LeaState
+    if ($null -eq $state) {
+        throw 'Le cœur de Léa doit être démarré avant de changer de profil.'
+    }
+    $summary = Get-StateSummary -State $state -ComponentNames $CoreComponentNames
+    if (-not $summary.AllActive -or -not (Test-AllEndpointsReady -ComponentNames $CoreComponentNames -State $state)) {
+        throw 'Le cœur de Léa doit être entièrement prêt avant de changer de profil.'
+    }
+    try {
+        $activity = Invoke-RestMethod -UseBasicParsing -Uri 'http://127.0.0.1:8000/api/runtime/activity' -TimeoutSec 5
+    } catch {
+        throw 'Le backend ne peut pas confirmer que le changement de profil est sûr.'
+    }
+    if ([bool]$activity.generation_active -or [bool]$activity.agent_run_active) {
+        throw 'Le changement de profil est interdit pendant une génération ou un run agent.'
+    }
+
+    $previousProfileId = Get-ModelProfileIdFromState -State $state
+    if ($previousProfileId -eq $TargetProfileId) {
+        $status = Get-CoreStatus -State $state
+        if ($JsonOutput) { $status | ConvertTo-Json -Compress }
+        return
+    }
+
+    try {
+        Assert-RequiredFiles -ComponentNames @('model') -ModelProfileId $TargetProfileId
+        Stop-LeaFromState -State $state -ComponentNames @('model') -KeepLogs
+        $state = Read-LeaState
+        if ($null -eq $state) {
+            $state = New-LeaState
+        }
+        Ensure-EmptyStandardInputFile
+        Set-ObjectValue -Object $state -Name 'phase' -Value 'switching'
+        Write-LeaState -State $state
+
+        Start-Model -State $state -ProfileId $TargetProfileId
+        if (-not (Test-AllEndpointsReady -ComponentNames $CoreComponentNames -State $state)) {
+            throw "Le profil $TargetProfileId n'est pas prêt après son démarrage."
+        }
+        Set-ObjectValue -Object $state -Name 'phase' -Value 'partial'
+        Write-LeaState -State $state
+    } catch {
+        $switchFailure = $_.Exception.Message
+        try {
+            # Une panne peut arriver pendant l'arrêt lui-même si un processus
+            # tiers prend le port libéré. On ne l'adopte jamais et on ne le tue
+            # jamais : seuls les PID enregistrés et vérifiés peuvent être arrêtés.
+            $rollbackState = Read-LeaState
+            if ($null -eq $rollbackState) {
+                $rollbackState = New-LeaState
+            }
+
+            $rollbackReady = $false
+            $rollbackSummary = Get-StateSummary -State $rollbackState -ComponentNames @('model')
+            $rollbackItem = $rollbackSummary.Items.model
+            if (($rollbackItem.Check.Exists -and -not $rollbackItem.Check.Verified) -or
+                ($rollbackItem.LauncherCheck.Exists -and -not $rollbackItem.LauncherCheck.Verified)) {
+                throw "L’identité du modèle enregistré est ambiguë."
+            }
+
+            if ($rollbackItem.Check.Exists -or $rollbackItem.LauncherCheck.Exists) {
+                $recordedProfileId = Get-ModelProfileIdFromState -State $rollbackState
+                $expectedAlias = [string](Get-RegistryProfile -Registry $ModelRegistry -ProfileId $previousProfileId).runtime.alias
+                if ($recordedProfileId -eq $previousProfileId -and
+                    $rollbackItem.Active -and
+                    $rollbackItem.LauncherCheck.Exists -and
+                    $rollbackItem.LauncherCheck.Verified -and
+                    (Test-Endpoint -Uri $ComponentDefinitions.model.Endpoint -ExpectedContent $expectedAlias)) {
+                    $rollbackReady = $true
+                } else {
+                    try {
+                        Stop-LeaFromState -State $rollbackState -ComponentNames @('model') -KeepLogs
+                    } catch {
+                        # Si les PID gérés sont réellement partis, une occupation
+                        # étrangère du port est traitée plus bas par attente seule.
+                        $afterStopSummary = Get-StateSummary -State $rollbackState -ComponentNames @('model')
+                        $afterStopItem = $afterStopSummary.Items.model
+                        if ($afterStopItem.Check.Exists -or $afterStopItem.LauncherCheck.Exists) {
+                            throw
+                        }
+                    }
+                }
+            }
+
+            if (-not $rollbackReady) {
+                $rollbackState = Read-LeaState
+                if ($null -eq $rollbackState) {
+                    $rollbackState = New-LeaState
+                } else {
+                    $staleSummary = Get-StateSummary -State $rollbackState -ComponentNames @('model')
+                    $staleItem = $staleSummary.Items.model
+                    if (($staleItem.Check.Exists -and -not $staleItem.Check.Verified) -or
+                        ($staleItem.LauncherCheck.Exists -and -not $staleItem.LauncherCheck.Verified)) {
+                        throw "L’identité du modèle enregistré est ambiguë."
+                    }
+                    if ($staleItem.Check.Exists -or $staleItem.LauncherCheck.Exists) {
+                        throw "Le modèle enregistré est encore actif après la tentative d’arrêt."
+                    }
+                    Remove-StoppedComponentStates -State $rollbackState -ComponentNames @('model')
+                    Set-ObjectValue -Object $rollbackState -Name 'phase' -Value 'partial'
+                    Write-LeaState -State $rollbackState
+                }
+
+                if (-not (Wait-ForPortRelease -Port $ComponentDefinitions.model.Port -TimeoutSeconds 20)) {
+                    throw "Le port du modèle reste occupé par un processus étranger ; aucun processus inconnu n’a été arrêté."
+                }
+
+                Assert-RequiredFiles -ComponentNames @('model') -ModelProfileId $previousProfileId
+                Ensure-EmptyStandardInputFile
+                Start-Model -State $rollbackState -ProfileId $previousProfileId
+                if (-not (Test-AllEndpointsReady -ComponentNames $CoreComponentNames -State $rollbackState)) {
+                    throw "Le profil $previousProfileId n'est pas prêt après le rollback."
+                }
+            }
+            Set-ObjectValue -Object $rollbackState -Name 'phase' -Value 'partial'
+            Write-LeaState -State $rollbackState
+        } catch {
+            throw "$switchFailure Rollback vers $previousProfileId impossible : $($_.Exception.Message)"
+        }
+        $rollbackStatus = Get-CoreStatus -State $rollbackState
+        Set-ObjectValue -Object $rollbackStatus -Name 'state' -Value 'rollback'
+        Set-ObjectValue -Object $rollbackStatus -Name 'message' -Value "$switchFailure Le profil $previousProfileId a été restauré."
+        if ($JsonOutput) {
+            $rollbackStatus | ConvertTo-Json -Compress
+        } else {
+            Write-Host $rollbackStatus.message -ForegroundColor Red
+        }
+        return
+    }
+
+    $status = Get-CoreStatus -State $state
+    if ($JsonOutput) {
+        $status | ConvertTo-Json -Compress
+    } else {
+        Write-Host "Profil actif : $([string]$targetProfile.display_name)"
+    }
+}
+
 try {
     if ([string]::IsNullOrWhiteSpace($Action)) {
         Write-Usage
@@ -1625,6 +2061,13 @@ try {
         }
         'stop-core' {
             Stop-Core
+            return
+        }
+        'switch-model' {
+            if ([string]::IsNullOrWhiteSpace($ProfileId)) {
+                throw 'Le paramètre -ProfileId est obligatoire pour switch-model.'
+            }
+            Switch-LeaModel -TargetProfileId $ProfileId -JsonOutput:$Json
             return
         }
         default {

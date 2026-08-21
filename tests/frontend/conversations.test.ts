@@ -8,6 +8,13 @@ import {
   createLatestRequestGate,
 } from '../../src/conversations.ts'
 import type { ConversationDetail } from '../../src/conversations.ts'
+import {
+  activeModelProfile,
+  canActivateModel,
+  isModelCatalog,
+  isModelRuntimeStatus,
+} from '../../src/models.ts'
+import { isProjectCatalog } from '../../src/projects.ts'
 
 
 const conversation: ConversationDetail = {
@@ -28,6 +35,8 @@ const conversation: ConversationDetail = {
       content: 'Ancienne question',
       status: 'completed',
       kind: 'conversation',
+      model_id: null,
+      profile_id: null,
       error: null,
       created_at: '2026-08-12T00:00:00.000Z',
       updated_at: '2026-08-12T00:00:00.000Z',
@@ -40,6 +49,8 @@ const conversation: ConversationDetail = {
       content: 'Ancienne réponse',
       status: 'completed',
       kind: 'conversation',
+      model_id: 'lea-general',
+      profile_id: 'general',
       error: null,
       created_at: '2026-08-12T00:00:00.000Z',
       updated_at: '2026-08-12T00:00:00.000Z',
@@ -134,4 +145,69 @@ test('only ordinary conversation turns allow destructive message actions', () =>
     allowsDestructiveMessageAction({ kind: 'memory' }),
     false,
   )
+})
+
+
+test('the public model catalog is validated and resolves its active profile', () => {
+  const catalog = {
+    default_profile_id: 'general',
+    active_profile_id: 'general',
+    profiles: [
+      {
+        id: 'general',
+        display_name: 'Général',
+        model_type: 'chat',
+        role: 'general',
+        enabled: true,
+        display_order: 10,
+        context_tokens: 8192,
+        capabilities: ['conversation'],
+      },
+    ],
+  }
+
+  assert.equal(isModelCatalog(catalog), true)
+  assert.equal(activeModelProfile(catalog)?.display_name, 'Général')
+  assert.equal(isModelCatalog({ ...catalog, profiles: [{ id: 'general' }] }), false)
+})
+
+
+test('model activation is blocked while loading, generating or already active', () => {
+  const ready = {
+    state: 'ready' as const,
+    message: 'Prêt.',
+    active_profile_id: 'general',
+    loading_profile_id: null,
+    generation_active: false,
+    agent_run_active: false,
+  }
+
+  assert.equal(isModelRuntimeStatus(ready), true)
+  assert.equal(canActivateModel(ready, 'development'), true)
+  assert.equal(canActivateModel(ready, 'general'), false)
+  assert.equal(canActivateModel({ ...ready, state: 'loading', loading_profile_id: 'development' }, 'development'), false)
+  assert.equal(canActivateModel({ ...ready, generation_active: true }, 'development'), false)
+  assert.equal(canActivateModel({ ...ready, agent_run_active: true }, 'development'), false)
+  assert.equal(isModelRuntimeStatus({ ...ready, generation_active: 'false' }), false)
+})
+
+
+test('the project catalog accepts only relative public paths and one active id', () => {
+  const catalog = {
+    active_project_id: '123e4567-e89b-42d3-a456-426614174000',
+    projects: [
+      {
+        id: '123e4567-e89b-42d3-a456-426614174000',
+        name: 'Projet Ω',
+        relative_path: 'Projet Ω',
+        created_at: '2026-08-20T00:00:00.000Z',
+        updated_at: '2026-08-20T00:00:00.000Z',
+        active: true,
+      },
+    ],
+  }
+
+  assert.equal(isProjectCatalog(catalog), true)
+  assert.equal(isProjectCatalog({ ...catalog, projects: [{ ...catalog.projects[0], relative_path: 'C:\\secret' }] }), false)
+  assert.equal(isProjectCatalog({ ...catalog, projects: [{ ...catalog.projects[0], relative_path: '\\\\server\\share' }] }), false)
 })

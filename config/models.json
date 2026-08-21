@@ -1,0 +1,241 @@
+{
+  "schema_version": 1,
+  "default_profile_id": "general",
+  "workspace_root": "L:\\IA_WORKSPACE",
+  "runtime": {
+    "executable": "runtime/llama.cpp/llama-server.exe",
+    "host": "127.0.0.1",
+    "port": 8080,
+    "chat_completions_path": "/v1/chat/completions",
+    "models_path": "/v1/models"
+  },
+  "model_types": [
+    "chat",
+    "image_generation",
+    "vision_service",
+    "speech_to_text",
+    "text_to_speech",
+    "web_gateway"
+  ],
+  "capability_catalog": {
+    "conversation": "Réponses conversationnelles locales",
+    "explicit_memory": "Mémoire générale commandée explicitement",
+    "workspace_projects": "Sélection de projets confinés à IA_WORKSPACE",
+    "file_tools": "Outils de fichiers structurés",
+    "development_tools": "Build, tests, typecheck et Git en lecture",
+    "tool_calling": "Appels d’outils structurés",
+    "agent_runs": "Boucle agentique bornée et auditée",
+    "edge_local_testing": "Tests Edge limités aux applications locales"
+  },
+  "tool_catalog": [
+    "list_files",
+    "search_files",
+    "read_file",
+    "read_file_range",
+    "create_file",
+    "apply_patch",
+    "move_file",
+    "rename_file",
+    "delete_file",
+    "make_directory",
+    "file_info",
+    "detect_project",
+    "list_project_commands",
+    "build_project",
+    "run_tests",
+    "run_linter",
+    "run_typecheck",
+    "run_named_script",
+    "git_status",
+    "git_diff",
+    "git_diff_check",
+    "git_log",
+    "start_dev_server",
+    "stop_dev_server",
+    "open_local_app",
+    "inspect_console",
+    "inspect_network",
+    "click_element",
+    "fill_input",
+    "read_dom",
+    "take_screenshot",
+    "close_test_browser"
+  ],
+  "workspace_permissions": {
+    "none": {
+      "project_required": false,
+      "read": false,
+      "write": false,
+      "execute": false
+    },
+    "ia_workspace_project": {
+      "project_required": true,
+      "read": true,
+      "write": true,
+      "execute": true
+    }
+  },
+  "resource_policies": {
+    "general_desktop": {
+      "runtime_warning_bytes": 12884901888,
+      "runtime_hard_limit_bytes": 17179869184,
+      "system_available_warning_bytes": 8589934592,
+      "system_available_critical_bytes": 6442450944,
+      "vram_target_free_mib": 1024,
+      "cpu_priority": "below_normal",
+      "max_threads": 8
+    },
+    "development_desktop": {
+      "runtime_warning_bytes": 23622320128,
+      "runtime_hard_limit_bytes": 25769803776,
+      "system_available_warning_bytes": 8589934592,
+      "system_available_critical_bytes": 6442450944,
+      "vram_target_free_mib": 1024,
+      "cpu_priority": "below_normal",
+      "max_threads": 8
+    }
+  },
+  "agent_policy": {
+    "max_actions": 20,
+    "max_duration_seconds": 900,
+    "max_identical_failures": 3,
+    "max_cumulative_output_bytes": 262144,
+    "max_context_input_tokens": 12500,
+    "max_tool_result_to_model_bytes": 12000
+  },
+  "profiles": [
+    {
+      "id": "general",
+      "display_name": "Général",
+      "model_type": "chat",
+      "role": "general",
+      "enabled": true,
+      "display_order": 10,
+      "model_path": "models/general/Huihui-Qwen3-4B-abliterated-v2-Q4_K_M.gguf",
+      "expected_size_bytes": 2497276672,
+      "expected_sha256": "b5573dc1aec4ab39b0bdce907f7354034ca78a16635288765a4d51ae61e5b6a4",
+      "context_tokens": 8192,
+      "generation": {
+        "max_tokens": 1024,
+        "system_template_reserve_tokens": 512
+      },
+      "runtime": {
+        "alias": "lea-general",
+        "gpu_layers": 99,
+        "parallel_slots": 1,
+        "jinja": true,
+        "mmap": true,
+        "fit": false,
+        "fit_target_mib": 1024,
+        "fit_context_min_tokens": 0,
+        "threads": 8,
+        "batch_size": 512,
+        "ubatch_size": 128,
+        "cache_type_k": "f16",
+        "cache_type_v": "f16",
+        "priority": -1
+      },
+      "prompt": {
+        "reliability_path": "config/prompts/reliability.md",
+        "profile_path": "config/prompts/general.md",
+        "memory_path": "config/prompts/memory.md",
+        "strategy": "general_no_think",
+        "append_no_think": true,
+        "filter_thinking": true
+      },
+      "capabilities": [
+        "conversation",
+        "explicit_memory"
+      ],
+      "tools": [],
+      "workspace_permission": "none",
+      "resource_policy": "general_desktop"
+    },
+    {
+      "id": "development",
+      "display_name": "Programmation",
+      "model_type": "chat",
+      "role": "development",
+      "enabled": true,
+      "display_order": 20,
+      "model_path": "models/development/Qwen3-Coder-30B-A3B-Instruct-Q3_K_M.gguf",
+      "expected_size_bytes": 14711850144,
+      "expected_sha256": "30c83da425db2324444b6a6cecaf4c410038a2ec73a78de2436879dc0316a371",
+      "context_tokens": 16000,
+      "generation": {
+        "max_tokens": 2048,
+        "system_template_reserve_tokens": 1024
+      },
+      "runtime": {
+        "alias": "lea-development",
+        "gpu_layers": "auto",
+        "parallel_slots": 1,
+        "jinja": true,
+        "mmap": false,
+        "fit": true,
+        "fit_target_mib": 900,
+        "fit_context_min_tokens": 16000,
+        "threads": 8,
+        "batch_size": 512,
+        "ubatch_size": 128,
+        "cache_type_k": "q4_0",
+        "cache_type_v": "q4_0",
+        "priority": -1
+      },
+      "prompt": {
+        "reliability_path": "config/prompts/reliability.md",
+        "profile_path": "config/prompts/development.md",
+        "memory_path": "config/prompts/memory.md",
+        "strategy": "development_tools",
+        "append_no_think": false,
+        "filter_thinking": false
+      },
+      "capabilities": [
+        "conversation",
+        "explicit_memory",
+        "workspace_projects",
+        "file_tools",
+        "development_tools",
+        "tool_calling",
+        "agent_runs",
+        "edge_local_testing"
+      ],
+      "tools": [
+        "list_files",
+        "search_files",
+        "read_file",
+        "read_file_range",
+        "create_file",
+        "apply_patch",
+        "move_file",
+        "rename_file",
+        "delete_file",
+        "make_directory",
+        "file_info",
+        "detect_project",
+        "list_project_commands",
+        "build_project",
+        "run_tests",
+        "run_linter",
+        "run_typecheck",
+        "run_named_script",
+        "git_status",
+        "git_diff",
+        "git_diff_check",
+        "git_log",
+        "start_dev_server",
+        "stop_dev_server",
+        "open_local_app",
+        "inspect_console",
+        "inspect_network",
+        "click_element",
+        "fill_input",
+        "read_dom",
+        "take_screenshot",
+        "close_test_browser"
+      ],
+      "workspace_permission": "ia_workspace_project",
+      "resource_policy": "development_desktop"
+    }
+  ]
+}

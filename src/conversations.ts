@@ -12,6 +12,8 @@ export type ConversationMessage = {
   content: string
   status: MessageStatus
   kind: MessageKind
+  model_id: string | null
+  profile_id: string | null
   error: string | null
   created_at: string
   updated_at: string
