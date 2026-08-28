@@ -17,10 +17,12 @@ from app.main import (  # noqa: E402
     CONTEXT_WINDOW_TOKEN_LIMIT,
     FINAL_RESPONSE_TOKEN_LIMIT,
     MAX_USER_MESSAGE_BYTES,
+    MODEL_REGISTRY,
     SYSTEM_AND_TEMPLATE_TOKEN_RESERVE,
     build_internal_user_message,
     build_model_messages,
     estimate_content_tokens,
+    normalize_user_message,
     remove_thinking,
     select_history_for_context,
 )
@@ -146,6 +148,21 @@ class ContextBudgetTests(unittest.TestCase):
             estimate_content_tokens("q" * MAX_USER_MESSAGE_BYTES),
             CONTEXT_INPUT_TOKEN_BUDGET,
         )
+
+    def test_message_limits_follow_the_profile_frozen_for_generation(self) -> None:
+        """Programmation accepte son budget 16K sans élargir le profil Général."""
+
+        general = MODEL_REGISTRY.profile("general")
+        development = MODEL_REGISTRY.profile("development")
+        development_message = "d" * 8000
+
+        self.assertEqual(general.generation.max_user_message_bytes, 6000)
+        self.assertEqual(development.generation.max_user_message_bytes, 12900)
+        self.assertEqual(normalize_user_message(development_message, development), development_message)
+        with self.assertRaisesRegex(ValueError, "6000"):
+            normalize_user_message(development_message, general)
+        with self.assertRaisesRegex(ValueError, "12900"):
+            normalize_user_message("d" * 12901, development)
 
     def test_context_reduction_never_deletes_old_messages_from_sqlite(self) -> None:
         temporary_directory = tempfile.TemporaryDirectory(

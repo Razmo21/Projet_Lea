@@ -161,6 +161,7 @@ test('the public model catalog is validated and resolves its active profile', ()
         enabled: true,
         display_order: 10,
         context_tokens: 8192,
+        max_user_message_bytes: 6000,
         capabilities: ['conversation'],
       },
     ],
@@ -168,7 +169,22 @@ test('the public model catalog is validated and resolves its active profile', ()
 
   assert.equal(isModelCatalog(catalog), true)
   assert.equal(activeModelProfile(catalog)?.display_name, 'Général')
+  assert.equal(activeModelProfile(catalog)?.max_user_message_bytes, 6000)
   assert.equal(isModelCatalog({ ...catalog, profiles: [{ id: 'general' }] }), false)
+  assert.equal(
+    isModelCatalog({
+      ...catalog,
+      profiles: [{ ...catalog.profiles[0], max_user_message_bytes: 0 }],
+    }),
+    false,
+  )
+  assert.equal(
+    isModelCatalog({
+      ...catalog,
+      profiles: [{ ...catalog.profiles[0], max_user_message_bytes: 6000.5 }],
+    }),
+    false,
+  )
 })
 
 

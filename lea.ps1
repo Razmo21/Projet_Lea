@@ -117,7 +117,58 @@ function Read-ModelRegistry {
     $knownCapabilities = @($registry.capability_catalog.PSObject.Properties.Name)
     $knownTools = @($registry.tool_catalog)
     $knownPermissions = @($registry.workspace_permissions.PSObject.Properties.Name)
-    $knownPolicies = @($registry.resource_policies.PSObject.Properties.Name)
+    $resourcePoliciesProperty = $registry.PSObject.Properties['resource_policies']
+    if ($null -eq $resourcePoliciesProperty -or $null -eq $resourcePoliciesProperty.Value) {
+        throw 'Le registre des modèles ne définit pas les politiques de ressources.'
+    }
+    $resourcePolicies = $resourcePoliciesProperty.Value
+    $policyProperties = @($resourcePolicies.PSObject.Properties)
+    if ($policyProperties.Count -eq 0) {
+        throw 'Le registre des modèles ne définit aucune politique de ressources.'
+    }
+    $maxRuntimeHardLimitBytes = [int64]24 * 1024 * 1024 * 1024
+    foreach ($policyProperty in $policyProperties) {
+        $policyName = [string]$policyProperty.Name
+        $policy = $policyProperty.Value
+        if ([string]::IsNullOrWhiteSpace($policyName) -or $null -eq $policy) {
+            throw 'Une politique de ressources est invalide.'
+        }
+        foreach ($fieldName in @(
+            'runtime_warning_bytes',
+            'runtime_hard_limit_bytes',
+            'system_available_warning_bytes',
+            'system_available_critical_bytes',
+            'vram_target_free_mib',
+            'max_threads'
+        )) {
+            $field = $policy.PSObject.Properties[$fieldName]
+            if ($null -eq $field -or
+                ($field.Value -isnot [int] -and $field.Value -isnot [long]) -or
+                [int64]$field.Value -le 0) {
+                throw "La politique de ressources $policyName possède un champ $fieldName invalide."
+            }
+        }
+        $priority = $policy.PSObject.Properties['cpu_priority']
+        if ($null -eq $priority -or
+            $priority.Value -isnot [string] -or
+            @('idle', 'below_normal', 'normal') -notcontains [string]$priority.Value) {
+            throw "La politique de ressources $policyName possède une priorité CPU invalide."
+        }
+        if ([int64]$policy.runtime_warning_bytes -ge [int64]$policy.runtime_hard_limit_bytes -or
+            [int64]$policy.runtime_hard_limit_bytes -ge $maxRuntimeHardLimitBytes) {
+            throw "La limite RAM dure de la politique $policyName doit rester strictement inférieure à 24 GiB."
+        }
+        if ([int64]$policy.system_available_critical_bytes -ge [int64]$policy.system_available_warning_bytes) {
+            throw "Les seuils RAM système de la politique $policyName sont inversés."
+        }
+        if ([int64]$policy.vram_target_free_mib -lt 800 -or [int64]$policy.vram_target_free_mib -gt 1024) {
+            throw "La marge VRAM de la politique $policyName doit rester entre 800 et 1024 MiB."
+        }
+        if ([int64]$policy.max_threads -gt 64) {
+            throw "Le nombre de threads de la politique $policyName est invalide."
+        }
+    }
+    $knownPolicies = @($policyProperties.Name)
 
     foreach ($profile in @($registry.profiles)) {
         $enabled = $profile.PSObject.Properties['enabled']
@@ -131,9 +182,12 @@ function Read-ModelRegistry {
         }
         $profileRuntime = $runtimeDefinition.Value
         $parallelSlots = $profileRuntime.PSObject.Properties['parallel_slots']
+        $threads = $profileRuntime.PSObject.Properties['threads']
         if ($null -eq $parallelSlots -or
-            ($parallelSlots.Value -isnot [int] -and $parallelSlots.Value -isnot [long])) {
-            throw 'Le nombre de slots du profil doit être un entier JSON.'
+            ($parallelSlots.Value -isnot [int] -and $parallelSlots.Value -isnot [long]) -or
+            $null -eq $threads -or
+            ($threads.Value -isnot [int] -and $threads.Value -isnot [long])) {
+            throw 'Le nombre de slots et de threads du profil doit être un entier JSON.'
         }
         foreach ($booleanName in @('jinja', 'mmap', 'fit')) {
             $booleanProperty = $profileRuntime.PSObject.Properties[$booleanName]
@@ -159,6 +213,9 @@ function Read-ModelRegistry {
         if ([int64]$contextTokens.Value -le 0 -or [int64]$parallelSlots.Value -ne 1) {
             throw "Contexte ou nombre de slots invalide pour le profil $profileId."
         }
+        if ($profileId -eq 'development' -and [int64]$contextTokens.Value -ne 16000) {
+            throw 'Le profil development doit utiliser exactement 16 000 tokens de contexte.'
+        }
         $gpuLayers = [string]$profile.runtime.gpu_layers
         if ($gpuLayers -ne 'auto' -and $gpuLayers -notmatch '^\d{1,3}$') {
             throw "Nombre de couches GPU invalide pour le profil $profileId."
@@ -177,6 +234,10 @@ function Read-ModelRegistry {
         }
         if ($knownPermissions -notcontains [string]$profile.workspace_permission -or $knownPolicies -notcontains [string]$profile.resource_policy) {
             throw "Permission workspace ou politique de ressources inconnue pour $profileId."
+        }
+        $resourcePolicy = $resourcePolicies.PSObject.Properties[[string]$profile.resource_policy].Value
+        if ([int64]$threads.Value -gt [int64]$resourcePolicy.max_threads) {
+            throw "Le profil $profileId dépasse le nombre de threads autorisé."
         }
         foreach ($capability in @($profile.capabilities)) {
             if ($knownCapabilities -notcontains [string]$capability) {

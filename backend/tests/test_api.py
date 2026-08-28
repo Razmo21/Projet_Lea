@@ -150,6 +150,65 @@ class ApiTestCase(unittest.TestCase):
             "development",
         )
 
+    def test_message_limits_use_the_profile_frozen_before_any_database_mutation(self) -> None:
+        """Un message 16K reste valide en Programmation et est refusé en Général."""
+
+        self.assertEqual(
+            self.client.post("/api/models/development/activate").status_code,
+            200,
+        )
+        development_message = "d" * 8000
+        created_response = self.send(development_message)
+        self.assertEqual(created_response.status_code, 200)
+        created = created_response.json()
+        self.assertEqual(created["messages"][0]["content"], development_message)
+        self.assertEqual(created["messages"][-1]["profile_id"], "development")
+
+        edited_response = self.client.patch(
+            f"/api/conversations/{created['id']}/messages/{created['messages'][0]['id']}",
+            json={
+                "content": "e" * 8000,
+                "expected_revision": created["revision"],
+            },
+        )
+        self.assertEqual(edited_response.status_code, 200)
+        edited = edited_response.json()
+        self.assertEqual(edited["messages"][0]["content"], "e" * 8000)
+
+        self.assertEqual(
+            self.client.post("/api/models/general/activate").status_code,
+            200,
+        )
+        database_before = self.application.state.database.get_conversation(created["id"])
+        conversations_before = self.application.state.database.list_conversations()
+        calls_before = len(self.gateway.calls)
+
+        self.assertEqual(self.send("g" * 8000).status_code, 422)
+        refused_edit = self.client.patch(
+            f"/api/conversations/{created['id']}/messages/{edited['messages'][0]['id']}",
+            json={
+                "content": "g" * 8000,
+                "expected_revision": edited["revision"],
+            },
+        )
+        self.assertEqual(refused_edit.status_code, 422)
+        retry = self.client.post(
+            f"/api/conversations/{created['id']}/messages/{edited['messages'][0]['id']}/retry",
+            json={"expected_revision": edited["revision"]},
+        )
+        self.assertEqual(retry.status_code, 422)
+        regenerate = self.client.post(
+            f"/api/conversations/{created['id']}/messages/{edited['messages'][1]['id']}/regenerate",
+            json={"expected_revision": edited["revision"]},
+        )
+        self.assertEqual(regenerate.status_code, 422)
+        self.assertEqual(len(self.gateway.calls), calls_before)
+        self.assertEqual(
+            self.application.state.database.get_conversation(created["id"]),
+            database_before,
+        )
+        self.assertEqual(self.application.state.database.list_conversations(), conversations_before)
+
     def test_list_read_search_rename_and_delete(self) -> None:
         conversation = self.send("Éléphant spécial").json()
         listed = self.client.get("/api/conversations").json()["conversations"]
@@ -298,6 +357,7 @@ class ApiTestCase(unittest.TestCase):
             {"conversation_id": None, "message": " ", "expected_revision": None},
             {"conversation_id": None, "message": "nul\x00ici", "expected_revision": None},
             {"conversation_id": None, "message": "x" * 6001, "expected_revision": None},
+            {"conversation_id": None, "message": "x" * 12901, "expected_revision": None},
             {"conversation_id": None, "message": "<think>secret</think>", "expected_revision": None},
             {"conversation_id": None, "message": "Bonjour", "expected_revision": None, "history": []},
             {"conversation_id": None, "message": "Bonjour", "expected_revision": None, "role": "system"},

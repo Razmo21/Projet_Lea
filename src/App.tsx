@@ -7,7 +7,6 @@ import {
   conversationIdFromSearch,
   createLatestRequestGate,
   formatActivity,
-  maxQuestionBytes,
   setConversationInUrl,
 } from './conversations'
 import type {
@@ -574,7 +573,7 @@ function App() {
       setConversationError('Écrivez une question avant de l’envoyer.')
       return
     }
-    if (byteLength(submitted) > maxQuestionBytes) {
+    if (activeProfile && byteLength(submitted) > activeProfile.max_user_message_bytes) {
       setConversationError('La question est trop longue pour le contexte actif de Léa.')
       return
     }
@@ -728,7 +727,7 @@ function App() {
       setConversationError('Le message ne peut pas être vide.')
       return
     }
-    if (byteLength(content) > maxQuestionBytes) {
+    if (activeProfile && byteLength(content) > activeProfile.max_user_message_bytes) {
       setConversationError('Le message est trop long pour le contexte actif de Léa.')
       return
     }

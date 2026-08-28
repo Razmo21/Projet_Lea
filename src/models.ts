@@ -6,6 +6,7 @@ export type PublicModelProfile = {
   enabled: boolean
   display_order: number
   context_tokens: number
+  max_user_message_bytes: number
   capabilities: string[]
 }
 
@@ -45,6 +46,9 @@ export function isModelCatalog(value: unknown): value is ModelCatalog {
       typeof profile.enabled === 'boolean' &&
       typeof profile.display_order === 'number' &&
       typeof profile.context_tokens === 'number' &&
+      typeof profile.max_user_message_bytes === 'number' &&
+      Number.isSafeInteger(profile.max_user_message_bytes) &&
+      profile.max_user_message_bytes > 0 &&
       Array.isArray(profile.capabilities) &&
       profile.capabilities.every((capability) => typeof capability === 'string')
     )

@@ -14,6 +14,9 @@ DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "config" / "models.json"
 PROFILE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 ALLOWED_CPU_PRIORITIES = {"idle", "below_normal", "normal"}
+DEVELOPMENT_CONTEXT_TOKENS = 16_000
+MAX_RUNTIME_HARD_LIMIT_BYTES = 24 * 1024**3
+MESSAGE_TOKEN_OVERHEAD = 8
 
 
 class RegistryError(RuntimeError):
@@ -51,6 +54,7 @@ class GenerationConfig(StrictRegistryModel):
 
     max_tokens: int = Field(gt=0, le=8192)
     system_template_reserve_tokens: int = Field(gt=0, le=8192)
+    max_user_message_bytes: int = Field(gt=0, le=131072)
 
 
 class ProfileRuntimeConfig(StrictRegistryModel):
@@ -131,6 +135,8 @@ class ResourcePolicy(StrictRegistryModel):
 
         if self.runtime_warning_bytes >= self.runtime_hard_limit_bytes:
             raise ValueError("La limite RAM dure doit dépasser le seuil d’avertissement.")
+        if self.runtime_hard_limit_bytes >= MAX_RUNTIME_HARD_LIMIT_BYTES:
+            raise ValueError("La limite RAM dure doit rester strictement inférieure à 24 GiB.")
         if self.system_available_critical_bytes >= self.system_available_warning_bytes:
             raise ValueError("Le seuil RAM système critique doit être inférieur à l’avertissement.")
         if self.cpu_priority not in ALLOWED_CPU_PRIORITIES:
@@ -227,6 +233,13 @@ class ModelProfile(StrictRegistryModel):
         reserved = self.generation.max_tokens + self.generation.system_template_reserve_tokens
         if reserved >= self.context_tokens:
             raise ValueError(f"Le profil {self.id} ne conserve aucun budget d’entrée.")
+        if self.id == "development" and self.context_tokens != DEVELOPMENT_CONTEXT_TOKENS:
+            raise ValueError("Le profil development doit utiliser exactement 16 000 tokens de contexte.")
+        available_input = self.context_tokens - reserved
+        if self.generation.max_user_message_bytes + MESSAGE_TOKEN_OVERHEAD > available_input:
+            raise ValueError(
+                f"Le plafond de message du profil {self.id} dépasse son budget d’entrée."
+            )
         if self.runtime.fit and self.runtime.fit_context_min_tokens != self.context_tokens:
             raise ValueError(
                 f"Le profil {self.id} doit interdire à --fit de réduire son contexte."
@@ -403,6 +416,7 @@ class LoadedModelRegistry:
                 "enabled": profile.enabled,
                 "display_order": profile.display_order,
                 "context_tokens": profile.context_tokens,
+                "max_user_message_bytes": profile.generation.max_user_message_bytes,
                 "capabilities": list(profile.capabilities),
             }
             for profile in sorted(self.document.profiles, key=lambda item: item.display_order)

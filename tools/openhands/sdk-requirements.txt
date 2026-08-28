@@ -1,0 +1,16 @@
+# Client SDK minimal pour le smoke test OpenHands sans Agent Canvas.
+# Les specifications d'outils par defaut du SDK 1.43.1 et le registre de l'Agent
+# Server officiel sont utilises : aucun package Browser/Canvas n'est installe.
+openhands-sdk==1.43.1
+
+# L'intervalle declare par lmnr est actuellement trop large pour pip. Ces versions
+# correspondent entre elles et ont ete verifiees par `pip check` dans le venv ignore.
+lmnr==0.7.60
+opentelemetry-api==1.39.1
+opentelemetry-sdk==1.39.1
+opentelemetry-exporter-otlp-proto-http==1.39.1
+opentelemetry-exporter-otlp-proto-grpc==1.39.1
+opentelemetry-instrumentation==0.60b1
+opentelemetry-instrumentation-threading==0.60b1
+opentelemetry-semantic-conventions==0.60b1
+opentelemetry-semantic-conventions-ai==0.4.13

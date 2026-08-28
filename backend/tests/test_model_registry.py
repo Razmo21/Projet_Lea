@@ -102,6 +102,11 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertEqual([profile.id for profile in registry.document.profiles], ["general", "development"])
         self.assertEqual(registry.profile("general").context_tokens, 8192)
         self.assertEqual(registry.profile("development").context_tokens, 16000)
+        self.assertEqual(registry.profile("development").generation.max_user_message_bytes, 12900)
+        self.assertLess(
+            registry.document.resource_policies["development_desktop"].runtime_hard_limit_bytes,
+            24 * 1024**3,
+        )
         self.assertEqual(registry.profile("development").runtime.gpu_layers, "auto")
         self.assertFalse(registry.profile("development").runtime.mmap)
         self.assertEqual(registry.profile("development").runtime.cache_type_k, "q4_0")
@@ -117,6 +122,8 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertIn("Ne révèle pas de raisonnement interne", development_prompt)
         public = registry.public_profiles()
         self.assertEqual([profile["id"] for profile in public], ["general", "development"])
+        self.assertEqual(public[0]["max_user_message_bytes"], 6000)
+        self.assertEqual(public[1]["max_user_message_bytes"], 12900)
         self.assertNotIn("model_path", public[0])
         self.assertNotIn("expected_sha256", public[0])
 
@@ -196,9 +203,17 @@ class ModelRegistryTests(unittest.TestCase):
             lambda data: data["profiles"][0].__setitem__("context_tokens", 1000),
             lambda data: data["profiles"][0]["runtime"].__setitem__("parallel_slots", 2),
             lambda data: data["profiles"][1]["runtime"].__setitem__("fit_context_min_tokens", 4096),
+            lambda data: data["profiles"][1].__setitem__("context_tokens", 15999),
+            lambda data: data["profiles"][1].__setitem__("context_tokens", 24000),
             lambda data: data["profiles"][1]["runtime"].__setitem__("cache_type_k", "unsafe"),
             lambda data: data["resource_policies"]["general_desktop"].__setitem__(
                 "runtime_warning_bytes", 20000000000
+            ),
+            lambda data: data["resource_policies"]["development_desktop"].__setitem__(
+                "runtime_hard_limit_bytes", 24 * 1024**3
+            ),
+            lambda data: data["profiles"][1]["generation"].__setitem__(
+                "max_user_message_bytes", 12921
             ),
         )
         for mutate in mutations:
@@ -221,6 +236,8 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertEqual(payload["default_profile_id"], "general")
         self.assertEqual(payload["active_profile_id"], "general")
         self.assertEqual([profile["id"] for profile in payload["profiles"]], ["general", "development"])
+        self.assertEqual(payload["profiles"][0]["max_user_message_bytes"], 6000)
+        self.assertEqual(payload["profiles"][1]["max_user_message_bytes"], 12900)
         self.assertNotIn("model_path", json.dumps(payload))
         self.assertNotIn("sha256", json.dumps(payload).lower())
 
@@ -258,6 +275,13 @@ class ModelRegistryTests(unittest.TestCase):
         invalid_documents = (
             (lambda data: data["runtime"].__setitem__("port", "8080"), "port du runtime"),
             (lambda data: data["profiles"][0].__setitem__("enabled", "false"), "type JSON invalide"),
+            (lambda data: data["profiles"][1].__setitem__("context_tokens", 24000), "exactement 16 000"),
+            (
+                lambda data: data["resource_policies"]["development_desktop"].__setitem__(
+                    "runtime_hard_limit_bytes", 24 * 1024**3
+                ),
+                "strictement inférieure à 24 GiB",
+            ),
         )
         for mutate, expected in invalid_documents:
             with self.subTest(expected=expected):

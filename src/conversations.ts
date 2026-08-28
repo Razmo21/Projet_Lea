@@ -1,5 +1,4 @@
 export const backendOrigin = 'http://127.0.0.1:8000'
-export const maxQuestionBytes = 6000
 
 export type MessageStatus = 'pending' | 'completed' | 'failed'
 export type MessageKind = 'conversation' | 'memory'

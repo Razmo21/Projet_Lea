@@ -87,7 +87,7 @@
     },
     "development_desktop": {
       "runtime_warning_bytes": 23622320128,
-      "runtime_hard_limit_bytes": 25769803776,
+      "runtime_hard_limit_bytes": 24696061952,
       "system_available_warning_bytes": 8589934592,
       "system_available_critical_bytes": 6442450944,
       "vram_target_free_mib": 1024,
@@ -117,7 +117,8 @@
       "context_tokens": 8192,
       "generation": {
         "max_tokens": 1024,
-        "system_template_reserve_tokens": 512
+        "system_template_reserve_tokens": 512,
+        "max_user_message_bytes": 6000
       },
       "runtime": {
         "alias": "lea-general",
@@ -164,7 +165,8 @@
       "context_tokens": 16000,
       "generation": {
         "max_tokens": 2048,
-        "system_template_reserve_tokens": 1024
+        "system_template_reserve_tokens": 1024,
+        "max_user_message_bytes": 12900
       },
       "runtime": {
         "alias": "lea-development",

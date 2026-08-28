@@ -40,7 +40,12 @@ from .model_controller import (
     ModelControllerError,
     PowerShellModelController,
 )
-from .model_registry import LoadedModelRegistry, ModelProfile, load_model_registry
+from .model_registry import (
+    MESSAGE_TOKEN_OVERHEAD,
+    LoadedModelRegistry,
+    ModelProfile,
+    load_model_registry,
+)
 from .tool_calling import HttpToolCallingGateway, ToolCallingGateway, ToolDispatcher
 from .workspace import WorkspaceGuard, WorkspacePathError
 
@@ -59,8 +64,12 @@ CONTEXT_INPUT_TOKEN_BUDGET = (
     - SYSTEM_AND_TEMPLATE_TOKEN_RESERVE
 )
 UTF8_BYTES_PER_ESTIMATED_TOKEN = 1
-MESSAGE_TOKEN_OVERHEAD = 8
-MAX_USER_MESSAGE_BYTES = 6000
+MAX_USER_MESSAGE_BYTES = DEFAULT_PROFILE.generation.max_user_message_bytes
+MAX_ENABLED_PROFILE_USER_MESSAGE_BYTES = max(
+    profile.generation.max_user_message_bytes
+    for profile in MODEL_REGISTRY.document.profiles
+    if profile.enabled
+)
 MAX_STORED_ASSISTANT_BYTES = 32768
 MAX_SEARCH_LENGTH = 100
 ALLOWED_BROWSER_ORIGINS = {
@@ -135,15 +144,38 @@ def contains_thinking_marker(content: str) -> bool:
     )
 
 
-def normalize_user_message(content: str) -> str:
+def normalize_received_user_message(content: str) -> str:
+    """Borne la requête avant de connaître le profil réellement figé par le runtime."""
+
     normalized = normalize_text(
         content,
-        max_bytes=MAX_USER_MESSAGE_BYTES,
+        max_bytes=MAX_ENABLED_PROFILE_USER_MESSAGE_BYTES,
         field_name="Le message",
     )
     if contains_thinking_marker(normalized):
         raise ValueError("Le message contient un marqueur interne réservé.")
-    if estimate_content_tokens(normalized) > CONTEXT_INPUT_TOKEN_BUDGET:
+    return normalized
+
+
+def normalize_user_message(
+    content: str,
+    profile: ModelProfile = DEFAULT_PROFILE,
+) -> str:
+    """Valide le message contre le profil figé avant toute écriture de conversation."""
+
+    normalized = normalize_text(
+        content,
+        max_bytes=profile.generation.max_user_message_bytes,
+        field_name="Le message",
+    )
+    if contains_thinking_marker(normalized):
+        raise ValueError("Le message contient un marqueur interne réservé.")
+    input_budget = (
+        profile.context_tokens
+        - profile.generation.max_tokens
+        - profile.generation.system_template_reserve_tokens
+    )
+    if estimate_content_tokens(normalized) > input_budget:
         raise ValueError("Le message est trop grand pour la fenêtre de contexte active.")
     return normalized
 
@@ -335,7 +367,9 @@ class SendMessageRequest(StrictRequest):
     @field_validator("message")
     @classmethod
     def validate_message(cls, content: str) -> str:
-        return normalize_user_message(content)
+        """Applique seulement la borne commune avant la réservation du profil."""
+
+        return normalize_received_user_message(content)
 
     @field_validator("conversation_id")
     @classmethod
@@ -367,7 +401,9 @@ class EditMessageRequest(RevisionRequest):
     @field_validator("content")
     @classmethod
     def validate_content(cls, content: str) -> str:
-        return normalize_user_message(content)
+        """Applique seulement la borne commune avant la réservation du profil."""
+
+        return normalize_received_user_message(content)
 
 
 class StartAgentRunRequest(StrictRequest):
@@ -952,29 +988,30 @@ def create_app(
                 detail="La révision attendue est obligatoire pour une conversation existante.",
             )
 
-        try:
-            memory_command = parse_memory_command(body.message)
-        except EmptyMemoryCommandError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
-
-        if memory_command is not None:
-            # Les commandes explicites contournent entièrement le modèle : la
-            # base écrit le souvenir, sa provenance et la confirmation atomiquement.
-            async with _memory_lock(request):
-                conversation_id = database_instance.apply_memory_command(
-                    memory_command,
-                    body.message,
-                    body.conversation_id,
-                    body.expected_revision,
-                )
-            return database_instance.get_conversation(conversation_id)
-
         runtime = _runtime(request)
         profile_id = await runtime.begin_generation()
-        profile = request.app.state.model_registry.profile(profile_id)
-        gateway = _gateway(request, profile_id)
         generation_handed_off = False
         try:
+            profile = request.app.state.model_registry.profile(profile_id)
+            try:
+                message = normalize_user_message(body.message, profile)
+                memory_command = parse_memory_command(message)
+            except (EmptyMemoryCommandError, ValueError) as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
+
+            if memory_command is not None:
+                # Le profil est figé même pour une commande mémoire afin qu'une
+                # bascule ne puisse pas changer ses règles pendant la transaction.
+                async with _memory_lock(request):
+                    conversation_id = database_instance.apply_memory_command(
+                        memory_command,
+                        message,
+                        body.conversation_id,
+                        body.expected_revision,
+                    )
+                return database_instance.get_conversation(conversation_id)
+
+            gateway = _gateway(request, profile_id)
             if body.conversation_id is None:
                 async with _memory_lock(request):
                     memory_contents = [
@@ -984,7 +1021,7 @@ def create_app(
                     try:
                         model_messages = build_model_messages(
                             [],
-                            body.message,
+                            message,
                             memory_contents,
                             profile,
                             request.app.state.model_registry,
@@ -992,7 +1029,7 @@ def create_app(
                     except (MemoryCapacityError, ValueError) as error:
                         raise HTTPException(status_code=422, detail=str(error)) from error
                     conversation_id, user_message_id = (
-                        database_instance.create_pending_conversation(body.message)
+                        database_instance.create_pending_conversation(message)
                     )
                     lock = _acquire_generation_lock(lock_registry, conversation_id)
                     await lock.acquire()
@@ -1016,7 +1053,7 @@ def create_app(
                         try:
                             model_messages = build_model_messages(
                                 stored_history,
-                                body.message,
+                                message,
                                 memory_contents,
                                 profile,
                                 request.app.state.model_registry,
@@ -1024,7 +1061,7 @@ def create_app(
                         except (MemoryCapacityError, ValueError) as error:
                             raise HTTPException(status_code=422, detail=str(error)) from error
                         user_message_id = database_instance.add_pending_message(
-                            conversation_id, body.message, body.expected_revision
+                            conversation_id, message, body.expected_revision
                         )
                 except BaseException:
                     lock.release()
@@ -1143,22 +1180,25 @@ def create_app(
         request: Request,
         _local: None = Depends(require_local_mutation),
     ) -> dict[str, Any] | JSONResponse:
-        try:
-            edited_memory_command = parse_memory_command(body.content)
-        except EmptyMemoryCommandError as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
-        if edited_memory_command is not None:
-            raise HTTPException(
-                status_code=400,
-                detail="Une commande mémoire doit être envoyée comme nouveau message.",
-            )
         conversation_key = str(conversation_id)
         lock_registry = _locks(request)
         runtime = _runtime(request)
         profile_id = await runtime.begin_generation()
-        profile = request.app.state.model_registry.profile(profile_id)
         lock: asyncio.Lock | None = None
         try:
+            profile = request.app.state.model_registry.profile(profile_id)
+            try:
+                content = normalize_user_message(body.content, profile)
+                edited_memory_command = parse_memory_command(content)
+            except EmptyMemoryCommandError as error:
+                raise HTTPException(status_code=400, detail=str(error)) from error
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
+            if edited_memory_command is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Une commande mémoire doit être envoyée comme nouveau message.",
+                )
             lock = _acquire_generation_lock(lock_registry, conversation_key)
             await lock.acquire()
             async with _memory_lock(request):
@@ -1170,7 +1210,7 @@ def create_app(
                 try:
                     model_messages = build_model_messages(
                         history,
-                        body.content,
+                        content,
                         memory_contents,
                         profile,
                         request.app.state.model_registry,
@@ -1180,7 +1220,7 @@ def create_app(
                 user_message_id = _database(request).edit_user_message(
                     conversation_key,
                     str(message_id),
-                    body.content,
+                    content,
                     body.expected_revision,
                 )
         except BaseException:

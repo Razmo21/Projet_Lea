@@ -669,9 +669,16 @@ try {
     const deletedConversationInStaleTab =
       url === `http://127.0.0.1:8000/api/conversations/${conversationId}` &&
       text.includes('404 (Not Found)')
+    // Le scénario arrête volontairement FastAPI pendant qu'il conserve deux
+    // onglets ouverts. Les rafraîchissements de conversation et de statut de
+    // profil peuvent donc échouer localement, sans masquer d'autre erreur HTTP.
     const intentionalBackendFailure =
-      url.startsWith('http://127.0.0.1:8000/api/conversations') &&
-      (text.includes('409 (Conflict)') || text.includes('ERR_CONNECTION_REFUSED'))
+      (url.startsWith('http://127.0.0.1:8000/api/conversations') &&
+        (text.includes('409 (Conflict)') ||
+          text.includes('ERR_CONNECTION_REFUSED') ||
+          text.includes('ERR_CONNECTION_RESET'))) ||
+      (url === 'http://127.0.0.1:8000/api/models/status' &&
+        text.includes('ERR_CONNECTION_REFUSED'))
     return missingFavicon || deletedConversationInStaleTab || intentionalBackendFailure
   })
   const unexplainedLogErrors = logErrors.filter(
