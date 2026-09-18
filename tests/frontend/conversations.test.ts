@@ -15,6 +15,20 @@ import {
   isModelRuntimeStatus,
 } from '../../src/models.ts'
 import { isProjectCatalog } from '../../src/projects.ts'
+import {
+  agentRunValidationPresentation,
+  effectiveValidationStatus,
+  isActiveAgentRun,
+  isAgentRun,
+  isAgentRunChanges,
+  latestAgentRunForProject,
+  pollingTone,
+  recordPollingFailure,
+  requireAgentRun,
+  resetPollingHealth,
+  runtimeStatusPresentation,
+} from '../../src/agentRuns.ts'
+import type { AgentRun } from '../../src/agentRuns.ts'
 
 
 const conversation: ConversationDetail = {
@@ -226,4 +240,167 @@ test('the project catalog accepts only relative public paths and one active id',
   assert.equal(isProjectCatalog(catalog), true)
   assert.equal(isProjectCatalog({ ...catalog, projects: [{ ...catalog.projects[0], relative_path: 'C:\\secret' }] }), false)
   assert.equal(isProjectCatalog({ ...catalog, projects: [{ ...catalog.projects[0], relative_path: '\\\\server\\share' }] }), false)
+})
+
+
+test('the browser validates compact persisted OpenHands runs and safe checkpoint diffs', () => {
+  const run = {
+    run_id: '123e4567-e89b-42d3-a456-426614174000',
+    conversation_id: null,
+    project_id: '223e4567-e89b-42d3-a456-426614174000',
+    profile_id: 'development',
+    openhands_session_id: 'sdk-session',
+    task: 'Corrige le test',
+    state: 'running',
+    started_at: '2026-08-28T00:00:00.000Z',
+    finished_at: null,
+    result_summary: null,
+    checkpoint_id: '323e4567-e89b-42d3-a456-426614174000',
+    created_at: '2026-08-28T00:00:00.000Z',
+    updated_at: '2026-08-28T00:00:00.000Z',
+  }
+  assert.equal(isAgentRun(run), true)
+  assert.equal(isActiveAgentRun(run), true)
+  assert.equal(isAgentRun({ ...run, state: 'invented' }), false)
+  assert.equal(
+    isAgentRunChanges({
+      run_id: run.run_id,
+      checkpoint: {
+        checkpoint_id: run.checkpoint_id,
+        run_id: run.run_id,
+        project_id: run.project_id,
+        project_relative_path: 'Projet',
+        project_identity: '1:2',
+        state: 'completed',
+      },
+      changes: [{ relative_path: 'src/main.py', entry_type: 'file', change: 'modified' }],
+    }),
+    true,
+  )
+  assert.equal(
+    isAgentRunChanges({
+      run_id: run.run_id,
+      checkpoint: { project_relative_path: 'C:\\secret' },
+      changes: [],
+    }),
+    false,
+  )
+  assert.equal(
+    isAgentRunChanges({
+      run_id: run.run_id,
+      checkpoint: {
+        checkpoint_id: run.checkpoint_id,
+        run_id: run.run_id,
+        project_id: run.project_id,
+        project_relative_path: 'Projet',
+        project_identity: '1:2',
+        state: 'invented',
+      },
+      changes: [],
+    }),
+    false,
+  )
+})
+
+
+test('a confirmed ready profile stays non-red after one transient polling failure', () => {
+  let health = resetPollingHealth()
+  const ready = runtimeStatusPresentation('Programmation', 'ready', 'Prêt.', health)
+  assert.equal(`status-${ready.tone}`, 'status-ready')
+  assert.equal(ready.message, 'Programmation est prêt.')
+
+  health = recordPollingFailure(health, 'État du modèle indisponible.')
+  assert.equal(pollingTone(health), 'normal')
+  assert.equal(runtimeStatusPresentation('Programmation', 'ready', 'Prêt.', health).tone, 'ready')
+})
+
+
+test('persistent polling failures become visible and a valid response resets them', () => {
+  let health = resetPollingHealth()
+  health = recordPollingFailure(health, 'Premier échec')
+  health = recordPollingFailure(health, 'Deuxième échec')
+  assert.equal(pollingTone(health), 'warning')
+  assert.equal(runtimeStatusPresentation('Programmation', 'ready', 'Prêt.', health).tone, 'warning')
+
+  health = recordPollingFailure(health, 'Troisième échec')
+  assert.equal(pollingTone(health), 'error')
+  assert.equal(runtimeStatusPresentation('Programmation', 'ready', 'Prêt.', health).tone, 'error')
+
+  health = resetPollingHealth()
+  assert.equal(runtimeStatusPresentation('Programmation', 'ready', 'Prêt.', health).tone, 'ready')
+  assert.equal(runtimeStatusPresentation('Programmation', 'error', 'Panne du runtime.', health).tone, 'error')
+})
+
+
+test('an invalid run poll payload is an explicit error and runs stay scoped to the active project', () => {
+  const activeRun: AgentRun = {
+    run_id: '123e4567-e89b-42d3-a456-426614174000',
+    conversation_id: null,
+    project_id: '223e4567-e89b-42d3-a456-426614174000',
+    profile_id: 'development',
+    openhands_session_id: 'sdk-session',
+    task: 'Corrige le test',
+    state: 'completed',
+    started_at: '2026-08-28T00:00:00.000Z',
+    finished_at: '2026-08-28T00:01:00.000Z',
+    result_summary: 'Résultat final vérifié.',
+    checkpoint_id: '323e4567-e89b-42d3-a456-426614174000',
+    created_at: '2026-08-28T00:00:00.000Z',
+    updated_at: '2026-08-28T00:01:00.000Z',
+  }
+  const previousProjectRun: AgentRun = {
+    ...activeRun,
+    run_id: '423e4567-e89b-42d3-a456-426614174000',
+    project_id: '523e4567-e89b-42d3-a456-426614174000',
+  }
+
+  assert.throws(
+    () => requireAgentRun({ ...activeRun, result_summary: { raw: 'tool payload' } }),
+    /statut du run OpenHands est invalide/,
+  )
+  assert.equal(
+    latestAgentRunForProject([previousProjectRun, activeRun], activeRun.project_id)?.run_id,
+    activeRun.run_id,
+  )
+  assert.equal(latestAgentRunForProject([previousProjectRun], activeRun.project_id), null)
+  assert.equal(latestAgentRunForProject([activeRun], null), null)
+})
+
+
+test('only a validated run offers acceptance while historical completed runs stay unverified', () => {
+  const historical: AgentRun = {
+    run_id: '623e4567-e89b-42d3-a456-426614174000',
+    conversation_id: null,
+    project_id: '723e4567-e89b-42d3-a456-426614174000',
+    profile_id: 'development',
+    openhands_session_id: 'sdk-session',
+    task: 'Corrige le test',
+    state: 'completed',
+    started_at: '2026-08-28T00:00:00.000Z',
+    finished_at: '2026-08-28T00:01:00.000Z',
+    result_summary: 'Run historique.',
+    checkpoint_id: '823e4567-e89b-42d3-a456-426614174000',
+    created_at: '2026-08-28T00:00:00.000Z',
+    updated_at: '2026-08-28T00:01:00.000Z',
+  }
+
+  assert.equal(isAgentRun(historical), true)
+  assert.equal(effectiveValidationStatus(historical), 'unverified')
+  assert.equal(agentRunValidationPresentation(historical).tone, 'warning')
+  assert.equal(agentRunValidationPresentation(historical).accepts_changes, false)
+
+  const validated: AgentRun = { ...historical, validation_status: 'validated' }
+  assert.equal(isAgentRun(validated), true)
+  assert.equal(agentRunValidationPresentation(validated).tone, 'ready')
+  assert.equal(agentRunValidationPresentation(validated).accepts_changes, true)
+
+  const failed: AgentRun = {
+    ...historical,
+    state: 'failed',
+    validation_status: 'failed',
+  }
+  assert.equal(agentRunValidationPresentation(failed).tone, 'error')
+  assert.equal(agentRunValidationPresentation(failed).message, 'La validation du run a échoué.')
+  assert.equal(agentRunValidationPresentation(failed).accepts_changes, false)
+  assert.equal(isAgentRun({ ...validated, validation_status: 'invented' }), false)
 })

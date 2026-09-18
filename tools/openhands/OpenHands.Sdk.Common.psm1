@@ -2,45 +2,75 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 # Windows PowerShell 5.1 traite stderr natif comme une erreur sous Stop ; les inspect attendus abaissent localement cette preference.
 
-# Ce bootstrap SDK reste separe de Lea et de l'ancien profil Canvas 22K.
+# Le bootstrap SDK lit les valeurs du profil Programmation central : aucun
+# chemin GGUF, alias, contexte ou endpoint ne possède une seconde vérité ici.
 $projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
+$registryPath = Join-Path $projectRoot 'config\models.json'
+try {
+    $registry = Get-Content -LiteralPath $registryPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    $developmentMatches = @($registry.profiles | Where-Object { $_.id -eq 'development' })
+    if ($developmentMatches.Count -ne 1 -or $null -eq $registry.openhands) {
+        throw 'Le profil Programmation ou sa configuration OpenHands est absent.'
+    }
+    $developmentProfile = $developmentMatches[0]
+    $supportedContexts = @(16000, 18000, 20000, 22000)
+    if ([string]$developmentProfile.agent_engine -ne 'OpenHands' -or $supportedContexts -notcontains [int]$developmentProfile.context_tokens) {
+        throw 'Le registre ne décrit pas une fenêtre OpenHands Qwen2.5 Stage 10 autorisée.'
+    }
+    if ([int]$developmentProfile.runtime.fit_context_min_tokens -ne [int]$developmentProfile.context_tokens) {
+        throw 'Le runtime OpenHands doit reprendre exactement le contexte déclaré par le registre.'
+    }
+    if ([string]$developmentProfile.runtime.alias -ne 'lea-development-openhands') {
+        throw 'L''alias OpenHands du registre est invalide.'
+    }
+    $agentServer = $registry.openhands.agent_server
+    $modelEndpoint = $registry.openhands.model_endpoint
+    if ([string]$agentServer.host -ne '127.0.0.1' -or [string]$modelEndpoint.host -ne '127.0.0.1') {
+        throw 'Les endpoints OpenHands doivent rester locaux.'
+    }
+} catch {
+    throw "Registre OpenHands invalide : $($_.Exception.Message)"
+}
+
 $script:OpenHandsSdkConfig = [ordered]@{
     ProjectRoot = $projectRoot
-    # La generation smoke-v2 isole les conversations de test CamelCase conservees dans l'ancien etat SDK.
+    # La génération smoke-v2 isole les conversations de test de l'état final Léa.
     StateRoot = Join-Path $projectRoot '.lea\openhands-sdk\smoke-v2'
     LogsRoot = Join-Path $projectRoot '.lea\openhands-sdk\smoke-v2\logs'
     StateFile = Join-Path $projectRoot '.lea\openhands-sdk\smoke-v2\bootstrap-state.json'
-    WorkspaceRoot = 'L:\IA_WORKSPACE'
+    WorkspaceRoot = [string]$registry.workspace_root
     WorkspaceContainerPath = '/projects'
     SmokeProjectName = 'OpenHands_SmokeTest'
     SmokeWorkingDirectory = '/projects/OpenHands_SmokeTest'
     AgentContainerName = 'lea-openhands-sdk-smoke-v2'
     AgentStateVolume = 'lea_openhands_sdk_smoke_v2'
     AgentStateContainerPath = '/home/openhands/.openhands'
-    AgentImage = 'ghcr.io/openhands/agent-server@sha256:8ec6bd808b35cf50b7e5032f618ccbb33dd8e2bd80f8d130f12dafee24bab66a'
-    AgentImageTag = 'ghcr.io/openhands/agent-server:1.43.1-python'
-    AgentImageDigest = 'sha256:8ec6bd808b35cf50b7e5032f618ccbb33dd8e2bd80f8d130f12dafee24bab66a'
-    AgentHost = '127.0.0.1'
-    AgentHostPort = 18010
-    AgentContainerPort = 8000
+    AgentImage = [string]$agentServer.image
+    AgentImageTag = [string]$agentServer.image
+    AgentImageDigest = 'sha256:' + ([string]$agentServer.image).Split('@sha256:')[-1]
+    AgentHost = [string]$agentServer.host
+    AgentHostPort = [int]$agentServer.port
+    AgentContainerPort = [int]$agentServer.container_port
     AgentMemoryLimit = '4g'
     AgentCpuLimit = '4'
     AgentPidsLimit = 512
-    LlamaExecutable = Join-Path $projectRoot 'runtime\llama.cpp\llama-server.exe'
-    ModelPath = Join-Path $projectRoot 'models\development\qwen2.5-coder-14b-instruct-q5_k_m.gguf'
-    ModelSizeBytes = [int64]10508873152
-    ModelSha256 = '98ab25e0132e3f1e6d3554e1b64de2b5021908819b740d9c208430117e49a775'
-    ChatTemplatePath = Join-Path $projectRoot 'tools\openhands\templates\qwen2.5-coder-openai-tools.jinja'
-    ChatTemplateSha256 = 'a24779148fa43c5dfeec5a6a40adb2f5bbead90b01cb70a338175070144c69c6'
-    LlamaHost = '127.0.0.1'
-    LlamaPort = 8081
-    ModelAlias = 'lea-development-openhands'
+    LlamaExecutable = Join-Path $projectRoot ([string]$registry.runtime.executable)
+    ModelPath = Join-Path $projectRoot ([string]$developmentProfile.model_path)
+    ModelSizeBytes = [int64]$developmentProfile.expected_size_bytes
+    ModelSha256 = [string]$developmentProfile.expected_sha256
+    ModelRuntime = $developmentProfile.runtime
+    ChatTemplatePath = Join-Path $projectRoot ([string]$registry.openhands.chat_template_path)
+    ChatTemplateSha256 = [string]$registry.openhands.expected_chat_template_sha256
+    LlamaHost = [string]$modelEndpoint.host
+    LlamaPort = [int]$modelEndpoint.port
+    ModelAlias = [string]$developmentProfile.runtime.alias
+    ContextSize = [int]$developmentProfile.context_tokens
     NormalAvailableRamBytes = [int64](6GB)
-    # Le profil nocturne accepte toute marge durable d'au moins 4 Gio sans OOM, pagination severe ni instabilite.
+    # Le profil nocturne accepte toute marge durable d'au moins 4 Gio sans OOM, pagination sévère ni instabilité.
     AcceptableAvailableRamBytes = [int64](4GB)
     WarningAvailableRamBytes = [int64](4GB)
     CriticalAvailableRamBytes = [int64](4GB)
-    AgentToolNames = @('terminal', 'file_editor', 'task_tracker')
+    AgentToolNames = @($agentServer.tool_names)
     AgentToolImportModules = 'openhands.tools.terminal.definition,openhands.tools.file_editor.definition,openhands.tools.task_tracker.definition'
     TiktokenCacheRoot = Join-Path $projectRoot '.lea\openhands\tiktoken'
     TiktokenCacheFileName = '9b5ad71b2ce5302211f9c61530b329a4922fc6a4'
@@ -56,6 +86,17 @@ $script:OpenHandsSdkConfig = [ordered]@{
 # Retourne la configuration immuable du chemin SDK/Agent Server sans Canvas.
 function Get-OpenHandsSdkConfig {
     return [pscustomobject]$script:OpenHandsSdkConfig
+}
+
+# Refuse toute fenêtre de contexte qui ne provient pas du profil Programmation central.
+function Assert-OpenHandsSdkConfiguredContext {
+    param([Parameter(Mandatory = $true)][int]$ContextSize)
+
+    $config = Get-OpenHandsSdkConfig
+    if ($ContextSize -ne [int]$config.ContextSize) {
+        throw "Le contexte OpenHands doit provenir du registre : $($config.ContextSize) tokens, pas $ContextSize."
+    }
+    return $config.ContextSize
 }
 
 # Lit une propriete sans supposer si ConvertFrom-Json a retourne un dictionnaire ou un PSCustomObject.
@@ -250,9 +291,10 @@ function Write-OpenHandsSdkStateAtomically {
 
 # Construit un etat neuf identifiant une seule instance SDK avant tout lancement.
 function New-OpenHandsSdkState {
-    param([Parameter(Mandatory = $true)][ValidateSet(22000, 20000, 18000, 16000)][int]$ContextSize)
+    param([Parameter(Mandatory = $true)][int]$ContextSize)
 
     $config = Get-OpenHandsSdkConfig
+    Assert-OpenHandsSdkConfiguredContext -ContextSize $ContextSize | Out-Null
     return [ordered]@{
         schema_version = 1
         project_root = $config.ProjectRoot
@@ -636,10 +678,12 @@ function Test-OpenHandsSdkMemoryBarrier {
 function Start-OpenHandsSdkLlamaServer {
     param(
         [Parameter(Mandatory = $true)]$State,
-        [Parameter(Mandatory = $true)][ValidateSet(22000, 20000, 18000, 16000)][int]$ContextSize
+        [Parameter(Mandatory = $true)][int]$ContextSize
     )
 
     $config = Get-OpenHandsSdkConfig
+    Assert-OpenHandsSdkConfiguredContext -ContextSize $ContextSize | Out-Null
+    $runtime = $config.ModelRuntime
     Assert-OpenHandsSdkPortFree -Port $config.LlamaPort -Label 'llama-server OpenHands SDK'
     Ensure-OpenHandsSdkStateDirectories
     $stdin = Join-Path $config.StateRoot 'llama.stdin.empty'
@@ -653,23 +697,26 @@ function Start-OpenHandsSdkLlamaServer {
         '--port', [string]$config.LlamaPort,
         '--alias', $config.ModelAlias,
         '--ctx-size', [string]$ContextSize,
-        '--parallel', '1',
-        '--cache-type-k', 'q4_0',
-        '--cache-type-v', 'q4_0',
-        '--cache-ram', '0',
-        '--gpu-layers', 'auto',
-        '--fit', 'on',
-        '--fit-target', '1024',
-        '--fit-ctx', [string]$ContextSize,
-        '--prio', '-1',
-        '--mmap',
-        '--threads', '8',
-        '--batch-size', '512',
-        '--ubatch-size', '128',
-        '--jinja',
-        '--no-skip-chat-parsing',
-        '--chat-template-file', $config.ChatTemplatePath
+        '--parallel', [string][int]$runtime.parallel_slots,
+        '--cache-type-k', [string]$runtime.cache_type_k,
+        '--cache-type-v', [string]$runtime.cache_type_v,
+        '--cache-ram', $(if ([bool]$runtime.cache_ram) { '1' } else { '0' }),
+        '--gpu-layers', [string]$runtime.gpu_layers,
+        '--fit', $(if ([bool]$runtime.fit) { 'on' } else { 'off' }),
+        '--fit-target', [string][int]$runtime.fit_target_mib,
+        '--fit-ctx', [string][int]$runtime.fit_context_min_tokens,
+        '--prio', [string][int]$runtime.priority,
+        '--threads', [string][int]$runtime.threads,
+        '--batch-size', [string][int]$runtime.batch_size,
+        '--ubatch-size', [string][int]$runtime.ubatch_size
     )
+    if ([bool]$runtime.mmap) { $arguments += '--mmap' }
+    if ([bool]$runtime.jinja) {
+        # llama.cpp n'accepte un template Jinja arbitraire que si --jinja le precede.
+        $arguments += '--jinja'
+    }
+    $arguments += @('--chat-template-file', $config.ChatTemplatePath)
+    if (-not [bool]$runtime.skip_chat_parsing) { $arguments += '--no-skip-chat-parsing' }
 
     $process = $null
     $record = $null
@@ -1005,10 +1052,11 @@ function Test-OpenHandsSdkContainerLlamaEndpoint {
 function Start-OpenHandsSdkAgentServer {
     param(
         [Parameter(Mandatory = $true)]$State,
-        [Parameter(Mandatory = $true)][ValidateSet(22000, 20000, 18000, 16000)][int]$ContextSize
+        [Parameter(Mandatory = $true)][int]$ContextSize
     )
 
     $config = Get-OpenHandsSdkConfig
+    Assert-OpenHandsSdkConfiguredContext -ContextSize $ContextSize | Out-Null
     $startedForThisInvocation = $false
     try {
         Assert-OpenHandsSdkPortFree -Port $config.AgentHostPort -Label 'Agent Server OpenHands SDK'
@@ -1048,9 +1096,6 @@ function Start-OpenHandsSdkAgentServer {
             '--env', 'CUSTOM_TIKTOKEN_CACHE_DIR=/home/openhands/.openhands/tiktoken',
             '--env', 'OPENHANDS_SUPPRESS_BANNER=1'
         )
-        if ($ContextSize -eq 16000) {
-            $runArguments += @('--env', 'ALLOW_SHORT_CONTEXT_WINDOWS=true')
-        }
         $runArguments += @(
             $config.AgentImage,
             '--host', '0.0.0.0',
@@ -1226,6 +1271,7 @@ function Get-OpenHandsSdkStatus {
 
 Export-ModuleMember -Function @(
     'Get-OpenHandsSdkConfig',
+    'Assert-OpenHandsSdkConfiguredContext',
     'Get-OpenHandsSdkObjectValue',
     'Set-OpenHandsSdkObjectValue',
     'Assert-OpenHandsSdkWorkspaceRoot',

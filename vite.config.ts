@@ -19,11 +19,24 @@ type LeaCommandResult = {
 type SpawnProcess = (command: string, args: string[], options: unknown) => any
 
 const allowedOrigins = new Set(['http://127.0.0.1:5173'])
+const nodeEnvironment = (
+  globalThis as { process?: { env?: Record<string, string | undefined> } }
+).process?.env
+const powerShellExecutable = `${nodeEnvironment?.SystemRoot ?? 'C:\\Windows'}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
+const localSecurityHeaders = {
+  'Cache-Control': 'no-store',
+  'Content-Security-Policy': "frame-ancestors 'none'",
+  'Referrer-Policy': 'no-referrer',
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+}
 
+// Expose uniquement trois commandes locales bornées pendant le développement Vite.
 function coreController(spawnProcess: SpawnProcess): Plugin {
   let projectRoot = ''
   let operationInProgress = false
 
+  // Envoie un statut non mis en cache avec une forme unique pour toutes les routes.
   function sendJson(response: any, statusCode: number, body: CoreStatus) {
     response.statusCode = statusCode
     response.setHeader('Content-Type', 'application/json; charset=utf-8')
@@ -31,6 +44,7 @@ function coreController(spawnProcess: SpawnProcess): Plugin {
     response.end(JSON.stringify(body))
   }
 
+  // Lance le script fixe avec des arguments choisis dans une table fermée.
   function runLea(action: CoreAction, json = false): Promise<LeaCommandResult> {
     const argumentsByAction: Record<CoreAction, string[]> = {
       'start-core': ['start-core'],
@@ -53,8 +67,9 @@ function coreController(spawnProcess: SpawnProcess): Plugin {
       argumentsToRun.push('-Json')
     }
 
+    // Encadre le processus enfant pour ne résoudre la promesse qu'une seule fois.
     return new Promise((resolve, reject) => {
-      const child = spawnProcess('powershell.exe', argumentsToRun, {
+      const child = spawnProcess(powerShellExecutable, argumentsToRun, {
         cwd: projectRoot,
         shell: false,
         windowsHide: true,
@@ -63,6 +78,7 @@ function coreController(spawnProcess: SpawnProcess): Plugin {
       let stderr = ''
       let settled = false
 
+      // Ignore les événements d'erreur tardifs après la résolution du processus.
       function rejectOnce(error: Error) {
         if (!settled) {
           settled = true
@@ -70,6 +86,7 @@ function coreController(spawnProcess: SpawnProcess): Plugin {
         }
       }
 
+      // Publie ensemble le code de sortie et les deux flux entièrement accumulés.
       function resolveOnce(exitCode: number | null) {
         if (!settled) {
           settled = true
@@ -77,9 +94,11 @@ function coreController(spawnProcess: SpawnProcess): Plugin {
         }
       }
 
+      // Accumule stdout sans l'interpréter avant la fin du processus.
       child.stdout.on('data', (chunk: unknown) => {
         stdout += String(chunk)
       })
+      // Conserve stderr pour le diagnostic local sans l'exposer au navigateur.
       child.stderr.on('data', (chunk: unknown) => {
         stderr += String(chunk)
       })
@@ -96,6 +115,7 @@ function coreController(spawnProcess: SpawnProcess): Plugin {
     })
   }
 
+  // Relit le statut JSON produit par le lanceur et vérifie tous ses champs publics.
   async function readCoreStatus(): Promise<CoreStatus> {
     const result = await runLea('status-core', true)
     let status: CoreStatus
@@ -118,6 +138,7 @@ function coreController(spawnProcess: SpawnProcess): Plugin {
     return status
   }
 
+  // Produit un message public stable sans recopier la sortie PowerShell sensible.
   function failureStatus(action: CoreAction): CoreStatus {
     const actionLabel = action === 'start-core' ? 'Le démarrage' : 'L’arrêt'
     return {
@@ -131,10 +152,13 @@ function coreController(spawnProcess: SpawnProcess): Plugin {
   return {
     name: 'lea-core-controller',
     apply: 'serve',
+    // Fige la racine réellement résolue par Vite avant toute commande locale.
     configResolved(config) {
       projectRoot = config.root
     },
+    // Installe le middleware de contrôle seulement sur le serveur de développement.
     configureServer(server) {
+      // Laisse passer toutes les routes qui n'appartiennent pas au contrôleur local.
       server.middlewares.use((request: any, response: any, next: any) => {
         const path = String(request.url ?? '').split('?')[0]
         const method = String(request.method ?? 'GET').toUpperCase()
@@ -154,6 +178,7 @@ function coreController(spawnProcess: SpawnProcess): Plugin {
             return
           }
 
+          // Répond seulement après validation de la sortie JSON complète.
           void readCoreStatus()
             .then((status) => sendJson(response, 200, status))
             .catch(() =>
@@ -205,6 +230,7 @@ function coreController(spawnProcess: SpawnProcess): Plugin {
         }
 
         operationInProgress = true
+        // Maintient le verrou jusqu'à la fin, y compris lorsque la commande échoue.
         void runLea(action)
           .then(async (result) => {
             if (result.exitCode !== 0) {
@@ -225,6 +251,7 @@ function coreController(spawnProcess: SpawnProcess): Plugin {
 
 const childProcessModule: string = 'node:child_process'
 
+// Charge `child_process` uniquement dans Node et injecte sa fonction testable au plugin.
 export default defineConfig(async () => {
   const childProcess: { spawn: SpawnProcess } = await import(childProcessModule)
 
@@ -234,6 +261,8 @@ export default defineConfig(async () => {
       host: '127.0.0.1',
       port: 5173,
       strictPort: true,
+      // Empêche une page distante d'encadrer l'interface locale ou de réutiliser son contenu en cache.
+      headers: localSecurityHeaders,
       watch: {
         ignored: ['**/.lea/**', '**/.test-runtime/**', '**/data/**'],
       },

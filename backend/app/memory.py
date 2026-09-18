@@ -51,15 +51,17 @@ _APOSTROPHE_TRANSLATION = str.maketrans(
 
 
 class EmptyMemoryCommandError(ValueError):
-    pass
+    """Signale une commande explicite qui ne contient aucun fait."""
 
 
 class MemoryCapacityError(RuntimeError):
-    pass
+    """Signale que les souvenirs ne tiennent plus dans leur budget dédié."""
 
 
 @dataclass(frozen=True, slots=True)
 class MemoryCommand:
+    """Conserve la commande reconnue et ses deux représentations textuelles."""
+
     action: MemoryAction
     content: str
     normalized_content: str
@@ -68,10 +70,14 @@ class MemoryCommand:
 # La forme affichée reste proche du texte de l'utilisateur. La clé normalisée
 # sert uniquement à l'égalité exacte et n'effectue aucun rapprochement flou.
 def normalize_memory_display(content: str) -> str:
+    """Nettoie les espaces tout en gardant une forme proche du texte saisi."""
+
     return " ".join(unicodedata.normalize("NFKC", content).strip().split())
 
 
 def normalize_memory_content(content: str) -> str:
+    """Construit la clé exacte utilisée pour dédupliquer et oublier un fait."""
+
     normalized = normalize_memory_display(content).translate(_APOSTROPHE_TRANSLATION)
     normalized = _TERMINAL_PUNCTUATION.sub("", normalized).rstrip()
     return normalized.casefold()
@@ -117,6 +123,8 @@ def build_memory_context(contents: Sequence[str]) -> str:
 
 
 def estimate_memory_context_tokens(contents: Sequence[str]) -> int:
+    """Estime le coût conservateur du bloc mémoire sérialisé."""
+
     context = build_memory_context(contents)
     if not context:
         return 0
@@ -124,6 +132,8 @@ def estimate_memory_context_tokens(contents: Sequence[str]) -> int:
 
 
 def ensure_memory_capacity(contents: Sequence[str]) -> None:
+    """Refuse l'ensemble complet plutôt que de tronquer silencieusement un souvenir."""
+
     if estimate_memory_context_tokens(contents) > MEMORY_CONTEXT_TOKEN_LIMIT:
         raise MemoryCapacityError(
             "La capacité actuelle de la mémoire générale est atteinte. "

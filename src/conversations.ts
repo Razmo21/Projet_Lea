@@ -33,6 +33,7 @@ export type ConversationDetail = ConversationSummary & {
   messages: ConversationMessage[]
 }
 
+// Réserve les actions destructives aux tours de conversation ordinaires.
 export function allowsDestructiveMessageAction(
   message: Pick<ConversationMessage, 'kind'>,
 ): boolean {
@@ -46,27 +47,33 @@ export type SendMessagePayload = {
   expected_revision: number | null
 }
 
+// Produit un petit séquenceur qui ignore les réponses réseau devenues obsolètes.
 export function createLatestRequestGate() {
   // Un ticket invalide les réponses arrivées après une navigation plus récente.
   let latestRequest = 0
 
   return {
+    // Ouvre une nouvelle génération de requête et retourne son ticket.
     begin(): number {
       latestRequest += 1
       return latestRequest
     },
+    // Rend immédiatement caducs tous les tickets déjà distribués.
     invalidate(): void {
       latestRequest += 1
     },
+    // Expose le ticket courant pour les contrôles synchrones.
     current(): number {
       return latestRequest
     },
+    // Vérifie qu'une réponse appartient encore à la navigation active.
     isCurrent(request: number): boolean {
       return request === latestRequest
     },
   }
 }
 
+// Construit le seul payload autorisé sans recopier l'historique côté navigateur.
 export function buildSendMessagePayload(
   conversation: ConversationDetail | null,
   message: string,
@@ -78,6 +85,7 @@ export function buildSendMessagePayload(
   }
 }
 
+// Extrait uniquement un UUID canonique de la barre d'adresse.
 export function conversationIdFromSearch(search: string): string | null {
   const value = new URLSearchParams(search).get('conversation')
   return value && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
@@ -85,6 +93,7 @@ export function conversationIdFromSearch(search: string): string | null {
     : null
 }
 
+// Synchronise l'URL sans stocker de contenu de conversation dans le navigateur.
 export function setConversationInUrl(conversationId: string | null, replace = false): void {
   const url = new URL(window.location.href)
   if (conversationId) {
@@ -99,6 +108,7 @@ export function setConversationInUrl(conversationId: string | null, replace = fa
   }
 }
 
+// Formate un horodatage valide dans la locale de l'utilisateur.
 export function formatActivity(value: string): string {
   const date = new Date(value)
   return Number.isNaN(date.getTime())

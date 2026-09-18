@@ -49,17 +49,26 @@
   et les supprimer uniquement par une commande explicite `Oublie que`.
 - [x] Valider migrations, concurrence, capacité, modèle réel et Microsoft Edge Stable.
 
-## ÉTAPE 10 — Multi-modèles et profil Programmation — en cours
+## ÉTAPE 10 — Multi-modèles et profil Programmation — terminée
 
-- [x] 10A — Centraliser modèles, profils, prompts, capacités et ressources.
-- [x] 10B — Valider `Qwen3-Coder-30B-A3B-Instruct-Q3_K_M` à 16 000 tokens.
-- [x] 10C — Commuter sûrement Général ↔ Programmation avec rollback.
-- [x] 10D — Ajouter le sélecteur frontend sans recharger la conversation.
-- [x] 10E — Appliquer le domaine strict et le contrat commun de fiabilité.
-- [x] 10F — Enregistrer et sélectionner les projets confinés à `L:\IA_WORKSPACE`.
-- [ ] 10G à 10P — Outils typés, boucle agent, checkpoints, audit, ressources et Edge.
+Configuration Programmation validée : `Qwen2.5-Coder-7B-Instruct Q6_K`,
+22 000 tokens, un slot, `llama.cpp` b10516 (`b95502ba9`) et OpenHands SDK /
+Agent Server 1.43.1 minimal, sans Agent Canvas pendant les runs. Docker Desktop
+reste un prérequis démarré manuellement.
+
+- [x] 10A — Contrat global de fiabilité et anti-hallucination commun aux profils.
+- [x] 10B — Registre modèles/profils unique et cohérent.
+- [x] 10C — Profil Programmation local et disponibilité OpenHands vérifiable.
+- [x] 10D — Commutation sûre Général ↔ Programmation avec rollback.
+- [x] 10E — Sélecteur frontend des profils sans rechargement de conversation.
+- [x] 10F — Projets confinés exactement à `L:\IA_WORKSPACE`.
+- [x] 10G — Intégration agentique OpenHands : lecture, édition, terminal et annulation.
+- [x] 10H — Checkpoints, consultation des changements, acceptation et rollback avec conflit.
+- [x] 10I — Persistance SQLite compacte des runs, sessions et checkpoints.
+- [x] 10J — Validation finale, sécurité minimale et non-régressions.
 
 ## Plus tard
 
-Refonte visuelle complète, mémoire automatique ou sémantique, Santé animale,
-Vision, Web, RAG, voix et autres fonctions.
+Étape 11 — améliorations avancées du profil Programmation ; étape 12 — voix
+partagée. Restent également reportés : refonte visuelle complète, mémoire
+automatique ou sémantique, Santé animale, Vision, Web, RAG et autres fonctions.

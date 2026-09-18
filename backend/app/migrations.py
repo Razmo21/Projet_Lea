@@ -12,7 +12,7 @@ from .memory import (
 
 
 MigrationOperation = str | Callable[[sqlite3.Connection], None]
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 
 
 def _backfill_memory_sources(connection: sqlite3.Connection) -> None:
@@ -272,6 +272,129 @@ MIGRATIONS: Mapping[int, Sequence[MigrationOperation]] = {
         ON projects(name COLLATE NOCASE, id)
         """,
     ),
+    # v6 : persistance minimale des runs agentiques et de leurs checkpoints.
+    # Les contenus de snapshot restent dans le stockage local de checkpoints ;
+    # SQLite ne conserve ici que les métadonnées, hashes et états nécessaires
+    # pour retrouver, accepter ou restaurer un run après redémarrage.
+    6: (
+        """
+        CREATE TABLE agent_runs (
+            run_id TEXT PRIMARY KEY CHECK(length(run_id) = 36),
+            conversation_id TEXT,
+            project_id TEXT NOT NULL CHECK(length(project_id) = 36),
+            profile_id TEXT NOT NULL CHECK(length(profile_id) BETWEEN 1 AND 128),
+            openhands_session_id TEXT,
+            task TEXT NOT NULL CHECK(length(task) BETWEEN 1 AND 16384),
+            state TEXT NOT NULL CHECK(state IN (
+                'pending', 'running', 'waiting_for_tool', 'completed',
+                'failed', 'cancelled', 'limit_reached'
+            )),
+            started_at TEXT,
+            finished_at TEXT,
+            result_summary TEXT,
+            checkpoint_id TEXT UNIQUE CHECK(checkpoint_id IS NULL OR length(checkpoint_id) = 36),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE SET NULL,
+            CHECK(instr(profile_id, char(0)) = 0),
+            CHECK(instr(task, char(0)) = 0),
+            CHECK(openhands_session_id IS NULL OR instr(openhands_session_id, char(0)) = 0),
+            CHECK(result_summary IS NULL OR instr(result_summary, char(0)) = 0)
+        )
+        """,
+        """
+        CREATE INDEX idx_agent_runs_project_created
+        ON agent_runs(project_id, created_at DESC, run_id)
+        """,
+        """
+        CREATE INDEX idx_agent_runs_conversation_created
+        ON agent_runs(conversation_id, created_at DESC, run_id)
+        """,
+        """
+        CREATE TABLE project_checkpoints (
+            checkpoint_id TEXT PRIMARY KEY CHECK(length(checkpoint_id) = 36),
+            run_id TEXT NOT NULL UNIQUE CHECK(length(run_id) = 36),
+            project_id TEXT NOT NULL CHECK(length(project_id) = 36),
+            project_relative_path TEXT NOT NULL CHECK(length(project_relative_path) BETWEEN 1 AND 1024),
+            project_identity TEXT NOT NULL CHECK(length(project_identity) BETWEEN 3 AND 256),
+            storage_key TEXT NOT NULL UNIQUE CHECK(length(storage_key) = 36),
+            state TEXT NOT NULL CHECK(state IN (
+                'ready', 'completed', 'accepted', 'rolled_back', 'conflict', 'failed'
+            )),
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            accepted_at TEXT,
+            rolled_back_at TEXT,
+            conflict_at TEXT,
+            error TEXT,
+            FOREIGN KEY(run_id) REFERENCES agent_runs(run_id) ON DELETE CASCADE,
+            CHECK(instr(project_relative_path, char(0)) = 0),
+            CHECK(instr(project_identity, char(0)) = 0),
+            CHECK(instr(storage_key, char(0)) = 0),
+            CHECK(error IS NULL OR instr(error, char(0)) = 0)
+        )
+        """,
+        """
+        CREATE INDEX idx_project_checkpoints_project_created
+        ON project_checkpoints(project_id, created_at DESC, checkpoint_id)
+        """,
+        """
+        CREATE INDEX idx_project_checkpoints_state_created
+        ON project_checkpoints(state, created_at DESC, checkpoint_id)
+        """,
+        """
+        CREATE TABLE checkpoint_files (
+            checkpoint_id TEXT NOT NULL CHECK(length(checkpoint_id) = 36),
+            relative_path TEXT NOT NULL CHECK(length(relative_path) BETWEEN 1 AND 4096),
+            entry_type TEXT NOT NULL CHECK(entry_type IN ('file', 'directory')),
+            before_exists INTEGER NOT NULL CHECK(before_exists IN (0, 1)),
+            before_sha256 TEXT,
+            before_size INTEGER,
+            before_modified_ns INTEGER,
+            backup_name TEXT,
+            after_exists INTEGER CHECK(after_exists IN (0, 1)),
+            after_entry_type TEXT CHECK(after_entry_type IN ('file', 'directory')),
+            after_sha256 TEXT,
+            after_size INTEGER,
+            after_modified_ns INTEGER,
+            PRIMARY KEY(checkpoint_id, relative_path),
+            FOREIGN KEY(checkpoint_id) REFERENCES project_checkpoints(checkpoint_id) ON DELETE CASCADE,
+            CHECK(instr(relative_path, char(0)) = 0),
+            CHECK(backup_name IS NULL OR instr(backup_name, char(0)) = 0),
+            CHECK(
+                (entry_type = 'directory' AND before_sha256 IS NULL AND before_size IS NULL AND backup_name IS NULL)
+                OR (entry_type = 'file' AND before_exists = 0 AND before_sha256 IS NULL AND before_size IS NULL AND backup_name IS NULL)
+                OR (entry_type = 'file' AND before_exists = 1 AND length(before_sha256) = 64 AND before_size >= 0 AND backup_name IS NOT NULL)
+            ),
+            CHECK(
+                after_exists IS NULL
+                OR (after_exists = 0 AND after_entry_type IS NULL AND after_sha256 IS NULL AND after_size IS NULL AND after_modified_ns IS NULL)
+                OR (after_exists = 1 AND after_entry_type = 'directory' AND after_sha256 IS NULL AND after_size IS NULL)
+                OR (after_exists = 1 AND after_entry_type = 'file' AND length(after_sha256) = 64 AND after_size >= 0)
+            )
+        )
+        """,
+        """
+        CREATE INDEX idx_checkpoint_files_checkpoint_path
+        ON checkpoint_files(checkpoint_id, relative_path)
+        """,
+    ),
+    # v7 : une fin technique OpenHands n'est pas une validation utilisateur.
+    # Les lignes historiques v6 sont conservées mais restent explicitement
+    # non vérifiées : aucune preuve ne peut être inventée a posteriori.
+    7: (
+        """
+        ALTER TABLE agent_runs
+        ADD COLUMN validation_status TEXT NOT NULL DEFAULT 'unverified'
+        CHECK(validation_status IN (
+            'pending', 'validated', 'unverified', 'not_requested', 'failed'
+        ))
+        """,
+        """
+        CREATE INDEX idx_agent_runs_validation_created
+        ON agent_runs(validation_status, created_at DESC, run_id)
+        """,
+    ),
 }
 
 
@@ -283,6 +406,8 @@ def apply_migrations(
     connection: sqlite3.Connection,
     migrations: Mapping[int, Sequence[MigrationOperation]] = MIGRATIONS,
 ) -> int:
+    """Applique chaque version une seule fois et annule entièrement celle qui échoue."""
+
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_migrations (

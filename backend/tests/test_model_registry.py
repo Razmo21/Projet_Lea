@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import subprocess
 import sys
@@ -33,10 +34,21 @@ class ModelRegistryTests(unittest.TestCase):
         self.document = json.loads(
             (PROJECT_DIRECTORY / "config" / "models.json").read_text(encoding="utf-8")
         )
+        # La racine miniature utilise un template factice : son hash doit rester
+        # cohérent avec le registre afin de tester les mêmes contrôles que le dépôt.
+        self.document["openhands"]["expected_chat_template_sha256"] = hashlib.sha256(
+            b"test"
+        ).hexdigest()
+        self.document["openhands"]["agent_runtime"]["expected_tiktoken_cache_sha256"] = (
+            hashlib.sha256(b"test").hexdigest()
+        )
         for relative_path in (
             "runtime/llama.cpp/llama-server.exe",
             self.document["profiles"][0]["model_path"],
             self.document["profiles"][1]["model_path"],
+            self.document["openhands"]["chat_template_path"],
+            self.document["openhands"]["agent_runtime"]["tiktoken_cache_path"],
+            self.document["openhands"]["sdk_python_path"],
         ):
             path = self.root / relative_path
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -101,24 +113,45 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertEqual(registry.document.default_profile_id, "general")
         self.assertEqual([profile.id for profile in registry.document.profiles], ["general", "development"])
         self.assertEqual(registry.profile("general").context_tokens, 8192)
-        self.assertEqual(registry.profile("development").context_tokens, 16000)
+        development = registry.profile("development")
+        self.assertEqual(
+            development.context_tokens,
+            self.document["profiles"][1]["context_tokens"],
+        )
+        self.assertEqual(development.model_name, "Qwen2.5-Coder-7B-Instruct Q6_K")
+        self.assertEqual(development.agent_engine, "OpenHands")
+        self.assertEqual(development.orchestrator, "agent_server_sdk")
+        self.assertEqual(registry.document.agent_policy.max_actions, 32)
+        self.assertEqual(registry.document.agent_policy.max_duration_seconds, 1800)
+        self.assertEqual(registry.document.agent_policy.max_action_response_tokens, 512)
         self.assertEqual(registry.profile("development").generation.max_user_message_bytes, 12900)
         self.assertLess(
             registry.document.resource_policies["development_desktop"].runtime_hard_limit_bytes,
             24 * 1024**3,
         )
         self.assertEqual(registry.profile("development").runtime.gpu_layers, "auto")
-        self.assertFalse(registry.profile("development").runtime.mmap)
-        self.assertEqual(registry.profile("development").runtime.cache_type_k, "q4_0")
-        self.assertEqual(registry.profile("development").runtime.fit_context_min_tokens, 16000)
-        self.assertIn("CONTRAT COMMUN DE FIABILITÉ", registry.system_prompt("general"))
+        self.assertTrue(registry.profile("development").runtime.mmap)
+        self.assertEqual(registry.profile("development").runtime.cache_type_k, "q8_0")
+        self.assertEqual(
+            registry.profile("development").runtime.fit_context_min_tokens,
+            self.document["profiles"][1]["runtime"]["fit_context_min_tokens"],
+        )
+        self.assertEqual(registry.document.openhands.sdk_version, "1.43.1")
+        self.assertEqual(registry.openhands_sdk_python().name.lower(), "python.exe")
+        self.assertEqual(registry.document.openhands.model_endpoint.port, 8081)
+        self.assertEqual(
+            registry.document.openhands.agent_server.tool_names,
+            ["terminal", "file_editor", "task_tracker"],
+        )
+        self.assertIn("CONTRAT DE FIABILITÉ LÉA", registry.system_prompt("general"))
         development_prompt = registry.system_prompt("development")
-        self.assertIn("CONTRAT COMMUN DE FIABILITÉ", development_prompt)
+        self.assertIn("CONTRAT DE FIABILITÉ LÉA", development_prompt)
         self.assertIn(
             "Cette demande ne relève pas du profil Programmation. Passe au profil Général.",
             development_prompt,
         )
-        self.assertIn("N’invente jamais un fichier non lu", development_prompt)
+        self.assertIn("événement outil réel", development_prompt)
+        self.assertIn("Une sortie de terminal, même celle d'un test", development_prompt)
         self.assertIn("Ne révèle pas de raisonnement interne", development_prompt)
         public = registry.public_profiles()
         self.assertEqual([profile["id"] for profile in public], ["general", "development"])
@@ -126,6 +159,33 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertEqual(public[1]["max_user_message_bytes"], 12900)
         self.assertNotIn("model_path", public[0])
         self.assertNotIn("expected_sha256", public[0])
+        self.assertEqual(public[1]["model_name"], "Qwen2.5-Coder-7B-Instruct Q6_K")
+        self.assertEqual(public[1]["agent_engine"], "OpenHands")
+
+    def test_7b_tool_template_uses_the_native_function_call_wrapper(self) -> None:
+        """Pin the Qwen wrapper that llama.cpp natively parses on this GGUF.
+
+        The official Qwen template is retained beside this focused variant for
+        comparison.  The local Q6_K consistently emits ``<function_call>``;
+        keeping that wrapper in the template's example and assistant history
+        lets llama.cpp generate OpenAI ``tool_calls`` without a Python parser.
+        """
+
+        template = (
+            PROJECT_DIRECTORY / self.document["openhands"]["chat_template_path"]
+        ).read_text(encoding="utf-8")
+        native_example = (
+            '<function_call>\\n{\\"name\\": <function-name>, '
+            '\\"arguments\\": <args-json-object>}\\n</function_call>'
+        )
+        escaped_example = (
+            '<function_call>\\n{{\\"name\\": <function-name>, '
+            '\\"arguments\\": <args-json-object>}}\\n</function_call>'
+        )
+        self.assertIn(native_example, template)
+        self.assertNotIn(escaped_example, template)
+        self.assertIn("Call exactly one function per assistant response.", template)
+        self.assertNotIn("You may call one or more functions", template)
 
     def test_invalid_ids_names_hashes_and_types_are_rejected(self) -> None:
         """Les identités et types ambigus échouent avant tout lancement."""
@@ -134,6 +194,12 @@ class ModelRegistryTests(unittest.TestCase):
             (lambda data: data["profiles"][1].__setitem__("id", "general"), "uniques"),
             (lambda data: data["profiles"][0].__setitem__("display_name", " "), "vide"),
             (lambda data: data["profiles"][0].__setitem__("expected_sha256", "bad"), "SHA-256"),
+            (
+                lambda data: data["openhands"]["agent_server"].__setitem__(
+                    "image", "ghcr.io/openhands/agent-server@sha256:" + "z" * 64
+                ),
+                "digest SHA-256",
+            ),
             (lambda data: data["profiles"][0].__setitem__("model_type", "unknown"), "Type de modèle"),
         )
         for mutate, expected in mutations:
@@ -142,6 +208,14 @@ class ModelRegistryTests(unittest.TestCase):
                 mutate(data)
                 with self.assertRaisesRegex(RegistryError, expected):
                     self.load(data)
+
+    def test_workspace_root_must_be_exactly_ia_workspace(self) -> None:
+        """A registry cannot expand Programming authority to a different L: directory."""
+
+        data = copy.deepcopy(self.document)
+        data["workspace_root"] = "L:\\Autre_Dossier"
+        with self.assertRaisesRegex(RegistryError, "lecteur L"):
+            self.load(data)
 
     def test_required_profiles_and_resource_thread_limit_are_rejected(self) -> None:
         """Le registre conserve les deux profils de base et leurs limites CPU centrales."""
@@ -203,8 +277,8 @@ class ModelRegistryTests(unittest.TestCase):
             lambda data: data["profiles"][0].__setitem__("context_tokens", 1000),
             lambda data: data["profiles"][0]["runtime"].__setitem__("parallel_slots", 2),
             lambda data: data["profiles"][1]["runtime"].__setitem__("fit_context_min_tokens", 4096),
-            lambda data: data["profiles"][1].__setitem__("context_tokens", 15999),
-            lambda data: data["profiles"][1].__setitem__("context_tokens", 24000),
+            lambda data: data["profiles"][1].__setitem__("context_tokens", 19_999),
+            lambda data: data["profiles"][1].__setitem__("context_tokens", 24_000),
             lambda data: data["profiles"][1]["runtime"].__setitem__("cache_type_k", "unsafe"),
             lambda data: data["resource_policies"]["general_desktop"].__setitem__(
                 "runtime_warning_bytes", 20000000000
@@ -213,7 +287,10 @@ class ModelRegistryTests(unittest.TestCase):
                 "runtime_hard_limit_bytes", 24 * 1024**3
             ),
             lambda data: data["profiles"][1]["generation"].__setitem__(
-                "max_user_message_bytes", 12921
+                "max_user_message_bytes", 18929
+            ),
+            lambda data: data["agent_policy"].__setitem__(
+                "max_action_response_tokens", 2049
             ),
         )
         for mutate in mutations:
@@ -222,6 +299,31 @@ class ModelRegistryTests(unittest.TestCase):
                 mutate(data)
                 with self.assertRaises(RegistryError):
                     self.load(data)
+
+    def test_openhands_engine_metadata_and_model_integrity_are_checked(self) -> None:
+        """Le cerveau, le SDK et ses outils restent cohérents dans une seule source."""
+
+        invalid_mutations = (
+            lambda data: data["profiles"][1].__setitem__("agent_engine", "direct"),
+            lambda data: data["profiles"][1].__setitem__("model_name", "Qwen3-Coder-30B"),
+            lambda data: data["openhands"]["agent_server"].__setitem__("host", "0.0.0.0"),
+            lambda data: data["openhands"]["agent_server"].__setitem__("tool_names", ["terminal"]),
+            lambda data: data["profiles"][1].__setitem__("tools", ["terminal"]),
+            lambda data: data["openhands"].__setitem__("expected_chat_template_sha256", "bad"),
+            lambda data: data["openhands"]["agent_runtime"].__setitem__("state_volume", "bad volume"),
+        )
+        for mutate in invalid_mutations:
+            with self.subTest(mutation=mutate):
+                data = copy.deepcopy(self.document)
+                mutate(data)
+                with self.assertRaises(RegistryError):
+                    self.load(data)
+
+        data = copy.deepcopy(self.document)
+        data["profiles"][1]["expected_size_bytes"] = 4
+        data["profiles"][1]["expected_sha256"] = hashlib.sha256(b"test").hexdigest()
+        registry = self.load(data)
+        self.assertEqual(registry.verify_model_integrity("development").read_bytes(), b"test")
 
     def test_models_api_is_driven_by_registry_and_keeps_paths_private(self) -> None:
         """FastAPI expose la liste dynamique sans dupliquer les profils côté frontend."""
@@ -260,7 +362,7 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertIn("prompt reliability.md", messages[0]["content"])
 
     def test_powershell_model_endpoint_is_derived_from_the_registry(self) -> None:
-        """Le lanceur réutilise le port et la route modèles centralisés, sans valeur 8080."""
+        """Le lanceur direct reste lié au registre et ne peut pas lancer OpenHands au mauvais port."""
 
         script = (PROJECT_DIRECTORY / "lea.ps1").read_text(encoding="utf-8")
 
@@ -268,6 +370,8 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertIn("Port = $ModelRuntimePort", script)
         self.assertIn("Endpoint = $ModelRuntimeModelsEndpoint", script)
         self.assertNotIn("Port = 8080", script)
+        self.assertIn("$profile.agent_engine -ne 'direct'", script)
+        self.assertIn("contrôleur OpenHands de Léa", script)
 
     def test_powershell_rejects_wrong_json_types_before_status(self) -> None:
         """Le lanceur refuse les chaînes déguisées en port ou booléen avant tout run."""
@@ -275,7 +379,7 @@ class ModelRegistryTests(unittest.TestCase):
         invalid_documents = (
             (lambda data: data["runtime"].__setitem__("port", "8080"), "port du runtime"),
             (lambda data: data["profiles"][0].__setitem__("enabled", "false"), "type JSON invalide"),
-            (lambda data: data["profiles"][1].__setitem__("context_tokens", 24000), "exactement 16 000"),
+            (lambda data: data["profiles"][1].__setitem__("context_tokens", 24_000), "fenêtre Stage 10 autorisée"),
             (
                 lambda data: data["resource_policies"]["development_desktop"].__setitem__(
                     "runtime_hard_limit_bytes", 24 * 1024**3

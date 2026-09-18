@@ -102,6 +102,18 @@ class ApiTestCase(unittest.TestCase):
             },
         )
 
+    def test_local_api_responses_are_not_cacheable_or_frameable(self) -> None:
+        """Sensitive local data must not remain cached or render inside a hostile frame."""
+
+        response = self.client.get("/api/conversations")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertEqual(response.headers["x-content-type-options"], "nosniff")
+        self.assertEqual(response.headers["x-frame-options"], "DENY")
+        self.assertEqual(response.headers["referrer-policy"], "no-referrer")
+        self.assertIn("frame-ancestors 'none'", response.headers["content-security-policy"])
+
     def test_first_message_creates_persistent_conversation_from_original_text(self) -> None:
         response = self.send("  Bonjour Léa  ")
 
@@ -138,7 +150,7 @@ class ApiTestCase(unittest.TestCase):
 
         conversation = self.send("const n: number = 3").json()
         assistant = conversation["messages"][-1]
-        self.assertEqual(assistant["model_id"], "lea-development")
+        self.assertEqual(assistant["model_id"], "lea-development-openhands")
         self.assertEqual(assistant["profile_id"], "development")
         self.assertFalse(self.gateway.calls[-1][-1]["content"].endswith("/no_think"))
 
@@ -321,6 +333,13 @@ class ApiTestCase(unittest.TestCase):
             json={"conversation_id": None, "message": "Interdit", "expected_revision": None},
         )
         self.assertEqual(foreign.status_code, 403)
+
+    def test_untrusted_host_is_rejected_before_local_api_access(self) -> None:
+        """Un nom DNS tiers ne peut pas rebondir vers l'API liée au loopback."""
+
+        response = self.client.get("/api/models", headers={"Host": "attacker.example"})
+
+        self.assertEqual(response.status_code, 400)
 
     def test_missing_conversation_and_message_return_404(self) -> None:
         missing_conversation_id = "123e4567-e89b-42d3-a456-426614174000"

@@ -45,8 +45,20 @@ h1 {
   margin: 0;
 }
 
-.core-error {
+.status-error {
   color: #b42318;
+}
+
+.status-normal {
+  color: #475569;
+}
+
+.status-ready {
+  color: #067647;
+}
+
+.status-warning {
+  color: #b54708;
 }
 
 .core-buttons {
@@ -65,10 +77,6 @@ h1 {
   color: #475569;
 }
 
-.model-profile-status.core-error {
-  color: #b42318;
-}
-
 .project-controls {
   display: grid;
   gap: 10px;
@@ -77,6 +85,45 @@ h1 {
   background: #f8fafc;
   border: 1px solid #d8dee9;
   border-radius: 6px;
+}
+
+.agent-controls {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 24px;
+  padding: 16px;
+  background: #f8fafc;
+  border: 1px solid #d8dee9;
+  border-radius: 6px;
+}
+
+.agent-controls h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.agent-run-status,
+.agent-changes {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+}
+
+.agent-run-status p,
+.agent-changes p,
+.agent-changes ul {
+  margin: 0;
+}
+
+.agent-run-notice {
+  margin: 0;
+}
+
+.agent-changes ul {
+  padding-left: 20px;
 }
 
 .project-header {
@@ -225,10 +272,6 @@ button:disabled {
   gap: 8px;
 }
 
-.new-conversation-button {
-  padding: 8px 12px;
-}
-
 .compact-button {
   padding: 7px 10px;
 }
@@ -310,8 +353,7 @@ button:disabled {
   color: #475569;
 }
 
-.chat-error,
-.copy-feedback {
+.chat-error {
   color: #b42318;
 }
 

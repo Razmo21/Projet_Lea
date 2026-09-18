@@ -1,6 +1,5 @@
 [CmdletBinding()]
 param(
-    [ValidateSet(22000, 20000, 18000, 16000)]
     [int]$ContextSize = 22000
 )
 
@@ -11,6 +10,7 @@ $ErrorActionPreference = 'Stop'
 Import-Module -Force (Join-Path $PSScriptRoot 'OpenHands.Sdk.Common.psm1')
 
 $config = Get-OpenHandsSdkConfig
+Assert-OpenHandsSdkConfiguredContext -ContextSize $ContextSize | Out-Null
 $state = Read-OpenHandsSdkState
 if ($null -eq $state) {
     $state = New-OpenHandsSdkState -ContextSize $ContextSize

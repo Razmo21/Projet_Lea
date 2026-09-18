@@ -1,0 +1,9 @@
+{
+  "name": "lea-stage10-typescript-validation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --test test_greeting.ts",
+    "build": "node --experimental-strip-types --test test_greeting.ts"
+  }
+}

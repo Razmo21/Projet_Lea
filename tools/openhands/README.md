@@ -1,26 +1,30 @@
-# OpenHands SDK minimal séparé de Léa
+# OpenHands SDK / Agent Server du profil Programmation
 
-Le bootstrap de développement utilise le Software Agent SDK OpenHands sous Windows et un Agent Server officiel dans Docker. Agent Canvas peut rester installé à des fins administratives, mais il n'est ni démarré ni requis par ce chemin. Le dépôt `L:\Projet_Lea` n'est jamais monté dans Docker.
+L’intégration de développement utilise le Software Agent SDK OpenHands sous
+Windows et un Agent Server officiel dans Docker. Agent Canvas peut rester
+installé à des fins administratives, mais il n'est ni démarré ni requis par ce
+chemin. Le dépôt `L:\Projet_Lea` n'est jamais monté dans Docker.
 
-## État du bootstrap
+## État opérationnel
 
-`OPENHANDS_LOCAL_READY` — le 28 août 2026 à 12:56:45 UTC, le smoke réel SDK/Agent Server minimal a validé **22 000 tokens**, la plus grande fenêtre autorisée et testée. Aucun essai 20K, 18K ou 16K n'est requis tant que 22K reste viable.
-
-Le run a utilisé une conversation et un volume `smoke-v2` séparés. Les anciennes conversations de smoke portant les définitions `TerminalTool`, `FileEditorTool` et `TaskTrackerTool` restent préservées dans l'état legacy et ne sont ni lues ni adoptées. Agent Canvas n'est pas une précondition du bootstrap.
+L’étape 10 utilise désormais l’intégration Léa / SDK / Agent Server, et non un
+bootstrap séparé. Le chemin normal est : Léa → Agent Server OpenHands minimal
+dans Docker → llama.cpp local. Agent Canvas n’est jamais une précondition de ce
+chemin.
 
 ## Architecture et composants épinglés
 
 ```text
-Client SDK Windows -> Agent Server OpenHands 1.43.1 dans Docker isolé -> llama.cpp local -> Qwen2.5-Coder-14B-Instruct Q5_K_M
+Léa -> Agent Server OpenHands 1.43.1 dans Docker isolé -> llama.cpp local -> Qwen2.5-Coder-7B-Instruct Q6_K
 ```
 
-- modèle unique : `models\development\qwen2.5-coder-14b-instruct-q5_k_m.gguf` (10 508 873 152 octets), SHA-256 `98ab25e0132e3f1e6d3554e1b64de2b5021908819b740d9c208430117e49a775` ;
+- modèle unique : `models\development\qwen2.5-coder-7b-instruct-q6_k.gguf`, SHA-256 `46291ddea1bfb608fe63d9a1907eea6918bda87a7626593edc4bf97c5fd73f9d`, à 22 000 tokens avec un seul slot ;
 - image Agent Server : `ghcr.io/openhands/agent-server@sha256:8ec6bd808b35cf50b7e5032f618ccbb33dd8e2bd80f8d130f12dafee24bab66a` (1.43.1) ;
-- llama.cpp existant : `runtime\llama.cpp\llama-server.exe`, exposé uniquement sur `127.0.0.1:8081` sous l'alias `lea-development-openhands` ;
+- llama.cpp b10516 : `runtime\llama.cpp\llama-server.exe`, exposé uniquement sur `127.0.0.1:8081` sous l'alias `lea-development-openhands` ;
 - Agent Server exposé uniquement sur `127.0.0.1:18010` ;
-- template outillé épinglé : `tools\openhands\templates\qwen2.5-coder-openai-tools.jinja`, SHA-256 `a24779148fa43c5dfeec5a6a40adb2f5bbead90b01cb70a338175070144c69c6`, lancé avec `--jinja --no-skip-chat-parsing --chat-template-file`.
+- template outillé épinglé : `tools\openhands\templates\qwen2.5-coder-function-call.jinja`, contrôlé par le registre avant le démarrage.
 
-Le SDK utilise exclusivement `openai/lea-development-openhands` et la clé locale factice `local-llm`. Aucun LLM cloud, autre modèle, Canvas, MCP externe, recherche Web ou téléchargement n'est configuré. Le probe OpenAI-compatible a réellement renvoyé `finish_reason=tool_calls` pour `record_smoke_probe`.
+Le SDK utilise exclusivement `openai/lea-development-openhands` et la clé locale factice `local-llm`. Aucun LLM cloud, autre modèle, Canvas, MCP externe, recherche Web ou téléchargement n'est configuré. Docker Desktop doit être démarré manuellement : Léa vérifie sa disponibilité, mais ne le démarre jamais.
 
 ## Registre d'outils et historique
 
@@ -34,24 +38,20 @@ GET /api/conversations/{conversation_id}/events/search?limit=100
 
 Il vérifie les `ActionEvent` et `ObservationEvent` réels et retire récursivement les champs de raisonnement des journaux. Cette récupération est une compatibilité d'historique, non un contournement du tool calling natif.
 
-## Validation réelle à 22K
+## Validation et persistance
 
-| Point | RAM physique libre minimale |
-| --- | ---: |
-| avant Qwen | 17,351 Gio |
-| après chargement | 6,854 Gio |
-| après premier prompt | 6,831 Gio |
-| après démarrage Agent Server | 6,284 Gio |
-| pendant le run réel | 6,047 Gio |
-| après le run | 6,781 Gio |
+Le run réel à 22K a validé la lecture des fichiers, les appels outillés natifs,
+la correction, le retest vert et la réponse finale. Les événements détaillés
+d’une session restent dans le volume d’état de l’Agent Server. SQLite ne garde
+que le registre compact des runs, leurs résultats, leurs identifiants de session
+et les métadonnées/hashs nécessaires aux checkpoints ; les snapshots de fichiers
+restent dans le stockage local de checkpoints.
 
-Les 141 échantillons du run ne contiennent aucune mesure critique. Docker a utilisé 338,4 à 375,3 Mio sur 4 Gio ; WSL/Docker a conservé au minimum 14,18 Gio disponibles sur environ 15,45 Gio ; la VRAM Qwen était de 4 550 à 4 594 Mio sur 6 144 Mio ; le pagefile était de 2 786 à 2 832 Mio sur 7 984 Mio, avec un pic inchangé à 8 012 Mio. La hausse courante est de 44 Mio, `pagefile_severe=false`, et le maximum de mémoire engagée Windows est 25,178 Gio. Aucun OOM, pagination sévère ni instabilité n'a été observé.
+## Commandes de diagnostic SDK
 
-Le fixture était d'abord rouge avec deux échecs. L'agent a lu `README.md`, `pricing.py` puis `test_pricing.py`, a exécuté les tests rouges, a appelé réellement `terminal` et `file_editor`, a modifié uniquement `pricing.py`, a retesté vert, puis a fourni un résumé cohérent. Le run a produit 9 actions (3 `terminal`, 6 `file_editor`), 35 événements d'historique Agent Server autoritatifs sur 37, et aucune erreur majeure. Les artefacts reproductibles sont sous `.lea\openhands-sdk\smoke-v2\logs\`.
-
-## Politique et commandes
-
-La politique active est : `>= 6 Gio` normale ; `>= 4 Gio et < 6 Gio` acceptable pour le profil nocturne ; `< 4 Gio` de façon durable critique avec arrêt propre. Un OOM Agent Server ou une pagination sévère rend également le contexte non viable. Les contextes autorisés sont 22K, 20K, 18K et 16K, dans cet ordre seulement lorsqu'un nouvel essai est nécessaire.
+Les scripts ci-dessous servent au diagnostic isolé du SDK. Ils lisent le
+registre courant et appliquent leurs propres contrôles avant d’allouer un
+runtime ; ils ne remplacent pas l’intégration et les validations de Léa.
 
 ```powershell
 # Rend le fixture volontairement rouge, sans lancer Docker ni Qwen.
@@ -66,9 +66,14 @@ La politique active est : `>= 6 Gio` normale ; `>= 4 Gio et < 6 Gio` acceptable 
 .\tools\openhands\stop-openhands-sdk.ps1
 ```
 
-Le double démarrage est volontairement refusé. Les scripts sans suffixe `-sdk` restent les scripts Canvas legacy et ne font pas partie du chemin validé.
+Le double démarrage est volontairement refusé. Ces scripts SDK sont des outils
+de diagnostic ; le chemin normal passe par Léa. Les scripts sans suffixe `-sdk`
+ne démarrent pas Agent Canvas.
 
-## Contrat d'isolation
+## Isolement du smoke SDK historique
+
+Cette section décrit uniquement le smoke SDK conservé pour le diagnostic ; le
+run normal de Léa monte le seul projet figé du run, comme indiqué plus haut.
 
 Le conteneur v2 `lea-openhands-sdk-smoke-v2` est limité à 4 Gio, 4 CPU et 512 PID. Il utilise exactement deux mounts :
 
@@ -79,8 +84,7 @@ lea_openhands_sdk_smoke_v2 -> /home/openhands/.openhands
 
 Il est non privilégié, n'a pas de socket Docker, applique `no-new-privileges`, désactive VNC, VS Code, preload d'outils et webhooks. Il ne monte jamais `L:\Projet_Lea`. Docker conserve une connectivité potentielle vers `host.docker.internal` pour le LLM local, mais le smoke interdit réseau, téléchargements, Git et tout fichier hors du fixture. Ce smoke Linux ne valide ni PowerShell Windows, ni `lea.ps1`, ni Edge Stable, ni les validations Windows de l'étape 10.
 
-`C:\Users\vdpst\.wslconfig` est absent. Aucun changement de `.wslconfig` ni `wsl --shutdown` n'a été effectué : `autoMemoryReclaim` ne remplace pas la RAM nécessaire à une charge active.
-
 ## Étape 10
 
-L'étape 10 de Léa reste gelée. Le bootstrap 22K ne la valide pas et aucun commit n'est créé par ces scripts.
+L’étape 10 est techniquement complète et attend la validation manuelle finale
+de l’utilisateur. Aucun commit n’est créé par ces scripts.

@@ -52,6 +52,15 @@ $env:LEA_MODEL_REGISTRY = 'config/models.json'
   supprime sa suite.
 - `POST /api/conversations/{id}/messages/{message_id}/regenerate` régénère une
   réponse et supprime sa suite.
+- `GET /api/models` et `GET /api/models/status` exposent les profils et leur
+  état public ; `POST /api/models/{profile_id}/activate` les commute de façon
+  contrôlée.
+- `GET /api/projects`, `POST /api/projects/refresh` et
+  `POST /api/projects/{project_id}/activate` gèrent les projets confinés à
+  `L:\IA_WORKSPACE`.
+- `GET /api/agent-runs` et `POST /api/agent-runs` consultent ou démarrent un
+  run OpenHands ; les routes d’un run permettent de le lire, l’annuler,
+  consulter ses changements, les accepter ou les restaurer.
 
 Les requêtes sont strictes et refusent les champs inconnus, les contenus vides,
 NUL, surdimensionnés ou contenant les marqueurs internes. Le navigateur envoie
@@ -75,6 +84,36 @@ global reste valide sans source. Les cascades retirent uniquement les messages
 et les liens de la conversation. Les révisions empêchent les écritures périmées et
 `generation_active` interdit deux générations simultanées dans une même
 conversation. L’appel HTTP au modèle se fait hors transaction SQLite longue.
+
+Les migrations de l’étape 10 ajoutent `projects`, `agent_runs`,
+`project_checkpoints` et `checkpoint_files`. SQLite garde le registre compact
+des runs, les résultats, les identifiants de session et les métadonnées/hashs
+de checkpoint ; elle ne contient pas le détail des événements de l’Agent
+Server. Les snapshots de fichiers résident dans le stockage local de
+checkpoints et l’historique détaillé des sessions reste dans le volume d’état
+de l’Agent Server.
+
+## Profil Programmation et OpenHands
+
+La source de vérité est `config/models.json`. Le profil Programmation utilise
+`Qwen2.5-Coder-7B-Instruct Q6_K` avec une fenêtre de 22 000 tokens, un seul
+slot et llama.cpp b10516. OpenHands Software Agent SDK / Agent Server 1.43.1
+est le moteur agentique local ; Agent Canvas ne fait pas partie du chemin de
+fonctionnement.
+
+Docker Desktop doit être démarré manuellement. Le backend vérifie sa
+disponibilité, mais ne démarre pas Docker. À l’activation, le profil Général est
+arrêté avant Programmation ; en cas d’échec, le contrôleur restaure le profil
+précédent. Un seul run OpenHands peut posséder le runtime à la fois.
+
+Un run fige le `project_id`, le chemin relatif et l’identité du projet sous
+`L:\IA_WORKSPACE` avant de lancer les outils `terminal`, `file_editor` et
+`task_tracker`. Un changement de sélection dans une autre session ne peut pas
+le rediriger. Le backend crée un checkpoint avant les mutations et attend
+l’arrêt du conteneur Agent Server identifié avant de publier une annulation, un
+timeout ou toute autre fin terminale. Les changements restent consultables ; ils
+exigent une acceptation explicite ou un rollback, qui refuse toute modification
+externe plutôt que de l’écraser.
 
 ## Mémoire générale explicite
 

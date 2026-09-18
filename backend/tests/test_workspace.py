@@ -100,6 +100,28 @@ class WorkspaceGuardTests(unittest.TestCase):
             self.guard.revalidate_project(validated)
 
 
+    def test_production_guard_refuses_a_different_root_even_on_drive_l(self) -> None:
+        """The production-only flag does not treat every L: directory as authorized."""
+
+        with self.assertRaisesRegex(WorkspacePathError, "exactly"):
+            WorkspaceGuard(self.root, require_expected_root=True)
+
+
+    def test_frozen_project_keeps_its_uuid_and_revalidates_without_global_selection(self) -> None:
+        """A run can retain Alpha even if another project becomes active later."""
+
+        frozen = self.guard.freeze_project(
+            "123e4567-e89b-42d3-a456-426614174000", "Alpha"
+        )
+        self.assertEqual(frozen.project_id, "123e4567-e89b-42d3-a456-426614174000")
+        self.assertEqual(self.guard.revalidate_frozen_project(frozen).path.name, "Alpha")
+        original = self.root / "Alpha"
+        original.rename(self.root / "Alpha_original")
+        original.mkdir()
+        with self.assertRaises(WorkspacePathError):
+            self.guard.revalidate_frozen_project(frozen)
+
+
 class ProjectApiTests(unittest.TestCase):
     """Vérifie l'actualisation et la sélection sans exposer la racine absolue."""
 

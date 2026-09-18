@@ -13,6 +13,7 @@ if str(BACKEND_DIRECTORY) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIRECTORY))
 
 from app.database import (  # noqa: E402
+    CheckpointStateError,
     DEFAULT_DATABASE_PATH,
     Database,
     MEMORY_DUPLICATE_CONFIRMATION,
@@ -150,6 +151,8 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
             self.database.initialize()
 
     def test_stage_8_database_migrates_to_latest_schema_without_data_loss(self) -> None:
+        """Keep the legacy migration path intact while later stage tables are introduced."""
+
         self.database_path.parent.mkdir(parents=True)
         connection = sqlite3.connect(self.database_path, isolation_level=None)
         try:
@@ -192,7 +195,7 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
                     "SELECT version FROM schema_migrations ORDER BY version"
                 ).fetchall()
             ]
-            self.assertEqual(versions, [1, 2, 3, 4, 5])
+            self.assertEqual(versions, list(range(1, SCHEMA_VERSION + 1)))
             self.assertEqual(migrated.execute("PRAGMA quick_check").fetchone()[0], "ok")
             self.assertEqual(migrated.execute("PRAGMA foreign_key_check").fetchall(), [])
 
@@ -232,6 +235,138 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
             )
         finally:
             connection.close()
+
+    def test_stage_10_agent_run_migration_rolls_back_without_touching_v5_data(self) -> None:
+        """Une panne v6 retire toutes ses tables et index tout en préservant projets et conversations."""
+
+        self.database_path.parent.mkdir(parents=True)
+        connection = sqlite3.connect(self.database_path, isolation_level=None)
+        try:
+            connection.execute("PRAGMA foreign_keys = ON")
+            self.assertEqual(
+                apply_migrations(connection, {version: MIGRATIONS[version] for version in range(1, 6)}),
+                5,
+            )
+            connection.execute(
+                """
+                INSERT INTO conversations(
+                    id, title, title_origin, created_at, updated_at, revision, generation_active
+                ) VALUES ('before-v6', 'Avant v6', 'manual', 'created', 'updated', 0, 0)
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO projects(id, name, relative_path, created_at, updated_at, active)
+                VALUES ('123e4567-e89b-42d3-a456-426614174000', 'Projet v5', 'Projet-v5', 'created', 'updated', 1)
+                """
+            )
+            broken = {version: MIGRATIONS[version] for version in range(1, 6)}
+            broken[6] = (*MIGRATIONS[6], "INVALID SQL")
+            with self.assertRaises(MigrationError):
+                apply_migrations(connection, broken)
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+            indexes = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'"
+                ).fetchall()
+            }
+            versions = [
+                row[0]
+                for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
+            ]
+            conversation = connection.execute(
+                "SELECT title FROM conversations WHERE id = 'before-v6'"
+            ).fetchone()
+            project = connection.execute(
+                "SELECT name FROM projects WHERE relative_path = 'Projet-v5'"
+            ).fetchone()
+            quick_check = connection.execute("PRAGMA quick_check").fetchone()[0]
+            foreign_key_violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+        finally:
+            connection.close()
+
+        self.assertFalse({"agent_runs", "project_checkpoints", "checkpoint_files"} & tables)
+        self.assertFalse({"idx_agent_runs_project_created", "idx_project_checkpoints_project_created"} & indexes)
+        self.assertEqual(versions, [1, 2, 3, 4, 5])
+        self.assertEqual(conversation, ("Avant v6",))
+        self.assertEqual(project, ("Projet v5",))
+        self.assertEqual(quick_check, "ok")
+        self.assertEqual(foreign_key_violations, [])
+
+    def test_agent_run_validation_migration_marks_v6_history_unverified(self) -> None:
+        """Existing completed rows retain their audit data but cannot become validated by migration."""
+
+        self.database_path.parent.mkdir(parents=True)
+        connection = sqlite3.connect(self.database_path, isolation_level=None)
+        try:
+            connection.execute("PRAGMA foreign_keys = ON")
+            self.assertEqual(
+                apply_migrations(
+                    connection,
+                    {version: MIGRATIONS[version] for version in range(1, 7)},
+                ),
+                6,
+            )
+            project_id = "123e4567-e89b-42d3-a456-426614174010"
+            run_id = "123e4567-e89b-42d3-a456-426614174011"
+            connection.execute(
+                """
+                INSERT INTO projects(id, name, relative_path, created_at, updated_at, active)
+                VALUES (?, 'Projet v6', 'Projet-v6', 'created', 'updated', 1)
+                """,
+                (project_id,),
+            )
+            connection.execute(
+                """
+                INSERT INTO agent_runs(
+                    run_id, conversation_id, project_id, profile_id,
+                    openhands_session_id, task, state, started_at, finished_at,
+                    result_summary, checkpoint_id, created_at, updated_at
+                ) VALUES (?, NULL, ?, 'development', NULL, 'Ancien run',
+                          'completed', 'created', 'finished', 'Ancien résumé',
+                          NULL, 'created', 'updated')
+                """,
+                (run_id, project_id),
+            )
+            self.assertEqual(apply_migrations(connection), SCHEMA_VERSION)
+            migrated = connection.execute(
+                "SELECT state, validation_status, result_summary FROM agent_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(agent_runs)").fetchall()
+            }
+        finally:
+            connection.close()
+
+        self.assertEqual(migrated, ("completed", "unverified", "Ancien résumé"))
+        self.assertIn("validation_status", columns)
+        self.assertIsNone(self.database.get_agent_run(run_id)["result_summary"])
+
+    def test_new_agent_runs_require_coherent_immutable_validation_status(self) -> None:
+        """Only an explicit terminal evidence verdict may mark a completed run validated."""
+
+        self.database.initialize()
+        project = self.database.sync_projects([("Projet", "Projet")])[0]
+        run_id = "123e4567-e89b-42d3-a456-426614174012"
+        created = self.database.create_agent_run(run_id, project["id"], "development", "Corrige main.py")
+
+        self.assertEqual(created["validation_status"], "pending")
+        completed = self.database.update_agent_run(
+            run_id,
+            state="completed",
+            validation_status="validated",
+            result_summary="Tests verts.",
+        )
+        self.assertEqual(completed["validation_status"], "validated")
+        with self.assertRaises(CheckpointStateError):
+            self.database.update_agent_run(run_id, validation_status="unverified")
 
     def test_stage_9_database_backfills_sources_and_preserves_global_memories(self) -> None:
         self.database_path.parent.mkdir(parents=True)

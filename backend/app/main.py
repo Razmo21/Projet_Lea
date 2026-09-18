@@ -5,7 +5,7 @@ import os
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 import httpx
@@ -13,10 +13,14 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .agent import AgentError, AgentRunManager, AgentRunner
+from .checkpoints import CheckpointConflictError, CheckpointError, CheckpointService
 from .database import (
     MAX_TITLE_LENGTH,
+    AgentRunNotFoundError,
+    CheckpointNotFoundError,
+    CheckpointStateError,
     ConversationNotFoundError,
     ConversationOperationError,
     Database,
@@ -26,7 +30,6 @@ from .database import (
     RevisionConflictError,
     normalize_spaces,
 )
-from .development_tools import DevelopmentToolExecutor
 from .memory import (
     EmptyMemoryCommandError,
     MemoryCapacityError,
@@ -34,7 +37,6 @@ from .memory import (
     ensure_memory_capacity,
     parse_memory_command,
 )
-from .file_tools import FileToolExecutor
 from .model_controller import (
     ModelController,
     ModelControllerError,
@@ -46,8 +48,9 @@ from .model_registry import (
     ModelProfile,
     load_model_registry,
 )
-from .tool_calling import HttpToolCallingGateway, ToolCallingGateway, ToolDispatcher
-from .workspace import WorkspaceGuard, WorkspacePathError
+from .openhands_runtime import OpenHandsRuntime
+from .openhands_runs import OpenHandsRunError, OpenHandsRunManager
+from .workspace import FrozenProject, WorkspaceGuard, WorkspacePathError
 
 
 MODEL_REGISTRY = load_model_registry(os.environ.get("LEA_MODEL_REGISTRY") or None)
@@ -76,6 +79,14 @@ ALLOWED_BROWSER_ORIGINS = {
     "http://127.0.0.1:5173",
     "http://localhost:5173",
 }
+ALLOWED_HOSTS = ["127.0.0.1", "localhost", "testserver"]
+SECURITY_RESPONSE_HEADERS = {
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+}
 
 THINK_XML_OPEN = re.compile(r"<\s*think\s*>", re.IGNORECASE)
 THINK_XML_CLOSE = re.compile(r"<\s*/\s*think\s*>", re.IGNORECASE)
@@ -93,18 +104,25 @@ NO_THINK_PATTERN = re.compile(r"/\s*no_think\b", re.IGNORECASE)
 
 # Erreurs internes converties plus bas en messages publics sans détail sensible.
 class ModelUnavailableError(RuntimeError):
-    pass
+    """Signale que le modèle local ne répond pas dans le délai prévu."""
 
 
 class ModelResponseError(RuntimeError):
-    pass
+    """Signale une réponse modèle vide, mal formée ou non publiable."""
 
 
 class ModelGateway(Protocol):
-    async def generate(self, messages: list[dict[str, str]]) -> str: ...
+    """Décrit le seul appel de génération attendu par l'API."""
+
+    async def generate(self, messages: list[dict[str, str]]) -> str:
+        """Retourne la réponse visible produite à partir des messages internes."""
+
+        ...
 
 
 def normalize_text(content: str, *, max_bytes: int, field_name: str) -> str:
+    """Nettoie un texte public et applique sa limite UTF-8 avant traitement."""
+
     normalized = content.strip()
     if not normalized:
         raise ValueError(f"{field_name} ne peut pas être vide.")
@@ -120,6 +138,8 @@ def normalize_text(content: str, *, max_bytes: int, field_name: str) -> str:
 
 
 def contains_internal_marker(content: str) -> bool:
+    """Détecte toute balise interne qui ne doit jamais atteindre l'interface."""
+
     return any(
         pattern.search(content) is not None
         for pattern in (
@@ -133,6 +153,8 @@ def contains_internal_marker(content: str) -> bool:
 
 
 def contains_thinking_marker(content: str) -> bool:
+    """Détecte les variantes connues des marqueurs de raisonnement du modèle."""
+
     return any(
         pattern.search(content) is not None
         for pattern in (
@@ -181,6 +203,8 @@ def normalize_user_message(
 
 
 def normalize_title(title: str) -> str:
+    """Normalise un titre utilisateur tout en conservant sa ponctuation."""
+
     normalized = normalize_spaces(
         normalize_text(title, max_bytes=400, field_name="Le titre")
     )
@@ -223,6 +247,8 @@ def remove_thinking(content: str) -> str:
 
 
 def filter_final_answer(content: object) -> str:
+    """Retire le raisonnement et refuse une réponse interne ou non textuelle."""
+
     if not isinstance(content, str) or "\x00" in content:
         raise ModelResponseError(MODEL_INVALID_RESPONSE_MESSAGE)
     answer = remove_thinking(content)
@@ -234,6 +260,8 @@ def filter_final_answer(content: object) -> str:
 
 
 def estimate_content_tokens(content: str) -> int:
+    """Estime prudemment le coût d'un message avec sa surcharge de template."""
+
     return (
         len(content.encode("utf-8")) // UTF8_BYTES_PER_ESTIMATED_TOKEN
         + MESSAGE_TOKEN_OVERHEAD
@@ -246,6 +274,8 @@ def select_history_for_context(
     memory_contents: list[str] | tuple[str, ...] = (),
     profile: ModelProfile = DEFAULT_PROFILE,
 ) -> list[dict[str, str]]:
+    """Conserve le suffixe récent de paires complètes qui tient dans le profil."""
+
     input_budget = (
         profile.context_tokens
         - profile.generation.max_tokens
@@ -303,6 +333,8 @@ def build_internal_user_message(
     memory_contents: list[str] | tuple[str, ...] = (),
     profile: ModelProfile = DEFAULT_PROFILE,
 ) -> str:
+    """Ajoute les souvenirs comme données avant la question strictement inchangée."""
+
     if not memory_contents:
         return f"{question}\n/no_think" if profile.prompt.append_no_think else question
     ensure_memory_capacity(memory_contents)
@@ -374,6 +406,8 @@ class SendMessageRequest(StrictRequest):
     @field_validator("conversation_id")
     @classmethod
     def validate_conversation_id(cls, conversation_id: str | None) -> str | None:
+        """Canonicalise l'UUID facultatif transmis par le navigateur."""
+
         if conversation_id is None:
             return None
         try:
@@ -392,6 +426,8 @@ class RenameConversationRequest(RevisionRequest):
     @field_validator("title")
     @classmethod
     def validate_title(cls, title: str) -> str:
+        """Applique la normalisation commune aux renommages."""
+
         return normalize_title(title)
 
 
@@ -416,9 +452,13 @@ class ConversationLockRegistry:
     """Un verrou de génération par conversation, distinct du verrou mémoire."""
 
     def __init__(self) -> None:
+        """Initialise un registre vide, alimenté à la première conversation."""
+
         self._locks: dict[str, asyncio.Lock] = {}
 
     def get(self, conversation_id: str) -> asyncio.Lock:
+        """Retourne toujours le même verrou pour un identifiant de conversation."""
+
         return self._locks.setdefault(conversation_id, asyncio.Lock())
 
 
@@ -504,6 +544,8 @@ class RuntimeCoordinator:
 
 
 def require_local_mutation(request: Request) -> None:
+    """Refuse une mutation issue d'une origine navigateur non locale."""
+
     origin = request.headers.get("origin")
     if origin is not None and origin not in ALLOWED_BROWSER_ORIGINS:
         raise HTTPException(
@@ -513,6 +555,8 @@ def require_local_mutation(request: Request) -> None:
 
 
 def _database(request: Request) -> Database:
+    """Retourne l'unique instance SQLite attachée à l'application."""
+
     return request.app.state.database
 
 
@@ -526,10 +570,14 @@ def _gateway(request: Request, profile_id: str) -> ModelGateway:
 
 
 def _locks(request: Request) -> ConversationLockRegistry:
+    """Retourne le registre de verrous partagé par les routes de génération."""
+
     return request.app.state.conversation_locks
 
 
 def _memory_lock(request: Request) -> asyncio.Lock:
+    """Retourne le verrou qui sérialise les commandes de mémoire globale."""
+
     return request.app.state.memory_lock
 
 
@@ -547,9 +595,12 @@ async def _is_active_model_ready(request: Request, profile_id: str) -> bool:
     if request.app.state.fixed_model_gateway is not None:
         return True
     registry = request.app.state.model_registry
+    profile = registry.profile(profile_id)
     runtime = registry.document.runtime
+    if profile.agent_engine == "OpenHands":
+        runtime = registry.document.openhands.model_endpoint
     models_url = f"http://{runtime.host}:{runtime.port}{runtime.models_path}"
-    expected_alias = registry.profile(profile_id).runtime.alias
+    expected_alias = profile.runtime.alias
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
             response = await client.get(models_url)
@@ -564,6 +615,8 @@ async def _is_active_model_ready(request: Request, profile_id: str) -> bool:
 
 
 def _safe_failure_code(error: BaseException) -> tuple[int, str, str]:
+    """Traduit une erreur interne en statut, message public et code persistant."""
+
     if isinstance(error, ModelUnavailableError):
         return 503, MODEL_UNAVAILABLE_MESSAGE, "model_unavailable"
     if isinstance(error, asyncio.CancelledError):
@@ -583,6 +636,8 @@ async def _generate_response(
     profile: ModelProfile,
     runtime: RuntimeCoordinator,
 ) -> dict[str, Any] | JSONResponse:
+    """Finalise une génération réussie ou rend son échec visible et rejouable."""
+
     lock = locks.get(conversation_id)
     try:
         answer = await gateway.generate(model_messages)
@@ -617,6 +672,8 @@ async def _generate_response(
 def _acquire_generation_lock(
     locks: ConversationLockRegistry, conversation_id: str
 ) -> asyncio.Lock:
+    """Réserve sans attente la conversation ou signale l'activité concurrente."""
+
     lock = locks.get(conversation_id)
     if lock.locked():
         raise GenerationConflictError(
@@ -633,37 +690,49 @@ def create_app(
     workspace_root: str | Path | None = None,
     checkpoint_root: str | Path | None = None,
     agent_runtime_root: str | Path | None = None,
-    tool_calling_gateway: ToolCallingGateway | None = None,
 ) -> FastAPI:
+    """Build the sole local API with injected dependencies for safe test isolation."""
+
     database = Database(database_path)
+    # Only the production configuration receives the fixed-root check; tests
+    # may inject an isolated directory and no HTTP route can alter that choice.
     workspace_guard = WorkspaceGuard(
-        workspace_root or model_registry.document.workspace_root
+        workspace_root or model_registry.document.workspace_root,
+        require_expected_root=workspace_root is None,
     )
-    file_tools = FileToolExecutor(
+    checkpoints = CheckpointService(
         database,
         workspace_guard,
-        Path(checkpoint_root) if checkpoint_root is not None else model_registry.project_root / "data" / "agent-checkpoints",
+        Path(checkpoint_root)
+        if checkpoint_root is not None
+        else model_registry.project_root / "data" / "agent-checkpoints",
     )
-    development_tools = DevelopmentToolExecutor(
+    openhands_runtime = OpenHandsRuntime(model_registry)
+    openhands_runs = OpenHandsRunManager(
         database,
         workspace_guard,
-        Path(agent_runtime_root) if agent_runtime_root is not None else model_registry.project_root / "data" / "agent-runtime",
+        checkpoints,
+        openhands_runtime,
+        model_registry,
+        Path(agent_runtime_root)
+        if agent_runtime_root is not None
+        else model_registry.project_root / "data" / "openhands-runs",
     )
-    tool_dispatcher = ToolDispatcher(file_tools, development_tools)
-    agent_runs = AgentRunManager()
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
+        """Initialize persistent state, recover owned runs, then close them safely at shutdown."""
+
         database.initialize()
         discovered = workspace_guard.discover_projects()
         database.sync_projects(
             [(project.name, project.relative_path) for project in discovered]
         )
+        await openhands_runs.recover()
         try:
             yield
         finally:
-            await agent_runs.close()
-            await development_tools.close()
+            await openhands_runs.close()
 
     application = FastAPI(
         docs_url=None,
@@ -674,13 +743,14 @@ def create_app(
     application.state.database = database
     application.state.model_registry = model_registry
     application.state.fixed_model_gateway = model_gateway
-    application.state.model_controller = model_controller or PowerShellModelController()
+    application.state.openhands_runtime = openhands_runtime
+    application.state.model_controller = model_controller or PowerShellModelController(
+        registry=model_registry,
+        openhands_runtime=openhands_runtime,
+    )
     application.state.workspace_guard = workspace_guard
-    application.state.file_tools = file_tools
-    application.state.development_tools = development_tools
-    application.state.tool_dispatcher = tool_dispatcher
-    application.state.fixed_tool_calling_gateway = tool_calling_gateway
-    application.state.agent_runs = agent_runs
+    application.state.checkpoints = checkpoints
+    application.state.openhands_runs = openhands_runs
     application.state.conversation_locks = ConversationLockRegistry()
     application.state.memory_lock = asyncio.Lock()
     application.state.runtime_coordinator = RuntimeCoordinator(
@@ -695,17 +765,32 @@ def create_app(
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["Content-Type"],
     )
+    # Refuse le DNS rebinding vers l'API loopback tout en conservant TestClient.
+    application.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
+
+    @application.middleware("http")
+    async def add_local_security_headers(request: Request, call_next):
+        """Prevent local API data caching, MIME guessing, referrer leaks, and framing."""
+
+        response = await call_next(request)
+        for name, value in SECURITY_RESPONSE_HEADERS.items():
+            response.headers[name] = value
+        return response
 
     @application.exception_handler(ConversationNotFoundError)
     async def conversation_not_found_handler(
         _request: Request, error: ConversationNotFoundError
     ) -> JSONResponse:
+        """Transforme une conversation absente en réponse HTTP 404 stable."""
+
         return JSONResponse(status_code=404, content={"detail": str(error)})
 
     @application.exception_handler(MessageNotFoundError)
     async def message_not_found_handler(
         _request: Request, error: MessageNotFoundError
     ) -> JSONResponse:
+        """Transforme un message absent en réponse HTTP 404 stable."""
+
         return JSONResponse(status_code=404, content={"detail": str(error)})
 
     @application.exception_handler(ProjectNotFoundError)
@@ -724,41 +809,76 @@ def create_app(
 
         return JSONResponse(status_code=400, content={"detail": str(error)})
 
-    @application.exception_handler(AgentError)
-    async def agent_error_handler(
-        _request: Request, error: AgentError
+    @application.exception_handler(AgentRunNotFoundError)
+    async def agent_run_not_found_handler(
+        _request: Request, error: AgentRunNotFoundError
     ) -> JSONResponse:
-        """Convertit les préconditions agent en conflit public sans traceback."""
+        """Return a local 404 when a persisted OpenHands run UUID is unknown."""
 
-        status_code = 404 if "introuvable" in str(error).casefold() else 409
-        return JSONResponse(status_code=status_code, content={"detail": str(error)})
+        return JSONResponse(status_code=404, content={"detail": str(error)})
+
+    @application.exception_handler(CheckpointNotFoundError)
+    async def checkpoint_not_found_handler(
+        _request: Request, error: CheckpointNotFoundError
+    ) -> JSONResponse:
+        """Return a local 404 when a checkpoint belongs to no retained run."""
+
+        return JSONResponse(status_code=404, content={"detail": str(error)})
+
+    @application.exception_handler(CheckpointConflictError)
+    async def checkpoint_conflict_handler(
+        _request: Request, error: CheckpointConflictError
+    ) -> JSONResponse:
+        """Expose rollback conflicts without disclosing paths outside the selected project."""
+
+        return JSONResponse(status_code=409, content={"detail": str(error)})
+
+    @application.exception_handler(OpenHandsRunError)
+    @application.exception_handler(CheckpointStateError)
+    @application.exception_handler(CheckpointError)
+    async def openhands_run_error_handler(
+        _request: Request, error: RuntimeError
+    ) -> JSONResponse:
+        """Convert controlled OpenHands/checkpoint lifecycle failures into a local conflict response."""
+
+        return JSONResponse(status_code=409, content={"detail": str(error)})
 
     @application.exception_handler(RevisionConflictError)
     async def revision_conflict_handler(
         _request: Request, error: RevisionConflictError
     ) -> JSONResponse:
+        """Expose un conflit de révision sans masquer l'écriture refusée."""
+
         return JSONResponse(status_code=409, content={"detail": str(error)})
 
     @application.exception_handler(GenerationConflictError)
     async def generation_conflict_handler(
         _request: Request, error: GenerationConflictError
     ) -> JSONResponse:
+        """Expose une génération concurrente comme conflit HTTP."""
+
         return JSONResponse(status_code=409, content={"detail": str(error)})
 
     @application.exception_handler(ConversationOperationError)
     async def operation_error_handler(
         _request: Request, error: ConversationOperationError
     ) -> JSONResponse:
+        """Retourne un refus métier lisible pour une opération de conversation."""
+
         return JSONResponse(status_code=400, content={"detail": str(error)})
 
     @application.exception_handler(MemoryCapacityError)
     async def memory_capacity_handler(
         _request: Request, error: MemoryCapacityError
     ) -> JSONResponse:
+        """Informe le navigateur quand la mémoire explicite est pleine."""
+
         return JSONResponse(status_code=400, content={"detail": str(error)})
 
     @application.get("/health")
     def health() -> dict[str, str]:
+        """Fournit la sonde minimale utilisée par le lanceur local."""
+
         return {"status": "ok"}
 
     @application.get("/api/models")
@@ -778,20 +898,34 @@ def create_app(
         """Expose l'activité de commutation sans PID, chemin ni commande système."""
 
         status = await _runtime(request).status()
+        development_readiness: dict[str, bool | str] | None = None
         if status["loading_profile_id"]:
             state = "loading"
             message = "Changement de profil en cours."
+        elif (
+            status["active_profile_id"] == "development"
+            and request.app.state.fixed_model_gateway is None
+        ):
+            # Qwen seul ne suffit pas : la readiness Programmation exige
+            # Docker, Agent Server et les vrais outils OpenHands locaux.
+            readiness = await request.app.state.openhands_runtime.status()
+            development_readiness = readiness.public()
+            state = "ready" if readiness.profile_ready else "error"
+            message = readiness.message
         elif await _is_active_model_ready(request, status["active_profile_id"]):
             state = "ready"
             message = "Le profil actif est prêt."
         else:
             state = "error"
             message = "Le modèle actif n'est pas disponible."
-        return {
+        result: dict[str, Any] = {
             "state": state,
             "message": message,
             **status,
         }
+        if development_readiness is not None:
+            result["development_readiness"] = development_readiness
+        return result
 
     @application.get("/api/runtime/activity")
     async def runtime_activity(request: Request) -> dict[str, bool]:
@@ -893,12 +1027,11 @@ def create_app(
         return {"projects": projects, "active_project_id": canonical_id}
 
     @application.get("/api/agent-runs")
-    async def list_agent_runs(request: Request) -> dict[str, Any]:
-        """Expose les runs mémoire récents sans transcript modèle ni contenu de fichiers."""
+    def list_agent_runs(request: Request) -> dict[str, Any]:
+        """Expose les runs SQLite compacts sans transcript ni observation OpenHands détaillée."""
 
-        manager: AgentRunManager = request.app.state.agent_runs
-        records = sorted(manager.records.values(), key=lambda item: item.created_at, reverse=True)
-        return {"runs": [record.public() for record in records[:20]]}
+        manager: OpenHandsRunManager = request.app.state.openhands_runs
+        return {"runs": manager.list()}
 
     @application.post("/api/agent-runs", status_code=202)
     async def start_agent_run(
@@ -906,7 +1039,7 @@ def create_app(
         request: Request,
         _local: None = Depends(require_local_mutation),
     ) -> dict[str, Any]:
-        """Lance en arrière-plan un run borné sur le profil et le projet actifs."""
+        """Freeze the selected project, checkpoint it, and start one real OpenHands SDK run."""
 
         registry: LoadedModelRegistry = request.app.state.model_registry
         runtime = _runtime(request)
@@ -917,36 +1050,27 @@ def create_app(
         project = _database(request).get_active_project()
         if project is None:
             raise HTTPException(status_code=409, detail="Sélectionne un projet actif avant le run.")
-        request.app.state.workspace_guard.resolve_project(project["relative_path"])
+        frozen = request.app.state.workspace_guard.freeze_project(
+            project["id"], project["relative_path"]
+        )
         await runtime.begin_agent_run(profile.id)
-        gateway = request.app.state.fixed_tool_calling_gateway or HttpToolCallingGateway(
-            registry,
-            profile.id,
-        )
-        runner = AgentRunner(
-            registry,
-            request.app.state.tool_dispatcher,
-            gateway,
-            registry.document.agent_policy,
-        )
         try:
-            record = await request.app.state.agent_runs.start(
+            record = await request.app.state.openhands_runs.start(
                 body.task,
                 profile,
-                project["id"],
-                runner,
+                frozen,
                 runtime.finish_agent_run,
             )
         except BaseException:
             await runtime.finish_agent_run()
             raise
-        return record.public()
+        return record
 
     @application.get("/api/agent-runs/{run_id}")
     async def get_agent_run(run_id: str, request: Request) -> dict[str, Any]:
-        """Retourne l'instantané courant d'un UUID de run connu."""
+        """Retourne l'état persistant d'un UUID OpenHands sans dépendre de la sélection active."""
 
-        return (await request.app.state.agent_runs.get(run_id)).public()
+        return await request.app.state.openhands_runs.get(run_id)
 
     @application.post("/api/agent-runs/{run_id}/cancel")
     async def cancel_agent_run(
@@ -954,17 +1078,110 @@ def create_app(
         request: Request,
         _local: None = Depends(require_local_mutation),
     ) -> dict[str, Any]:
-        """Demande une annulation coopérative et ciblée du run indiqué."""
+        """Attend l'arrêt réel du SDK et du conteneur vérifié avant de publier `cancelled`."""
 
-        record = await request.app.state.agent_runs.cancel(run_id)
-        await request.app.state.development_tools.cancel_run(record.run_id)
-        return record.public()
+        return await request.app.state.openhands_runs.cancel(run_id)
+
+    def frozen_project_for_run(request: Request, run: dict[str, Any]) -> FrozenProject:
+        """Rebuild the immutable run project from checkpoint metadata, never from the mutable active project."""
+
+        checkpoint_id = run.get("checkpoint_id")
+        if not isinstance(checkpoint_id, str):
+            raise HTTPException(status_code=409, detail="Ce run ne possède pas de checkpoint exploitable.")
+        checkpoint = request.app.state.database.get_project_checkpoint(checkpoint_id)
+        if checkpoint["project_id"] != run["project_id"]:
+            raise HTTPException(status_code=409, detail="Le checkpoint du run est incohérent.")
+        try:
+            frozen = request.app.state.workspace_guard.freeze_project(
+                str(run["project_id"]), str(checkpoint["project_relative_path"])
+            )
+            request.app.state.checkpoints.validate_checkpoint_project(checkpoint_id, frozen)
+            return frozen
+        except WorkspacePathError as error:
+            # A deleted project cannot be frozen again.  Persist the conflict
+            # before returning so the UI never keeps offering a stale rollback.
+            request.app.state.checkpoints.record_conflict(
+                checkpoint_id,
+                "Le projet figé du checkpoint n'est plus disponible.",
+            )
+            raise CheckpointConflictError(
+                "Le projet figé du checkpoint n'est plus disponible ; restauration refusée."
+            ) from error
+        except CheckpointConflictError:
+            request.app.state.checkpoints.record_conflict(
+                checkpoint_id,
+                "Le projet figé du checkpoint a changé après le run.",
+            )
+            raise
+
+    @application.get("/api/agent-runs/{run_id}/changes")
+    async def get_agent_run_changes(run_id: str, request: Request) -> dict[str, Any]:
+        """Return the checkpoint diff associated with one persisted run without reading the active selection."""
+
+        run = await request.app.state.openhands_runs.get(run_id)
+        checkpoint_id = run.get("checkpoint_id")
+        if not isinstance(checkpoint_id, str):
+            raise HTTPException(status_code=409, detail="Ce run ne possède pas de checkpoint exploitable.")
+        checkpoint = request.app.state.database.get_project_checkpoint(checkpoint_id)
+        return {
+            "run_id": run["run_id"],
+            "checkpoint": checkpoint,
+            "changes": request.app.state.checkpoints.changes(checkpoint_id),
+        }
+
+    @application.post("/api/agent-runs/{run_id}/accept")
+    async def accept_agent_run_changes(
+        run_id: str,
+        request: Request,
+        _local: None = Depends(require_local_mutation),
+    ) -> dict[str, Any]:
+        """Accept a completed checkpoint explicitly while retaining its lightweight audit record."""
+
+        run = await request.app.state.openhands_runs.get(run_id)
+        if (
+            run["state"] != "completed"
+            or run.get("validation_status") != "validated"
+        ):
+            # A checkpoint can still contain partial files after a technically
+            # stopped but unvalidated agent run.  Such changes remain
+            # reviewable and restorable, never implicitly acceptable.
+            raise HTTPException(
+                status_code=409,
+                detail="Seul un run OpenHands réellement validé peut être accepté.",
+            )
+        checkpoint_id = run.get("checkpoint_id")
+        if not isinstance(checkpoint_id, str):
+            raise HTTPException(status_code=409, detail="Ce run ne possède pas de checkpoint exploitable.")
+        return {
+            "run_id": run["run_id"],
+            "checkpoint": request.app.state.checkpoints.accept(checkpoint_id),
+        }
+
+    @application.post("/api/agent-runs/{run_id}/rollback")
+    async def rollback_agent_run_changes(
+        run_id: str,
+        request: Request,
+        _local: None = Depends(require_local_mutation),
+    ) -> dict[str, Any]:
+        """Restore a completed run only after comparing the current project to its stored after-state."""
+
+        run = await request.app.state.openhands_runs.get(run_id)
+        checkpoint_id = run.get("checkpoint_id")
+        if not isinstance(checkpoint_id, str):
+            raise HTTPException(status_code=409, detail="Ce run ne possède pas de checkpoint exploitable.")
+        frozen = frozen_project_for_run(request, run)
+        return {
+            "run_id": run["run_id"],
+            "checkpoint": request.app.state.checkpoints.rollback(checkpoint_id, frozen),
+        }
 
     @application.get("/api/conversations")
     def list_conversations(
         request: Request,
         search: str = Query(default="", max_length=MAX_SEARCH_LENGTH),
     ) -> dict[str, list[dict[str, Any]]]:
+        """Liste les conversations selon le filtre textuel validé."""
+
         if "\x00" in search:
             raise HTTPException(status_code=422, detail="La recherche contient un caractère NUL.")
         return {"conversations": _database(request).list_conversations(search)}
@@ -975,6 +1192,8 @@ def create_app(
         request: Request,
         _local: None = Depends(require_local_mutation),
     ) -> dict[str, Any] | JSONResponse:
+        """Persist one validated user turn and publish only a verified model response."""
+
         database_instance = _database(request)
         lock_registry = _locks(request)
         if body.conversation_id is None and body.expected_revision is not None:
@@ -993,6 +1212,13 @@ def create_app(
         generation_handed_off = False
         try:
             profile = request.app.state.model_registry.profile(profile_id)
+            if profile.agent_engine == "OpenHands" and request.app.state.fixed_model_gateway is None:
+                # The Programming brain is reserved for the OpenHands SDK
+                # path. Direct chat here would bypass its tools/checkpoint.
+                raise HTTPException(
+                    status_code=409,
+                    detail="Utilise une tâche Programmation sur un projet sélectionné.",
+                )
             try:
                 message = normalize_user_message(body.message, profile)
                 memory_command = parse_memory_command(message)
@@ -1084,6 +1310,8 @@ def create_app(
 
     @application.get("/api/conversations/{conversation_id}")
     def get_conversation(conversation_id: UUID, request: Request) -> dict[str, Any]:
+        """Retourne une conversation complète depuis son UUID canonique."""
+
         return _database(request).get_conversation(str(conversation_id))
 
     @application.patch("/api/conversations/{conversation_id}")
@@ -1093,6 +1321,8 @@ def create_app(
         request: Request,
         _local: None = Depends(require_local_mutation),
     ) -> dict[str, Any]:
+        """Renomme une conversation puis retourne sa version mise à jour."""
+
         database_instance = _database(request)
         database_instance.rename_conversation(
             str(conversation_id), body.title, body.expected_revision
@@ -1106,6 +1336,8 @@ def create_app(
         request: Request,
         _local: None = Depends(require_local_mutation),
     ) -> Response:
+        """Supprime une conversation sous le verrou de mémoire partagé."""
+
         # La provenance éventuelle disparaît avec la conversation, mais le fait
         # global reste intact. Le verrou garde cet ordre avec retenir/oublier.
         async with _memory_lock(request):
@@ -1125,6 +1357,8 @@ def create_app(
         request: Request,
         _local: None = Depends(require_local_mutation),
     ) -> dict[str, Any] | JSONResponse:
+        """Relance la dernière question échouée avec le profil figé courant."""
+
         conversation_key = str(conversation_id)
         lock_registry = _locks(request)
         runtime = _runtime(request)
@@ -1180,6 +1414,8 @@ def create_app(
         request: Request,
         _local: None = Depends(require_local_mutation),
     ) -> dict[str, Any] | JSONResponse:
+        """Modifie une question puis régénère depuis le nouvel historique."""
+
         conversation_key = str(conversation_id)
         lock_registry = _locks(request)
         runtime = _runtime(request)
@@ -1250,6 +1486,8 @@ def create_app(
         request: Request,
         _local: None = Depends(require_local_mutation),
     ) -> dict[str, Any] | JSONResponse:
+        """Relance une réponse existante sans modifier sa question source."""
+
         conversation_key = str(conversation_id)
         lock_registry = _locks(request)
         runtime = _runtime(request)

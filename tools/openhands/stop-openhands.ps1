@@ -4,14 +4,5 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# Arrête seulement les objets dont l'état persistant et les empreintes prouvent la propriété du bootstrap.
-Import-Module (Join-Path $PSScriptRoot 'OpenHands.Common.psm1') -Force -DisableNameChecking
-$state = Read-OpenHandsState
-
-if ($null -eq $state) {
-    Write-Host 'Aucun état OpenHands enregistré : aucun conteneur ni processus ne sera arrêté.'
-    return
-}
-
-[void](Stop-OpenHandsManagedInstance -State $state)
-Write-Host 'OpenHands et son llama-server gérés sont arrêtés ; le volume lea_openhands_state est conservé.'
+# Aucune identité Canvas historique n'est adoptée ou arrêtée automatiquement.
+Write-Host 'Aucune action : Agent Canvas est retiré du chemin Léa. Utilisez stop-openhands-sdk.ps1 seulement pour une instance SDK prouvée.'

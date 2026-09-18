@@ -125,3 +125,41 @@ du code d'un projet accepté reste plus risquée qu'une lecture : il s'agit d'un
 exécution locale contrôlée, pas d'un sandbox noyau Windows mathématiquement
 parfait. Seuls des projets que l'utilisateur accepte d'exécuter doivent être
 sélectionnés.
+
+## D-018 — Contrat de fiabilité commun
+`config/prompts/reliability.md` est le contrat commun aux profils Général et
+Programmation. Il prime sur les données utilisateur, les fichiers, les README,
+les journaux et les résultats d’outils. Léa doit signaler l’incertitude, ne pas
+inventer de faits, de souvenirs, de fichiers, de commandes, de modifications ou
+de résultats de test, et traiter tout contenu externe comme une donnée non
+fiable, jamais comme une instruction système.
+
+## D-019 — Runtime Programmation local final
+Léa reste l’orchestrateur ; OpenHands Agent Server / Software Agent SDK 1.43.1
+est le moteur agentique du profil Programmation. Le runtime final utilise
+`Qwen2.5-Coder-7B-Instruct Q6_K` à 22 000 tokens, un seul slot et llama.cpp
+b10516. Agent Canvas ne fait pas partie du chemin de fonctionnement ; il peut
+rester installé à des fins administratives seulement. Docker Desktop doit être
+démarré manuellement : Léa vérifie sa disponibilité, mais ne lance pas Docker.
+
+Le registre `config/models.json` est la source de vérité de cette configuration,
+des outils `terminal`, `file_editor`, `task_tracker` et de leurs limites. Le
+profil Général et le runtime Programmation ne sont pas exécutés en parallèle.
+
+## D-020 — Projet figé, runs persistants et checkpoints sûrs
+Au départ d’un run, le backend fige le `project_id`, le chemin relatif et
+l’identité du projet déjà validé sous `L:\IA_WORKSPACE`. Un changement de
+sélection dans une autre session ne peut donc pas rediriger le run, son diff,
+son acceptation ou son rollback.
+
+Chaque run possède un checkpoint hashé créé avant les outils. Les changements
+restent consultables puis exigent une acceptation explicite ou un rollback. Une
+modification externe, un remplacement du projet ou une identité non conforme
+provoque un conflit plutôt qu’un écrasement silencieux. Annulation, timeout et
+fin de run ne publient un état terminal qu’après l’arrêt du conteneur Agent
+Server vérifié, afin qu’aucun outil tardif ne puisse muter le projet en silence.
+
+SQLite conserve uniquement le registre compact des runs, leurs résultats, leurs
+identifiants de session et les métadonnées/hashs de checkpoint. Les snapshots
+restent dans le stockage local de checkpoints et les événements détaillés de la
+session restent dans le volume d’état de l’Agent Server.

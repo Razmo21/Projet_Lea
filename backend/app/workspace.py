@@ -5,9 +5,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
+from uuid import UUID
 
 
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+EXPECTED_WORKSPACE_ROOT = PureWindowsPath(r"L:\IA_WORKSPACE")
 
 
 class WorkspacePathError(ValueError):
@@ -24,6 +26,14 @@ class ValidatedWorkspacePath:
 
 
 @dataclass(frozen=True)
+class FrozenProject:
+    """Binds one run to a project UUID and its canonical, revalidable directory."""
+
+    project_id: str
+    workspace_path: ValidatedWorkspacePath
+
+
+@dataclass(frozen=True)
 class DiscoveredProject:
     """Décrit seulement les métadonnées relatives persistables d'un projet."""
 
@@ -34,10 +44,20 @@ class DiscoveredProject:
 class WorkspaceGuard:
     """Résout les chemins sans suivre de lien, junction ni reparse point accepté."""
 
-    def __init__(self, root: str | Path) -> None:
+    def __init__(self, root: str | Path, *, require_expected_root: bool = False) -> None:
         """Fige une racine réelle qui n'est elle-même pas un reparse point."""
 
         configured = Path(root)
+        if require_expected_root:
+            configured_windows = PureWindowsPath(str(configured))
+            # Test-only dependency injection may use a temporary root; the
+            # production application enables this exact authority check.
+            if (
+                not configured_windows.is_absolute()
+                or str(configured_windows).casefold()
+                != str(EXPECTED_WORKSPACE_ROOT).casefold()
+            ):
+                raise WorkspacePathError("The authorized root is exactly L:\\IA_WORKSPACE.")
         if not configured.is_absolute():
             raise WorkspacePathError("La racine IA_WORKSPACE doit être absolue.")
         self.root = configured.resolve(strict=True)
@@ -127,6 +147,41 @@ class WorkspaceGuard:
         if current.path != project.path or current.identity != project.identity:
             raise WorkspacePathError("Le projet a changé depuis sa validation ; opération refusée.")
         return current
+
+    def freeze_project(self, project_id: str, relative_path: str) -> FrozenProject:
+        """Freeze a project UUID and path before a run sees later UI selection changes."""
+
+        try:
+            canonical_id = str(UUID(project_id))
+        except (TypeError, ValueError, AttributeError) as error:
+            raise WorkspacePathError("The project identifier is invalid.") from error
+        return FrozenProject(
+            project_id=canonical_id,
+            workspace_path=self.resolve_project(relative_path),
+        )
+
+    def project_lexical_path(self, relative_path: str) -> Path:
+        """Return a validated direct-child path only for recovering an owned Docker mount.
+
+        Recovery may need to stop a labelled run container after its project was
+        deleted or replaced.  This helper validates the persisted one-component
+        name without requiring that the directory still exists; it must never be
+        used to grant filesystem access to the returned path.
+        """
+
+        parts = self._parts(relative_path, single_component=True)
+        candidate = self.root.joinpath(*parts)
+        self._assert_contained(candidate)
+        # Intentionally do not stat or resolve the child: it may have been
+        # deleted or replaced with a reparse point.  The caller only compares
+        # this lexical string to an already-labelled Docker bind mount before
+        # stopping it; regular filesystem access still uses freeze_project().
+        return candidate
+
+    def revalidate_frozen_project(self, frozen: FrozenProject) -> ValidatedWorkspacePath:
+        """Reject a directory swap without consulting the mutable active-project setting."""
+
+        return self.revalidate_project(frozen.workspace_path)
 
     def discover_projects(self) -> list[DiscoveredProject]:
         """Liste les sous-dossiers directs réels en excluant tout reparse point."""

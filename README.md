@@ -8,9 +8,10 @@ Construire une base locale minimale et stable : interface React, backend
 FastAPI, base SQLite et modèle local restent limités à cette machine.
 
 L’étape 9 ajoute une mémoire générale explicite aux conversations persistantes.
-Le backend reste l’unique autorité de l’historique et des souvenirs, SQLite
-conserve les données localement et l’interface permet de reprendre, rechercher
-et gérer les conversations.
+L’étape 10 ajoute un profil Programmation local, ses projets confinés et des
+runs agentiques contrôlés. Le backend reste l’unique autorité de l’historique,
+des souvenirs, des profils et des runs ; SQLite conserve les données locales et
+l’interface permet de reprendre, rechercher et gérer les conversations.
 
 ## Philosophie
 
@@ -41,7 +42,7 @@ On ne commence jamais une nouvelle fonctionnalité tant que l'étape actuelle n'
 7. Raisonnement, contrôle local et contexte temporaire — terminée.
 8. Conversations locales persistantes et fiables — terminée.
 9. Mémoire générale explicite et persistante — terminée.
-10. Multi-modèles et profil Programmation — planifiée, non commencée.
+10. Multi-modèles et profil Programmation — terminée.
 
 ## Démarrage local
 
@@ -158,10 +159,23 @@ la suppression de sa conversation d’origine.
 ## Profils et projets de programmation
 
 Le registre `config/models.json` décrit les profils Général et Programmation,
-leurs modèles, prompts, capacités et limites. Général reste toujours le profil
-du prochain démarrage complet. L'interface peut charger Programmation, revenir
-à Général et poursuivre la même conversation ; chaque réponse assistant garde
-le profil et l'alias du modèle qui l'a produite.
+leurs modèles, prompts, capacités, moteurs et limites : il est la source de
+vérité de cette configuration. Général reste toujours le profil du prochain
+démarrage complet. L'interface peut charger Programmation, revenir à Général et
+poursuivre la même conversation ; chaque réponse assistant garde le profil et
+l'alias du modèle qui l'a produite.
+
+La configuration Programmation validée est strictement locale :
+
+- `Qwen2.5-Coder-7B-Instruct Q6_K` ;
+- fenêtre de contexte de 22 000 tokens et un seul slot ;
+- `llama.cpp` b10516 (`b95502ba9`) ;
+- OpenHands SDK / Agent Server 1.43.1 minimal comme moteur agentique.
+
+Agent Canvas peut rester un outil administratif, mais il n’est pas requis pour
+un run. Docker Desktop doit actuellement être démarré manuellement : Léa ne le
+démarre pas elle-même et signale clairement son indisponibilité. Aucun modèle
+cloud ni modèle local de secours n’est utilisé pour le profil Programmation.
 
 En profil Programmation, la liste des projets provient uniquement des
 sous-dossiers réels de `L:\IA_WORKSPACE`. Le registre SQLite conserve un UUID,
@@ -169,11 +183,40 @@ un nom, un chemin relatif et l'unique sélection active ; aucun chemin absolu
 n'est exposé au navigateur. L'actualisation refuse les remontées, autres
 lecteurs, chemins UNC, liens symboliques, junctions et reparse points.
 
-Le confinement des futurs outils de fichiers repose sur ces validations et sur
-une revalidation d'identité avant les opérations sensibles. Exécuter le code
-d'un projet reste plus risqué que le lire : Léa fournit une exécution locale
-contrôlée, pas une garantie mathématique d'isolation du noyau Windows. Ne
-sélectionne pour exécution que des projets dont tu acceptes le code.
+Chaque run OpenHands fige de manière immuable son `project_id` et son chemin
+canonique au démarrage. Un changement de projet dans une autre session ne peut
+donc pas modifier son montage ni sa cible. Le run crée un checkpoint avant les
+modifications ; l’interface permet de consulter les changements, de les
+accepter ou de restaurer intégralement l’état initial. Une modification externe
+détectée avant un rollback est signalée comme conflit et n’est jamais écrasée
+silencieusement.
+
+SQLite conserve un résumé compact des runs, de leur checkpoint et de leur état
+(y compris acceptation ou rollback), sans dupliquer tout l’historique interne
+d’OpenHands. Les détails agentiques restent dans l’état OpenHands prévu à cet
+effet. La politique d’outils refuse les chemins `file_editor` hors du projet et
+les sorties terminal explicites de `/workspace`; l’identité, la commande, le
+port loopback et les limites du conteneur sont revérifiés avant réutilisation.
+Exécuter le code d'un projet reste plus risqué que le lire : Léa fournit
+une exécution locale contrôlée avec Docker, pas une garantie mathématique
+d'isolation du noyau Windows. Le durcissement réseau Docker avancé est reporté
+à l’étape 11. Ne sélectionne pour exécution que des projets dont tu acceptes le
+code.
+
+Limitation connue du modèle actuel :
+
+> Qwen2.5-Coder-7B peut échouer sur des tâches agentiques multi-fichiers longues lorsque file_editor exige des remplacements textuels exacts. Léa détecte ces boucles, refuse les mutations invalides, valide les changements par des tests et peut restaurer le checkpoint.
+
+`Lea_FinalValidation_Test` reste un benchmark difficile conservé pour comparer
+un futur GLM-5.3-Flash avec Qwen ; sa réussite complète avec Qwen n'est pas un
+critère de validation de cette étape.
+
+## Roadmap
+
+Les étapes suivantes ne sont pas implémentées dans cette version :
+
+- Étape 11 — améliorations avancées du profil Programmation.
+- Étape 12 — voix partagée.
 
 Le reste demeure reporté : refonte visuelle complète, mémoire automatique ou
 sémantique, Santé animale, Vision, Web, RAG et voix.

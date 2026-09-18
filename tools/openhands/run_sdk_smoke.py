@@ -21,8 +21,22 @@ from urllib.request import Request, urlopen
 
 from pydantic import SecretStr
 
+# LiteLLM charge sa table de coûts avec le SDK. Utiliser sa copie embarquée évite
+# tout accès réseau implicite avant même le premier appel au modèle local.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
+os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
+
 from openhands.sdk import Agent, Conversation, LLM, Workspace
 from openhands.sdk.tool.defaults import DEFAULT_EXEC_TOOL_NAMES, default_tool_specs
+
+
+POWERSHELL_EXECUTABLE = (
+    Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    / "System32"
+    / "WindowsPowerShell"
+    / "v1.0"
+    / "powershell.exe"
+)
 
 
 class MemoryStatusEx(ctypes.Structure):
@@ -219,7 +233,14 @@ def capture_pagefile_usage() -> dict[str, Any]:
         "$items | ConvertTo-Json -Compress"
     )
     probe = run_command(
-        ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+        [
+            str(POWERSHELL_EXECUTABLE),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            command,
+        ],
         timeout_seconds=5,
     )
     if probe.get("return_code") != 0:

@@ -38,12 +38,21 @@ Après modification :
 5. Signale clairement les erreurs restantes.
 6. Arrête-toi et attends la validation de l'utilisateur.
 
+À la fin de chaque grande étape, avant la validation manuelle :
+1. Relis l'ensemble du code concerné et recherche les incohérences restantes.
+2. Retire uniquement le code dont l'inutilité est démontrée.
+3. Ajoute un commentaire ou une docstring naturel à chaque fonction, méthode ou callback significatif.
+4. Aère la mise en forme sans modifier le comportement.
+5. Relance les vérifications ciblées et les tests de non-régression complets.
+
 ## Étape actuelle
 
-Étape 9 terminée — mémoire générale explicite, locale, persistante et rattachée
-à ses conversations sources.
+L’étape 10 — multi-modèles et profil Programmation — est techniquement complète.
+Ses barrières automatisées et ses validations réelles sont terminées ; la
+validation manuelle finale de l’utilisateur reste attendue.
 
-Attendre la validation de l'utilisateur avant toute étape suivante.
+Ne commence ni l’étape 11 ni l’étape 12 sans une nouvelle autorisation explicite
+de l’utilisateur.
 
 ## Interdictions actuelles
 
@@ -53,37 +62,20 @@ Ne crée PAS :
 - un nouveau modèle local ;
 - une nouvelle installation de llama.cpp ;
 - RAG ;
-- accès à IA_WORKSPACE ;
 - accès Internet ;
-- profils multiples ;
 - Tauri ;
-- Docker ;
 - authentification ;
 - télémétrie ;
 - mémoire automatique ou sémantique ;
-- profil ou modèle supplémentaire de l’étape 10.
+- une fonctionnalité reportée aux étapes 11 ou 12.
 
-## Validation de l'étape
+## Validation avant une étape suivante
 
-L'étape est terminée uniquement si :
-- le modèle fonctionne avec une fenêtre de 8 192 tokens, un seul slot et sans
-  raisonnement interne exposé ou persisté ;
-- SQLite conserve les conversations dans `data/lea.sqlite3`, avec migrations,
-  WAL, clés étrangères, révisions et reprise sûre des générations interrompues ;
-- `memories` conserve uniquement les faits ajoutés par une commande explicite,
-  `memory_sources` en conserve la provenance informative et les oublis utilisent une
-  égalité normalisée exacte ;
-- supprimer une conversation ne supprime jamais un souvenir global ; seule une
-  commande explicite `Oublie que` retire le fait dans toutes les conversations ;
-- le backend reste l'unique autorité de l'historique envoyé au modèle ;
-- les souvenirs actifs sont injectés comme données JSON bornées, tandis que
-  les tours de gestion mémoire restent visibles mais exclus du contexte modèle ;
-- l'interface permet de créer, retrouver, rechercher, renommer, supprimer,
-  modifier, régénérer et réessayer les conversations ;
-- les conflits entre onglets sont refusés sans écrasement silencieux ;
-- `.\lea.ps1 start`, `status` et `stop` restent fiables et sûrs ;
-- les tests backend, frontend et Microsoft Edge Stable passent ;
-- aucune fonctionnalité de l'étape suivante n'a été ajoutée ;
-- aucune fonctionnalité supplémentaire n'a été ajoutée.
+La validation manuelle doit confirmer le flux utilisateur principal : démarrer
+Docker manuellement, choisir Programmation, sélectionner un projet strictement
+confiné à `L:\IA_WORKSPACE`, lancer un run OpenHands réel, consulter le diff,
+puis accepter ou restaurer les changements sans régression du profil Général ni
+de la mémoire.
 
-Une fois ces critères atteints : arrête-toi.
+Après cette validation, arrête-toi et attends une demande explicite avant toute
+nouvelle étape.

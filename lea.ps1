@@ -20,6 +20,7 @@ $StandardInputFile = Join-Path $StateDirectory 'stdin.empty'
 $TaskkillExecutable = Join-Path $env:SystemRoot 'System32\taskkill.exe'
 $NetstatExecutable = Join-Path $env:SystemRoot 'System32\netstat.exe'
 
+# Résout un fichier du registre sans accepter un chemin qui sortirait du projet.
 function Resolve-RegistryFile {
     # Résout un chemin relatif du registre et refuse toute sortie de la racine autorisée.
     param(
@@ -46,6 +47,7 @@ function Resolve-RegistryFile {
     return $resolved
 }
 
+# Retourne exactement un profil du registre ou signale une configuration ambiguë.
 function Get-RegistryProfile {
     # Retourne exactement le profil demandé sans bascule silencieuse vers Général.
     param(
@@ -61,6 +63,7 @@ function Get-RegistryProfile {
     return $matches[0]
 }
 
+# Charge et valide les invariants communs du registre avant tout démarrage.
 function Read-ModelRegistry {
     # Valide les champs critiques utilisés par PowerShell avant tout lancement de processus.
     param([Parameter(Mandatory = $true)][string]$RegistryPath)
@@ -189,7 +192,7 @@ function Read-ModelRegistry {
             ($threads.Value -isnot [int] -and $threads.Value -isnot [long])) {
             throw 'Le nombre de slots et de threads du profil doit être un entier JSON.'
         }
-        foreach ($booleanName in @('jinja', 'mmap', 'fit')) {
+        foreach ($booleanName in @('jinja', 'mmap', 'fit', 'cache_ram', 'skip_chat_parsing')) {
             $booleanProperty = $profileRuntime.PSObject.Properties[$booleanName]
             if ($null -eq $booleanProperty -or $booleanProperty.Value -isnot [bool]) {
                 throw "Le champ $booleanName du profil doit être un booléen JSON."
@@ -213,8 +216,14 @@ function Read-ModelRegistry {
         if ([int64]$contextTokens.Value -le 0 -or [int64]$parallelSlots.Value -ne 1) {
             throw "Contexte ou nombre de slots invalide pour le profil $profileId."
         }
-        if ($profileId -eq 'development' -and [int64]$contextTokens.Value -ne 16000) {
-            throw 'Le profil development doit utiliser exactement 16 000 tokens de contexte.'
+        if ($profileId -eq 'development' -and @(16000, 18000, 20000, 22000) -notcontains [int64]$contextTokens.Value) {
+            throw 'Le profil development doit utiliser une fenêtre Stage 10 autorisée : 16K, 18K, 20K ou 22K.'
+        }
+        foreach ($engineField in @('model_name', 'agent_engine', 'orchestrator')) {
+            $engineProperty = $profile.PSObject.Properties[$engineField]
+            if ($null -eq $engineProperty -or [string]::IsNullOrWhiteSpace([string]$engineProperty.Value)) {
+                throw "Le profil $profileId ne définit pas $engineField."
+            }
         }
         $gpuLayers = [string]$profile.runtime.gpu_layers
         if ($gpuLayers -ne 'auto' -and $gpuLayers -notmatch '^\d{1,3}$') {
@@ -270,6 +279,29 @@ function Read-ModelRegistry {
         throw 'Le profil par défaut doit être activé.'
     }
 
+    # Le lanceur direct n'est autorisé que pour Général. Programmation est
+    # orchestré par OpenHands sur son endpoint séparé et ne doit jamais être
+    # lancé accidentellement sur le port général.
+    $developmentProfile = Get-RegistryProfile -Registry $registry -ProfileId 'development'
+    $openHands = $registry.PSObject.Properties['openhands']
+    if ($null -eq $openHands -or $null -eq $openHands.Value -or
+        [string]$developmentProfile.model_name -ne 'Qwen2.5-Coder-7B-Instruct Q6_K' -or
+        [string]$developmentProfile.agent_engine -ne 'OpenHands' -or
+        [string]$developmentProfile.orchestrator -ne 'agent_server_sdk' -or
+        @(16000, 18000, 20000, 22000) -notcontains [int]$developmentProfile.context_tokens) {
+        throw 'Le profil Programmation doit être le profil OpenHands Qwen2.5 avec une fenêtre Stage 10 autorisée.'
+    }
+    $agentServer = $openHands.Value.agent_server
+    $modelEndpoint = $openHands.Value.model_endpoint
+    if ($null -eq $agentServer -or $null -eq $modelEndpoint -or
+        [string]$agentServer.host -ne '127.0.0.1' -or
+        [string]$modelEndpoint.host -ne '127.0.0.1' -or
+        [int]$modelEndpoint.port -eq [int]$runtime.port -or
+        @($agentServer.tool_names).Count -ne 3 -or
+        @($agentServer.tool_names | Sort-Object -Unique) -join ',' -ne 'file_editor,task_tracker,terminal') {
+        throw 'La configuration OpenHands du registre est invalide.'
+    }
+
     return $registry
 }
 
@@ -283,6 +315,7 @@ $ModelRuntimePort = [int]$ModelRegistry.runtime.port
 $ModelRuntimeModelsEndpoint = 'http://{0}:{1}{2}' -f $ModelRuntimeHost, $ModelRuntimePort, [string]$ModelRegistry.runtime.models_path
 $BackendDirectory = Join-Path $ProjectRoot 'backend'
 $BackendPython = Join-Path $BackendDirectory '.venv\Scripts\python.exe'
+$DevelopmentRuntimeScript = Join-Path $ProjectRoot 'tools\openhands\development_runtime.py'
 $PackageFile = Join-Path $ProjectRoot 'package.json'
 
 $ComponentDefinitions = [ordered]@{
@@ -326,6 +359,7 @@ $KnownStateFiles = @(
     'frontend.stderr.log'
 )
 
+# Lit le parent d'un PID sans supposer que le processus existe encore.
 function Get-ParentProcessId {
     param([Parameter(Mandatory = $true)][int]$ProcessId)
 
@@ -464,6 +498,7 @@ public static class LeaProcessTree
     }
 }
 
+# Vérifie une filiation de processus bornée avant d'attribuer un enfant à Léa.
 function Test-ProcessDescendsFrom {
     param(
         [Parameter(Mandatory = $true)][int]$ChildProcessId,
@@ -488,6 +523,7 @@ function Test-ProcessDescendsFrom {
     return $false
 }
 
+# Énumère les descendants connus d'un processus déjà identifié.
 function Get-DescendantProcessIds {
     param([Parameter(Mandatory = $true)][int]$RootProcessId)
 
@@ -502,6 +538,7 @@ function Get-DescendantProcessIds {
     }
 }
 
+# Refuse d'adopter un port dont l'écouteur ne descend pas du lanceur attendu.
 function Assert-ListenerBelongsToLauncher {
     param(
         [Parameter(Mandatory = $true)][int]$ListenerProcessId,
@@ -514,6 +551,7 @@ function Assert-ListenerBelongsToLauncher {
     }
 }
 
+# Affiche les seules commandes publiques prises en charge par le lanceur.
 function Write-Usage {
     Write-Host 'Usage:'
     Write-Host '  .\lea.ps1 start'
@@ -523,8 +561,10 @@ function Write-Usage {
     Write-Host '  .\lea.ps1 status-core [-Json]'
     Write-Host '  .\lea.ps1 stop-core'
     Write-Host '  .\lea.ps1 switch-model -ProfileId <id> [-Json]'
+    Write-Host '  .\lea.ps1 start-model | stop-model'
 }
 
+# Lit uniformément une propriété dans un dictionnaire ou un objet PowerShell.
 function Get-ObjectValue {
     param(
         $Object,
@@ -551,6 +591,7 @@ function Get-ObjectValue {
     return $property.Value
 }
 
+# Écrit uniformément une propriété dans l'état désérialisé.
 function Set-ObjectValue {
     param(
         [Parameter(Mandatory = $true)]$Object,
@@ -571,6 +612,7 @@ function Set-ObjectValue {
     }
 }
 
+# Retire une propriété d'état sans échouer lorsqu'elle est déjà absente.
 function Remove-ObjectValue {
     param(
         [Parameter(Mandatory = $true)]$Object,
@@ -588,6 +630,7 @@ function Remove-ObjectValue {
     }
 }
 
+# Compare deux chemins Windows canoniques sans tenir compte de la casse.
 function Test-SamePath {
     param(
         [string]$Left,
@@ -612,6 +655,7 @@ function Test-SamePath {
     )
 }
 
+# Retourne les PID qui écoutent réellement le port demandé.
 function Get-ListeningPids {
     param([Parameter(Mandatory = $true)][int]$Port)
 
@@ -627,6 +671,7 @@ function Get-ListeningPids {
     return @($pids | Sort-Object -Unique)
 }
 
+# Attend brièvement qu'un port libéré par un processus géré disparaisse.
 function Wait-ForPortRelease {
     param(
         [Parameter(Mandatory = $true)][int]$Port,
@@ -645,6 +690,7 @@ function Wait-ForPortRelease {
     return @(Get-ListeningPids -Port $Port).Count -eq 0
 }
 
+# Bloque un démarrage si un processus inconnu possède déjà le port.
 function Assert-PortFree {
     param(
         [Parameter(Mandatory = $true)][int]$Port,
@@ -657,6 +703,7 @@ function Assert-PortFree {
     }
 }
 
+# Lit le chemin exécutable d'un PID pour vérifier son identité.
 function Get-ProcessPath {
     param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process)
 
@@ -667,6 +714,7 @@ function Get-ProcessPath {
     }
 }
 
+# Capture les éléments stables nécessaires pour reconnaître un processus plus tard.
 function New-ProcessRecord {
     param(
         [Parameter(Mandatory = $true)][int]$ProcessId,
@@ -702,6 +750,7 @@ function New-ProcessRecord {
     }
 }
 
+# Vérifie qu'un record désigne encore le même processus avant toute action.
 function Test-ProcessRecord {
     param($Record)
 
@@ -783,12 +832,14 @@ function Test-ProcessRecord {
     }
 }
 
+# Crée le répertoire local ignoré qui contient état et journaux d'exécution.
 function Initialize-StateDirectory {
     if (-not (Test-Path -LiteralPath $StateDirectory)) {
         New-Item -ItemType Directory -Path $StateDirectory -Force | Out-Null
     }
 }
 
+# Relit l'état local et refuse un document corrompu ou étranger au projet.
 function Read-LeaState {
     if (-not (Test-Path -LiteralPath $StateFile)) {
         return $null
@@ -812,6 +863,7 @@ function Read-LeaState {
     return $state
 }
 
+# Persiste l'état courant dans un JSON lisible par les commandes suivantes.
 function Write-LeaState {
     param([Parameter(Mandatory = $true)]$State)
 
@@ -819,6 +871,7 @@ function Write-LeaState {
     $State | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $StateFile -Encoding UTF8
 }
 
+# Supprime uniquement l'état devenu vide après arrêt des composants gérés.
 function Remove-LeaState {
     param([switch]$KeepLogs)
 
@@ -841,6 +894,7 @@ function Remove-LeaState {
     }
 }
 
+# Nettoie les anciens journaux connus avant une nouvelle session locale.
 function Clear-PreviousLogs {
     Initialize-StateDirectory
     foreach ($fileName in ($KnownStateFiles | Where-Object { $_ -ne 'processes.json' })) {
@@ -851,6 +905,7 @@ function Clear-PreviousLogs {
     }
 }
 
+# Prépare un stdin vide pour empêcher un service caché d'attendre une saisie.
 function Ensure-EmptyStandardInputFile {
     Initialize-StateDirectory
 
@@ -867,6 +922,7 @@ function Ensure-EmptyStandardInputFile {
     [System.IO.File]::WriteAllBytes($StandardInputFile, [byte[]]@())
 }
 
+# Construit un état neuf associé à cette racine de projet.
 function New-LeaState {
     return [ordered]@{
         version = 1
@@ -876,6 +932,7 @@ function New-LeaState {
     }
 }
 
+# Retourne la collection de composants en tolérant les anciens états plats.
 function Get-StateComponents {
     param([Parameter(Mandatory = $true)]$State)
 
@@ -887,6 +944,7 @@ function Get-StateComponents {
     return $components
 }
 
+# Enregistre un composant géré sous son nom stable.
 function Set-ComponentState {
     param(
         [Parameter(Mandatory = $true)]$State,
@@ -897,6 +955,7 @@ function Set-ComponentState {
     Set-ObjectValue -Object (Get-StateComponents -State $State) -Name $ComponentName -Value $Value
 }
 
+# Oublie le record d'un composant dont l'arrêt a été confirmé.
 function Remove-ComponentState {
     param(
         [Parameter(Mandatory = $true)]$State,
@@ -906,6 +965,7 @@ function Remove-ComponentState {
     Remove-ObjectValue -Object (Get-StateComponents -State $State) -Name $ComponentName
 }
 
+# Liste les composants réellement présents dans l'état persistant.
 function Get-RecordedComponentNames {
     param([Parameter(Mandatory = $true)]$State)
 
@@ -920,6 +980,7 @@ function Get-RecordedComponentNames {
     return @($recordedNames)
 }
 
+# Retrouve le processus principal d'un composant pour les contrôles de propriété.
 function Get-PrimaryRecord {
     param(
         [Parameter(Mandatory = $true)]$State,
@@ -935,6 +996,7 @@ function Get-PrimaryRecord {
     return Get-ObjectValue -Object $component -Name 'listener'
 }
 
+# Vérifie qu'un endpoint local répond avec le contenu minimal attendu.
 function Test-Endpoint {
     param(
         [Parameter(Mandatory = $true)][string]$Uri,
@@ -957,6 +1019,7 @@ function Test-Endpoint {
     }
 }
 
+# Attend la disponibilité réelle d'un composant après son lancement.
 function Wait-ForEndpoint {
     param(
         [Parameter(Mandatory = $true)][string]$ComponentLabel,
@@ -977,6 +1040,7 @@ function Wait-ForEndpoint {
     throw "$ComponentLabel n’est pas prêt après $TimeoutSeconds secondes. Consultez les journaux dans $StateDirectory."
 }
 
+# Confirme que le processus enregistré possède bien son port public.
 function Assert-RecordOwnsPort {
     param(
         [Parameter(Mandatory = $true)]$Record,
@@ -990,6 +1054,7 @@ function Assert-RecordOwnsPort {
     }
 }
 
+# Arrête un processus lancé pendant la commande si sa préparation échoue.
 function Stop-JustStartedProcess {
     param([System.Diagnostics.Process]$Process)
 
@@ -1025,6 +1090,7 @@ function Stop-JustStartedProcess {
     Stop-ManagedRecord -Record $record -ComponentLabel "processus lancé $($Process.Id)"
 }
 
+# Lance le profil demandé avec les seuls arguments validés par le registre.
 function Start-Model {
     param(
         [Parameter(Mandatory = $true)]$State,
@@ -1033,6 +1099,9 @@ function Start-Model {
 
     $definition = $ComponentDefinitions.model
     $profile = Get-RegistryProfile -Registry $ModelRegistry -ProfileId $ProfileId
+    if ([string]$profile.agent_engine -ne 'direct') {
+        throw "Le profil $ProfileId doit être démarré par OpenHands, pas par le lanceur llama.cpp Général."
+    }
     $modelPath = Resolve-RegistryFile -RelativePath ([string]$profile.model_path) -AllowedRoot (Join-Path $ProjectRoot 'models') -Label "Modèle $ProfileId"
     $modelAlias = [string]$profile.runtime.alias
     $contextSize = [int]$profile.context_tokens
@@ -1048,8 +1117,14 @@ function Start-Model {
     if ([bool]$runtime.jinja) {
         $arguments += ' --jinja'
     }
-    if (-not [bool]$runtime.mmap) {
+    if ([bool]$runtime.mmap) {
+        $arguments += ' --mmap'
+    } else {
         $arguments += ' --no-mmap'
+    }
+    $arguments += ' --cache-ram ' + $(if ([bool]$runtime.cache_ram) { '1' } else { '0' })
+    if (-not [bool]$runtime.skip_chat_parsing) {
+        $arguments += ' --no-skip-chat-parsing'
     }
     if ([bool]$runtime.fit) {
         $arguments += ' --fit on --fit-target ' + [int]$runtime.fit_target_mib + ' --fit-ctx ' + [int]$runtime.fit_context_min_tokens
@@ -1096,6 +1171,7 @@ function Start-Model {
     }
 }
 
+# Démarre FastAPI et enregistre son lanceur ainsi que son écouteur vérifié.
 function Start-Backend {
     param([Parameter(Mandatory = $true)]$State)
 
@@ -1139,6 +1215,7 @@ function Start-Backend {
     }
 }
 
+# Démarre Vite sur loopback et conserve l'identité de son processus.
 function Start-Frontend {
     param([Parameter(Mandatory = $true)]$State)
 
@@ -1178,6 +1255,7 @@ function Start-Frontend {
     }
 }
 
+# Retrouve le profil réellement associé au modèle actuellement enregistré.
 function Get-ModelProfileIdFromState {
     # Les anciens états sans profil restent lisibles comme profil Général.
     param($State)
@@ -1195,6 +1273,7 @@ function Get-ModelProfileIdFromState {
     return [string]$recordedProfileId
 }
 
+# Déduit du registre le contenu de readiness attendu pour chaque composant.
 function Get-EndpointExpectedContent {
     # L'alias attendu du modèle suit l'état actif, jamais une constante du frontend.
     param(
@@ -1209,6 +1288,7 @@ function Get-EndpointExpectedContent {
     return [string](Get-RegistryProfile -Registry $ModelRegistry -ProfileId $profileId).runtime.alias
 }
 
+# Produit un résumé structuré de l'état sans exposer les commandes complètes.
 function Get-StateSummary {
     param(
         [Parameter(Mandatory = $true)]$State,
@@ -1252,6 +1332,7 @@ function Get-StateSummary {
     }
 }
 
+# Confirme ensemble la propriété des processus et la disponibilité des endpoints.
 function Test-AllEndpointsReady {
     param(
         [string[]]$ComponentNames = $AllComponentNames,
@@ -1269,6 +1350,121 @@ function Test-AllEndpointsReady {
     return $true
 }
 
+# Interroge le runtime Programmation seulement quand son script officiel existe.
+function Get-DevelopmentRuntimeStatus {
+    # The Programming model is deliberately not recorded as the direct llama
+    # component in lea-state.json. Ask its signed helper instead so status-core
+    # can report a healthy mixed core without adopting an unrelated process.
+    if (-not (Test-Path -LiteralPath $DevelopmentRuntimeScript -PathType Leaf)) {
+        return $null
+    }
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $rawStatus = @(& $BackendPython $DevelopmentRuntimeScript status --json 2>$null)
+        $helperExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    if ($helperExitCode -ne 0 -or $rawStatus.Count -ne 1) {
+        return $null
+    }
+
+    try {
+        $developmentStatus = ($rawStatus -join "`n") | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        return $null
+    }
+
+    if ([string]$developmentStatus.state -eq 'ready' -and [string]$developmentStatus.profile_id -eq 'development') {
+        return $developmentStatus
+    }
+
+    return $null
+}
+
+# Retrouve le conteneur Agent Server inactif uniquement s'il appartient à Léa.
+function Get-ManagedIdleAgentServer {
+    # Inspect only the deterministic idle container and return it only when its
+    # labels, image, loopback policy, and state-volume mount still prove ownership.
+    $containerName = 'lea-openhands-development-idle'
+    $rawInspection = @(& docker.exe container inspect $containerName 2>$null)
+    $inspectExitCode = $LASTEXITCODE
+    if ($inspectExitCode -ne 0) {
+        return $null
+    }
+
+    try {
+        $container = (($rawInspection -join "`n") | ConvertFrom-Json -ErrorAction Stop)[0]
+    } catch {
+        throw 'Le conteneur OpenHands idle est illisible; le cœur reste actif.'
+    }
+
+    $agentServer = Get-ObjectValue -Object (Get-ObjectValue -Object $ModelRegistry -Name 'openhands') -Name 'agent_server'
+    $agentRuntime = Get-ObjectValue -Object (Get-ObjectValue -Object $ModelRegistry -Name 'openhands') -Name 'agent_runtime'
+    $labels = Get-ObjectValue -Object (Get-ObjectValue -Object $container -Name 'Config') -Name 'Labels'
+    $hostConfig = Get-ObjectValue -Object $container -Name 'HostConfig'
+    $mounts = @(Get-ObjectValue -Object $container -Name 'Mounts')
+    $stateMounts = @($mounts | Where-Object {
+        [string](Get-ObjectValue -Object $_ -Name 'Destination') -eq [string](Get-ObjectValue -Object $agentRuntime -Name 'state_volume_path')
+    })
+    $projectMounts = @($mounts | Where-Object {
+        [string](Get-ObjectValue -Object $_ -Name 'Destination') -eq '/workspace'
+    })
+    $containerId = [string](Get-ObjectValue -Object $container -Name 'Id')
+    $isManaged = (
+        $containerId -match '^[0-9a-f]{64}$' -and
+        [string](Get-ObjectValue -Object (Get-ObjectValue -Object $container -Name 'Config') -Name 'Image') -eq [string](Get-ObjectValue -Object $agentServer -Name 'image') -and
+        [string](Get-ObjectValue -Object $labels -Name 'com.projet-lea.openhands.managed') -eq 'true' -and
+        [string](Get-ObjectValue -Object $labels -Name 'com.projet-lea.openhands.mode') -eq 'idle' -and
+        [string](Get-ObjectValue -Object $labels -Name 'com.projet-lea.openhands.run-id') -eq '' -and
+        -not [bool](Get-ObjectValue -Object $hostConfig -Name 'Privileged') -and
+        [string](Get-ObjectValue -Object $hostConfig -Name 'NetworkMode') -ne 'host' -and
+        $stateMounts.Count -eq 1 -and
+        [string](Get-ObjectValue -Object $stateMounts[0] -Name 'Name') -eq [string](Get-ObjectValue -Object $agentRuntime -Name 'state_volume') -and
+        $projectMounts.Count -eq 0 -and
+        $mounts.Count -eq 1
+    )
+    if (-not $isManaged) {
+        throw 'Le conteneur OpenHands idle ne correspond plus à la configuration gérée; le cœur reste actif.'
+    }
+
+    return $container
+}
+
+# Arrête le runtime Programmation vérifié sans toucher aux conteneurs étrangers.
+function Stop-ProgrammingRuntime {
+    # Stop only the two Programming owners verified by their independent state;
+    # an unknown Docker container or Windows process is never adopted or killed.
+    $container = Get-ManagedIdleAgentServer
+    if ($null -ne $container -and [bool](Get-ObjectValue -Object (Get-ObjectValue -Object $container -Name 'State') -Name 'Running')) {
+        & docker.exe container stop --time 30 ([string](Get-ObjectValue -Object $container -Name 'Id')) | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "L'Agent Server OpenHands géré ne peut pas être arrêté en sécurité."
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $DevelopmentRuntimeScript -PathType Leaf)) {
+        return
+    }
+    $rawStatus = @(& $BackendPython $DevelopmentRuntimeScript stop --json 2>$null)
+    $helperExitCode = $LASTEXITCODE
+    if ($helperExitCode -ne 0 -or $rawStatus.Count -ne 1) {
+        throw 'Le runtime Qwen Programmation ne peut pas confirmer son arrêt.'
+    }
+    try {
+        $developmentStatus = ($rawStatus -join "`n") | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw 'Le runtime Qwen Programmation a retourné un état illisible.'
+    }
+    if ([string]$developmentStatus.state -ne 'stopped') {
+        throw 'Le runtime Qwen Programmation reste actif; le cœur reste actif.'
+    }
+}
+
+# Calcule l'état public du cœur à partir des processus et endpoints réels.
 function Get-CoreStatus {
     param($State)
 
@@ -1326,6 +1522,26 @@ function Get-CoreStatus {
         }
     }
 
+    # During Programming the direct General model record is intentionally
+    # absent. Count the independently verified Development helper as the model
+    # component only when FastAPI is already healthy and no direct error exists.
+    $developmentRuntime = $null
+    if ($componentStates.model -eq 'stopped' -and $componentStates.backend -eq 'ready') {
+        $developmentRuntime = Get-DevelopmentRuntimeStatus
+        if ($null -ne $developmentRuntime) {
+            $componentStates.model = 'ready'
+            $readyCount++
+            $stoppedCount--
+        }
+    }
+
+    $activeProfileId = $null
+    if ($null -ne $developmentRuntime) {
+        $activeProfileId = 'development'
+    } elseif ($null -ne $State -and $null -ne (Get-ObjectValue -Object (Get-StateComponents -State $State) -Name 'model')) {
+        $activeProfileId = Get-ModelProfileIdFromState -State $State
+    }
+
     if ($readyCount -eq $CoreComponentNames.Count) {
         $stateName = 'ready'
         $message = 'Léa est prête.'
@@ -1347,11 +1563,12 @@ function Get-CoreStatus {
         state = $stateName
         model = $componentStates.model
         backend = $componentStates.backend
-        active_profile_id = if ($null -ne $State -and $null -ne (Get-ObjectValue -Object (Get-StateComponents -State $State) -Name 'model')) { Get-ModelProfileIdFromState -State $State } else { $null }
+        active_profile_id = $activeProfileId
         message = $message
     }
 }
 
+# Présente l'état des composants dans un format lisible en console.
 function Write-LeaStatus {
     param($State)
 
@@ -1395,6 +1612,7 @@ function Write-LeaStatus {
     }
 }
 
+# Affiche ou sérialise le statut du cœur pour le contrôleur Vite.
 function Show-CoreStatus {
     param([switch]$JsonOutput)
 
@@ -1410,6 +1628,7 @@ function Show-CoreStatus {
     Write-Host $status.message
 }
 
+# Arrête proprement un processus dont l'identité complète est encore valide.
 function Stop-ManagedRecord {
     param(
         $Record,
@@ -1511,6 +1730,7 @@ function Stop-ManagedRecord {
     throw "$ComponentLabel n’a pas pu être arrêté."
 }
 
+# Termine un record déjà vérifié sans adopter d'autre processus par son port.
 function Stop-VerifiedRecordDirectly {
     param(
         $Record,
@@ -1554,6 +1774,7 @@ function Stop-VerifiedRecordDirectly {
     throw "$ComponentLabel n’a pas pu être arrêté."
 }
 
+# Attend que la mémoire GPU du modèle soit effectivement rendue au système.
 function Confirm-ModelVramReleased {
     param([int]$ModelPid)
 
@@ -1574,6 +1795,7 @@ function Confirm-ModelVramReleased {
     }
 }
 
+# Arrête les processus enregistrés d'un composant dans un ordre sûr.
 function Stop-ComponentFromState {
     param(
         [Parameter(Mandatory = $true)]$State,
@@ -1596,6 +1818,7 @@ function Stop-ComponentFromState {
     Stop-ManagedRecord -Record $listener -ComponentLabel $ComponentLabel
 }
 
+# Retire de l'état les composants dont tous les records sont maintenant arrêtés.
 function Remove-StoppedComponentStates {
     param(
         [Parameter(Mandatory = $true)]$State,
@@ -1611,6 +1834,7 @@ function Remove-StoppedComponentStates {
     }
 }
 
+# Coordonne l'arrêt d'un ensemble précis de composants déjà enregistrés.
 function Stop-LeaFromState {
     param(
         [Parameter(Mandatory = $true)]$State,
@@ -1708,6 +1932,7 @@ function Stop-LeaFromState {
     }
 }
 
+# Vérifie les exécutables et fichiers configurés avant de lancer quoi que ce soit.
 function Assert-RequiredFiles {
     param(
         [string[]]$ComponentNames = $AllComponentNames,
@@ -1757,6 +1982,7 @@ function Assert-RequiredFiles {
     }
 }
 
+# Détermine les composants absents sans redémarrer ceux qui sont déjà sains.
 function Get-ComponentsToStart {
     param(
         [Parameter(Mandatory = $true)]$State,
@@ -1797,6 +2023,7 @@ function Get-ComponentsToStart {
     return @($componentsToStart)
 }
 
+# Démarre un composant nommé et ajoute son record au même état de session.
 function Start-ComponentFromState {
     param(
         [Parameter(Mandatory = $true)]$State,
@@ -1823,6 +2050,7 @@ function Start-ComponentFromState {
     }
 }
 
+# Orchestre un démarrage partiel ou complet avec rollback des seuls nouveaux composants.
 function Start-LeaComponents {
     param(
         [Parameter(Mandatory = $true)][string[]]$ComponentNames,
@@ -1901,14 +2129,17 @@ function Start-LeaComponents {
     }
 }
 
+# Démarre la pile complète gérée par Léa.
 function Start-Lea {
     Start-LeaComponents -ComponentNames $AllComponentNames -ReadyMessage 'Léa est prête.' -AlreadyStartedMessage 'Léa est déjà démarrée.'
 }
 
+# Démarre uniquement le modèle et le backend.
 function Start-Core {
     Start-LeaComponents -ComponentNames $CoreComponentNames -ReadyMessage 'Le cœur de Léa est prêt.' -AlreadyStartedMessage 'Le cœur de Léa est déjà démarré.'
 }
 
+# Affiche l'état complet en réutilisant les contrôles de propriété communs.
 function Show-LeaStatus {
     $state = Read-LeaState
     if ($null -ne $state) {
@@ -1922,6 +2153,7 @@ function Show-LeaStatus {
     Write-LeaStatus -State $state
 }
 
+# Arrête tous les composants appartenant à la session Léa courante.
 function Stop-Lea {
     $state = Read-LeaState
     if ($null -eq $state) {
@@ -1929,10 +2161,12 @@ function Stop-Lea {
         return
     }
 
+    Stop-ProgrammingRuntime
     Stop-LeaFromState -State $state -ComponentNames $AllComponentNames
     Write-Host 'Léa est arrêtée.'
 }
 
+# Arrête le backend et les runtimes modèles tout en laissant Vite intact.
 function Stop-Core {
     $state = Read-LeaState
     if ($null -eq $state) {
@@ -1940,10 +2174,38 @@ function Stop-Core {
         return
     }
 
+    Stop-ProgrammingRuntime
     Stop-LeaFromState -State $state -ComponentNames $CoreComponentNames
     Write-Host 'Le cœur de Léa est arrêté.'
 }
 
+# Charge seulement le profil Général pour une transition contrôlée du backend.
+function Start-GeneralModelOnly {
+    # Restaure seulement le modèle Général dans un cœur déjà lancé ; le
+    # contrôleur OpenHands l'utilise après avoir arrêté Qwen vérifié.
+    $state = Read-LeaState
+    if ($null -eq $state) {
+        throw 'Le cœur de Léa doit être démarré avant de restaurer le modèle Général.'
+    }
+    $general = Get-RegistryProfile -Registry $ModelRegistry -ProfileId $DefaultProfileId
+    if ([string]$general.agent_engine -ne 'direct') {
+        throw 'Le profil Général doit rester servi par le lanceur llama.cpp local.'
+    }
+    Start-LeaComponents -ComponentNames @('model') -ModelProfileId $DefaultProfileId -ReadyMessage 'Le modèle Général est prêt.' -AlreadyStartedMessage 'Le modèle Général est déjà prêt.'
+}
+
+# Décharge seulement le modèle Général dont le record est vérifié.
+function Stop-GeneralModelOnly {
+    # Arrête uniquement le PID Général dont l'état signé est encore vérifiable,
+    # sans toucher FastAPI ni Vite pendant une commutation de profil.
+    $state = Read-LeaState
+    if ($null -eq $state) {
+        return
+    }
+    Stop-LeaFromState -State $state -ComponentNames @('model') -KeepLogs
+}
+
+# Effectue la bascule atomique entre Général et Programmation avec restauration sur échec.
 function Switch-LeaModel {
     # Bascule en série : ancien modèle totalement arrêté avant le nouveau, avec rollback.
     param(
@@ -1954,6 +2216,9 @@ function Switch-LeaModel {
     $targetProfile = Get-RegistryProfile -Registry $ModelRegistry -ProfileId $TargetProfileId
     if (-not [bool]$targetProfile.enabled) {
         throw "Le profil $TargetProfileId est désactivé."
+    }
+    if ([string]$targetProfile.agent_engine -ne 'direct') {
+        throw 'Le profil Programmation est activé par le contrôleur OpenHands de Léa, jamais par switch-model direct.'
     }
     $state = Read-LeaState
     if ($null -eq $state) {
@@ -2122,6 +2387,14 @@ try {
         }
         'stop-core' {
             Stop-Core
+            return
+        }
+        'start-model' {
+            Start-GeneralModelOnly
+            return
+        }
+        'stop-model' {
+            Stop-GeneralModelOnly
             return
         }
         'switch-model' {
