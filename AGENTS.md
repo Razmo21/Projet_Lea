@@ -47,11 +47,11 @@ Après modification :
 
 ## Étape actuelle
 
-L’étape 10 — multi-modèles et profil Programmation — est techniquement complète.
-Ses barrières automatisées et ses validations réelles sont terminées ; la
-validation manuelle finale de l’utilisateur reste attendue.
+L’étape 10 est terminée. L’étape 11 — architecture indépendante des modèles —
+est techniquement complète. Ses barrières automatisées et ses validations
+réelles sont terminées ; sa validation manuelle finale reste attendue.
 
-Ne commence ni l’étape 11 ni l’étape 12 sans une nouvelle autorisation explicite
+Ne commence ni l’étape 12 ni l’étape 13 sans une nouvelle autorisation explicite
 de l’utilisateur.
 
 ## Interdictions actuelles
@@ -67,7 +67,12 @@ Ne crée PAS :
 - authentification ;
 - télémétrie ;
 - mémoire automatique ou sémantique ;
-- une fonctionnalité reportée aux étapes 11 ou 12.
+- une fonctionnalité reportée à l’étape 12 ou aux étapes ultérieures.
+
+`config/models.json` (schéma 3) est l’unique registre. Les profils portent leurs
+contrats et permissions ; `models` porte les paramètres des modèles et
+`profiles[].model_id` les associe. Ne réintroduis pas de dépendance au nom de
+Qwen dans le code métier ni de parseur concurrent dans les lanceurs.
 
 ## Validation avant une étape suivante
 
@@ -75,7 +80,9 @@ La validation manuelle doit confirmer le flux utilisateur principal : démarrer
 Docker manuellement, choisir Programmation, sélectionner un projet strictement
 confiné à `L:\IA_WORKSPACE`, lancer un run OpenHands réel, consulter le diff,
 puis accepter ou restaurer les changements sans régression du profil Général ni
-de la mémoire.
+de la mémoire. Elle doit également confirmer les conversations et les souvenirs
+après redémarrage. Le remplacement par configuration est documenté dans le
+README ; ne télécharge aucun nouveau modèle pour cette validation.
 
 Après cette validation, arrête-toi et attends une demande explicite avant toute
 nouvelle étape.

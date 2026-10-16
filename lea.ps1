@@ -2,6 +2,7 @@
     [Parameter(Position = 0)]
     [string]$Action,
     [string]$ProfileId,
+    [string]$RegistryPath,
     [switch]$Json
 )
 
@@ -63,249 +64,26 @@ function Get-RegistryProfile {
     return $matches[0]
 }
 
-# Charge et valide les invariants communs du registre avant tout démarrage.
+# Le chargeur Python est l'unique autorité de validation pour tous les lanceurs.
 function Read-ModelRegistry {
-    # Valide les champs critiques utilisés par PowerShell avant tout lancement de processus.
     param([Parameter(Mandatory = $true)][string]$RegistryPath)
 
-    if (-not (Test-Path -LiteralPath $RegistryPath -PathType Leaf)) {
-        throw "Registre des modèles introuvable : $RegistryPath"
-    }
-
+    $registryPython = Join-Path $ProjectRoot 'backend\.venv\Scripts\python.exe'
+    $registryBridge = Join-Path $ProjectRoot 'tools\model_config.py'
+    $output = & $registryPython -B $registryBridge --registry $RegistryPath --project-root $ProjectRoot
+    $registryExitCode = $LASTEXITCODE
     try {
-        $registry = Get-Content -Raw -Encoding UTF8 -LiteralPath $RegistryPath | ConvertFrom-Json
+        $registry = ($output -join [Environment]::NewLine) | ConvertFrom-Json
     } catch {
-        throw "Registre des modèles invalide : $($_.Exception.Message)"
+        throw 'Le chargeur du registre ne fournit pas un JSON exploitable.'
     }
-
-    $schemaVersion = $registry.PSObject.Properties['schema_version']
-    $defaultProfileId = $registry.PSObject.Properties['default_profile_id']
-    if ($null -eq $schemaVersion -or
-        ($schemaVersion.Value -isnot [int] -and $schemaVersion.Value -isnot [long]) -or
-        [int64]$schemaVersion.Value -lt 1 -or
-        $null -eq $defaultProfileId -or
-        $defaultProfileId.Value -isnot [string] -or
-        [string]::IsNullOrWhiteSpace([string]$defaultProfileId.Value)) {
-        throw 'Le registre des modèles ne possède pas de version ou de profil par défaut valide.'
+    if ($registryExitCode -ne 0) {
+        throw "Registre des modèles invalide : $($registry.error)"
     }
-
-    # Le lanceur utilise ces valeurs pour l'unique serveur llama.cpp : elles ne
-    # peuvent donc ni désigner une écoute publique ni diverger de ses routes API.
-    $runtimeProperty = $registry.PSObject.Properties['runtime']
-    if ($null -eq $runtimeProperty -or $null -eq $runtimeProperty.Value) {
-        throw 'Le registre des modèles ne définit pas le runtime llama.cpp.'
-    }
-    $runtime = $runtimeProperty.Value
-    $runtimeHost = $runtime.PSObject.Properties['host']
-    $runtimePort = $runtime.PSObject.Properties['port']
-    $chatPath = $runtime.PSObject.Properties['chat_completions_path']
-    $modelsPath = $runtime.PSObject.Properties['models_path']
-    if ($null -eq $runtimeHost -or [string]$runtimeHost.Value -ne '127.0.0.1') {
-        throw 'Le runtime doit écouter exclusivement sur 127.0.0.1.'
-    }
-    if ($null -eq $runtimePort -or
-        ($runtimePort.Value -isnot [int] -and $runtimePort.Value -isnot [long]) -or
-        [int64]$runtimePort.Value -lt 1 -or [int64]$runtimePort.Value -gt 65535) {
-        throw 'Le port du runtime doit être compris entre 1 et 65535.'
-    }
-    if ($null -eq $chatPath -or $null -eq $modelsPath -or
-        -not ([string]$chatPath.Value).StartsWith('/') -or
-        -not ([string]$modelsPath.Value).StartsWith('/')) {
-        throw "Les routes du runtime doivent commencer par '/'."
-    }
-
-    $profileIds = @{}
-    $aliases = @{}
-    $knownTypes = @($registry.model_types)
-    $knownCapabilities = @($registry.capability_catalog.PSObject.Properties.Name)
-    $knownTools = @($registry.tool_catalog)
-    $knownPermissions = @($registry.workspace_permissions.PSObject.Properties.Name)
-    $resourcePoliciesProperty = $registry.PSObject.Properties['resource_policies']
-    if ($null -eq $resourcePoliciesProperty -or $null -eq $resourcePoliciesProperty.Value) {
-        throw 'Le registre des modèles ne définit pas les politiques de ressources.'
-    }
-    $resourcePolicies = $resourcePoliciesProperty.Value
-    $policyProperties = @($resourcePolicies.PSObject.Properties)
-    if ($policyProperties.Count -eq 0) {
-        throw 'Le registre des modèles ne définit aucune politique de ressources.'
-    }
-    $maxRuntimeHardLimitBytes = [int64]24 * 1024 * 1024 * 1024
-    foreach ($policyProperty in $policyProperties) {
-        $policyName = [string]$policyProperty.Name
-        $policy = $policyProperty.Value
-        if ([string]::IsNullOrWhiteSpace($policyName) -or $null -eq $policy) {
-            throw 'Une politique de ressources est invalide.'
-        }
-        foreach ($fieldName in @(
-            'runtime_warning_bytes',
-            'runtime_hard_limit_bytes',
-            'system_available_warning_bytes',
-            'system_available_critical_bytes',
-            'vram_target_free_mib',
-            'max_threads'
-        )) {
-            $field = $policy.PSObject.Properties[$fieldName]
-            if ($null -eq $field -or
-                ($field.Value -isnot [int] -and $field.Value -isnot [long]) -or
-                [int64]$field.Value -le 0) {
-                throw "La politique de ressources $policyName possède un champ $fieldName invalide."
-            }
-        }
-        $priority = $policy.PSObject.Properties['cpu_priority']
-        if ($null -eq $priority -or
-            $priority.Value -isnot [string] -or
-            @('idle', 'below_normal', 'normal') -notcontains [string]$priority.Value) {
-            throw "La politique de ressources $policyName possède une priorité CPU invalide."
-        }
-        if ([int64]$policy.runtime_warning_bytes -ge [int64]$policy.runtime_hard_limit_bytes -or
-            [int64]$policy.runtime_hard_limit_bytes -ge $maxRuntimeHardLimitBytes) {
-            throw "La limite RAM dure de la politique $policyName doit rester strictement inférieure à 24 GiB."
-        }
-        if ([int64]$policy.system_available_critical_bytes -ge [int64]$policy.system_available_warning_bytes) {
-            throw "Les seuils RAM système de la politique $policyName sont inversés."
-        }
-        if ([int64]$policy.vram_target_free_mib -lt 800 -or [int64]$policy.vram_target_free_mib -gt 1024) {
-            throw "La marge VRAM de la politique $policyName doit rester entre 800 et 1024 MiB."
-        }
-        if ([int64]$policy.max_threads -gt 64) {
-            throw "Le nombre de threads de la politique $policyName est invalide."
-        }
-    }
-    $knownPolicies = @($policyProperties.Name)
-
-    foreach ($profile in @($registry.profiles)) {
-        $enabled = $profile.PSObject.Properties['enabled']
-        $contextTokens = $profile.PSObject.Properties['context_tokens']
-        $runtimeDefinition = $profile.PSObject.Properties['runtime']
-        if ($null -eq $enabled -or $enabled.Value -isnot [bool] -or
-            $null -eq $contextTokens -or
-            ($contextTokens.Value -isnot [int] -and $contextTokens.Value -isnot [long]) -or
-            $null -eq $runtimeDefinition -or $null -eq $runtimeDefinition.Value) {
-            throw 'Un profil contient un type JSON invalide.'
-        }
-        $profileRuntime = $runtimeDefinition.Value
-        $parallelSlots = $profileRuntime.PSObject.Properties['parallel_slots']
-        $threads = $profileRuntime.PSObject.Properties['threads']
-        if ($null -eq $parallelSlots -or
-            ($parallelSlots.Value -isnot [int] -and $parallelSlots.Value -isnot [long]) -or
-            $null -eq $threads -or
-            ($threads.Value -isnot [int] -and $threads.Value -isnot [long])) {
-            throw 'Le nombre de slots et de threads du profil doit être un entier JSON.'
-        }
-        foreach ($booleanName in @('jinja', 'mmap', 'fit', 'cache_ram', 'skip_chat_parsing')) {
-            $booleanProperty = $profileRuntime.PSObject.Properties[$booleanName]
-            if ($null -eq $booleanProperty -or $booleanProperty.Value -isnot [bool]) {
-                throw "Le champ $booleanName du profil doit être un booléen JSON."
-            }
-        }
-        $profileId = [string]$profile.id
-        if ($profileId -notmatch '^[a-z][a-z0-9_-]{1,31}$' -or $profileIds.ContainsKey($profileId)) {
-            throw "Identifiant de profil invalide ou dupliqué : $profileId"
-        }
-        $profileIds[$profileId] = $true
-
-        $alias = [string]$profile.runtime.alias
-        if ([string]::IsNullOrWhiteSpace($alias) -or $aliases.ContainsKey($alias)) {
-            throw "Alias llama.cpp vide ou dupliqué : $alias"
-        }
-        $aliases[$alias] = $true
-
-        if ([string]::IsNullOrWhiteSpace([string]$profile.display_name) -or $knownTypes -notcontains [string]$profile.model_type) {
-            throw "Nom ou type invalide pour le profil $profileId."
-        }
-        if ([int64]$contextTokens.Value -le 0 -or [int64]$parallelSlots.Value -ne 1) {
-            throw "Contexte ou nombre de slots invalide pour le profil $profileId."
-        }
-        if ($profileId -eq 'development' -and @(16000, 18000, 20000, 22000) -notcontains [int64]$contextTokens.Value) {
-            throw 'Le profil development doit utiliser une fenêtre Stage 10 autorisée : 16K, 18K, 20K ou 22K.'
-        }
-        foreach ($engineField in @('model_name', 'agent_engine', 'orchestrator')) {
-            $engineProperty = $profile.PSObject.Properties[$engineField]
-            if ($null -eq $engineProperty -or [string]::IsNullOrWhiteSpace([string]$engineProperty.Value)) {
-                throw "Le profil $profileId ne définit pas $engineField."
-            }
-        }
-        $gpuLayers = [string]$profile.runtime.gpu_layers
-        if ($gpuLayers -ne 'auto' -and $gpuLayers -notmatch '^\d{1,3}$') {
-            throw "Nombre de couches GPU invalide pour le profil $profileId."
-        }
-        if ($gpuLayers -eq 'auto' -and -not [bool]$profile.runtime.fit) {
-            throw "Le profil $profileId ne peut utiliser gpu_layers=auto sans --fit."
-        }
-        if ([bool]$profile.runtime.fit -and [int]$profile.runtime.fit_context_min_tokens -ne [int]$profile.context_tokens) {
-            throw "Le profil $profileId autoriserait --fit à réduire silencieusement son contexte."
-        }
-        if (@('f16', 'q8_0', 'q4_0') -notcontains [string]$profile.runtime.cache_type_k -or @('f16', 'q8_0', 'q4_0') -notcontains [string]$profile.runtime.cache_type_v) {
-            throw "Cache KV invalide pour le profil $profileId."
-        }
-        if ([string]$profile.expected_sha256 -notmatch '^[0-9a-f]{64}$') {
-            throw "SHA-256 attendu invalide pour le profil $profileId."
-        }
-        if ($knownPermissions -notcontains [string]$profile.workspace_permission -or $knownPolicies -notcontains [string]$profile.resource_policy) {
-            throw "Permission workspace ou politique de ressources inconnue pour $profileId."
-        }
-        $resourcePolicy = $resourcePolicies.PSObject.Properties[[string]$profile.resource_policy].Value
-        if ([int64]$threads.Value -gt [int64]$resourcePolicy.max_threads) {
-            throw "Le profil $profileId dépasse le nombre de threads autorisé."
-        }
-        foreach ($capability in @($profile.capabilities)) {
-            if ($knownCapabilities -notcontains [string]$capability) {
-                throw "Capacité inconnue pour $profileId : $capability"
-            }
-        }
-        foreach ($tool in @($profile.tools)) {
-            if ($knownTools -notcontains [string]$tool) {
-                throw "Outil inconnu pour $profileId : $tool"
-            }
-        }
-
-        $modelFile = Resolve-RegistryFile -RelativePath ([string]$profile.model_path) -AllowedRoot (Join-Path $ProjectRoot 'models') -Label "Modèle $profileId"
-        if ([bool]$profile.enabled -and -not (Test-Path -LiteralPath $modelFile -PathType Leaf)) {
-            throw "Modèle activé introuvable pour $profileId : $modelFile"
-        }
-        foreach ($promptPath in @($profile.prompt.reliability_path, $profile.prompt.profile_path, $profile.prompt.memory_path)) {
-            $promptFile = Resolve-RegistryFile -RelativePath ([string]$promptPath) -AllowedRoot (Join-Path $ProjectRoot 'config\prompts') -Label "Prompt $profileId"
-            if (-not (Test-Path -LiteralPath $promptFile -PathType Leaf)) {
-                throw "Prompt introuvable pour $profileId : $promptFile"
-            }
-        }
-    }
-
-    if (-not $profileIds.ContainsKey([string]$registry.default_profile_id)) {
-        throw 'Le profil par défaut du registre est introuvable.'
-    }
-    $defaultProfile = Get-RegistryProfile -Registry $registry -ProfileId ([string]$registry.default_profile_id)
-    if (-not [bool]$defaultProfile.enabled) {
-        throw 'Le profil par défaut doit être activé.'
-    }
-
-    # Le lanceur direct n'est autorisé que pour Général. Programmation est
-    # orchestré par OpenHands sur son endpoint séparé et ne doit jamais être
-    # lancé accidentellement sur le port général.
-    $developmentProfile = Get-RegistryProfile -Registry $registry -ProfileId 'development'
-    $openHands = $registry.PSObject.Properties['openhands']
-    if ($null -eq $openHands -or $null -eq $openHands.Value -or
-        [string]$developmentProfile.model_name -ne 'Qwen2.5-Coder-7B-Instruct Q6_K' -or
-        [string]$developmentProfile.agent_engine -ne 'OpenHands' -or
-        [string]$developmentProfile.orchestrator -ne 'agent_server_sdk' -or
-        @(16000, 18000, 20000, 22000) -notcontains [int]$developmentProfile.context_tokens) {
-        throw 'Le profil Programmation doit être le profil OpenHands Qwen2.5 avec une fenêtre Stage 10 autorisée.'
-    }
-    $agentServer = $openHands.Value.agent_server
-    $modelEndpoint = $openHands.Value.model_endpoint
-    if ($null -eq $agentServer -or $null -eq $modelEndpoint -or
-        [string]$agentServer.host -ne '127.0.0.1' -or
-        [string]$modelEndpoint.host -ne '127.0.0.1' -or
-        [int]$modelEndpoint.port -eq [int]$runtime.port -or
-        @($agentServer.tool_names).Count -ne 3 -or
-        @($agentServer.tool_names | Sort-Object -Unique) -join ',' -ne 'file_editor,task_tracker,terminal') {
-        throw 'La configuration OpenHands du registre est invalide.'
-    }
-
     return $registry
 }
 
-$ModelRegistryPath = Join-Path $ProjectRoot 'config\models.json'
+$ModelRegistryPath = if ($RegistryPath) { $RegistryPath } else { Join-Path $ProjectRoot 'config\models.json' }
 $ModelRegistry = Read-ModelRegistry -RegistryPath $ModelRegistryPath
 $DefaultProfileId = [string]$ModelRegistry.default_profile_id
 $DefaultProfile = Get-RegistryProfile -Registry $ModelRegistry -ProfileId $DefaultProfileId
@@ -1102,33 +880,12 @@ function Start-Model {
     if ([string]$profile.agent_engine -ne 'direct') {
         throw "Le profil $ProfileId doit être démarré par OpenHands, pas par le lanceur llama.cpp Général."
     }
-    $modelPath = Resolve-RegistryFile -RelativePath ([string]$profile.model_path) -AllowedRoot (Join-Path $ProjectRoot 'models') -Label "Modèle $ProfileId"
     $modelAlias = [string]$profile.runtime.alias
-    $contextSize = [int]$profile.context_tokens
     Assert-PortFree -Port $definition.Port -ComponentLabel $definition.Label
     Write-Host "Démarrage du modèle local $([string]$profile.display_name)..."
 
-    # Tous les paramètres significatifs proviennent du profil central validé.
-    $runtime = $profile.runtime
-    $arguments = '-m "' + $modelPath + '" -c ' + $contextSize + ' -np ' + [int]$runtime.parallel_slots + ' --host ' + [string]$ModelRegistry.runtime.host + ' --port ' + [int]$ModelRegistry.runtime.port + ' --threads ' + [int]$runtime.threads + ' --batch-size ' + [int]$runtime.batch_size + ' --ubatch-size ' + [int]$runtime.ubatch_size + ' --cache-type-k ' + [string]$runtime.cache_type_k + ' --cache-type-v ' + [string]$runtime.cache_type_v + ' --prio ' + [int]$runtime.priority + ' --alias ' + $modelAlias
-    if ([string]$runtime.gpu_layers -ne 'auto') {
-        $arguments += ' --gpu-layers ' + [int]$runtime.gpu_layers
-    }
-    if ([bool]$runtime.jinja) {
-        $arguments += ' --jinja'
-    }
-    if ([bool]$runtime.mmap) {
-        $arguments += ' --mmap'
-    } else {
-        $arguments += ' --no-mmap'
-    }
-    $arguments += ' --cache-ram ' + $(if ([bool]$runtime.cache_ram) { '1' } else { '0' })
-    if (-not [bool]$runtime.skip_chat_parsing) {
-        $arguments += ' --no-skip-chat-parsing'
-    }
-    if ([bool]$runtime.fit) {
-        $arguments += ' --fit on --fit-target ' + [int]$runtime.fit_target_mib + ' --fit-ctx ' + [int]$runtime.fit_context_min_tokens
-    }
+    # Le propriétaire de PID reste PowerShell ; seul l’adaptateur traduit le modèle.
+    $arguments = [string]$profile.launch.windows_arguments
     $process = $null
     try {
         $process = Start-Process -FilePath $ModelExecutable -ArgumentList $arguments -WorkingDirectory $ProjectRoot -PassThru -WindowStyle Hidden -RedirectStandardInput $StandardInputFile -RedirectStandardOutput (Join-Path $StateDirectory 'model.stdout.log') -RedirectStandardError (Join-Path $StateDirectory 'model.stderr.log')
@@ -1362,7 +1119,7 @@ function Get-DevelopmentRuntimeStatus {
     $previousErrorActionPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        $rawStatus = @(& $BackendPython $DevelopmentRuntimeScript status --json 2>$null)
+        $rawStatus = @(& $BackendPython -B $DevelopmentRuntimeScript status --registry $ModelRegistryPath --json 2>$null)
         $helperExitCode = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
@@ -1449,18 +1206,18 @@ function Stop-ProgrammingRuntime {
     if (-not (Test-Path -LiteralPath $DevelopmentRuntimeScript -PathType Leaf)) {
         return
     }
-    $rawStatus = @(& $BackendPython $DevelopmentRuntimeScript stop --json 2>$null)
+    $rawStatus = @(& $BackendPython -B $DevelopmentRuntimeScript stop --registry $ModelRegistryPath --json 2>$null)
     $helperExitCode = $LASTEXITCODE
     if ($helperExitCode -ne 0 -or $rawStatus.Count -ne 1) {
-        throw 'Le runtime Qwen Programmation ne peut pas confirmer son arrêt.'
+        throw 'Le runtime du modèle Programmation ne peut pas confirmer son arrêt.'
     }
     try {
         $developmentStatus = ($rawStatus -join "`n") | ConvertFrom-Json -ErrorAction Stop
     } catch {
-        throw 'Le runtime Qwen Programmation a retourné un état illisible.'
+        throw 'Le runtime du modèle Programmation a retourné un état illisible.'
     }
     if ([string]$developmentStatus.state -ne 'stopped') {
-        throw 'Le runtime Qwen Programmation reste actif; le cœur reste actif.'
+        throw 'Le runtime du modèle Programmation reste actif; le cœur reste actif.'
     }
 }
 
@@ -2182,7 +1939,7 @@ function Stop-Core {
 # Charge seulement le profil Général pour une transition contrôlée du backend.
 function Start-GeneralModelOnly {
     # Restaure seulement le modèle Général dans un cœur déjà lancé ; le
-    # contrôleur OpenHands l'utilise après avoir arrêté Qwen vérifié.
+    # contrôleur OpenHands l'utilise après avoir arrêté le modèle vérifié.
     $state = Read-LeaState
     if ($null -eq $state) {
         throw 'Le cœur de Léa doit être démarré avant de restaurer le modèle Général.'
@@ -2423,18 +2180,3 @@ try {
 
     exit 1
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

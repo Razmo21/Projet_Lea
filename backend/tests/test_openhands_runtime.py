@@ -31,7 +31,7 @@ from app.openhands_runtime import (  # noqa: E402
     AGENT_SERVER_UNAVAILABLE_MESSAGE,
     AgentServerHandle,
     DOCKER_REQUIRED_MESSAGE,
-    QWEN_UNAVAILABLE_MESSAGE,
+    MODEL_UNAVAILABLE_MESSAGE,
     OpenHandsRuntime,
     OpenHandsRuntimeError,
 )
@@ -146,7 +146,7 @@ class OpenHandsRuntimeTests(unittest.IsolatedAsyncioTestCase):
         qwen_missing = OpenHandsRuntime(
             self.registry, docker_probe=docker_ready, transport=self.transport(agent_only)
         )
-        self.assertEqual((await qwen_missing.status()).message, QWEN_UNAVAILABLE_MESSAGE)
+        self.assertEqual((await qwen_missing.status()).message, MODEL_UNAVAILABLE_MESSAGE)
 
     async def test_complete_local_topology_requires_exact_tools_and_alias(self) -> None:
         """A healthy profile needs Qwen plus all three genuine Agent Server tools."""

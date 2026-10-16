@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "default_profile_id": "general",
   "workspace_root": "L:\\IA_WORKSPACE",
   "runtime": {
@@ -23,8 +23,6 @@
         "task_tracker"
       ]
     },
-    "chat_template_path": "tools/openhands/templates/qwen2.5-coder-function-call.jinja",
-    "expected_chat_template_sha256": "a6d3eb855df2b58b8121af5d8cb0e1849e3155de75c8cb332524fb1335867c34",
     "agent_runtime": {
       "state_volume": "lea_openhands_lea_v1",
       "state_volume_path": "/home/openhands/.openhands",
@@ -109,22 +107,83 @@
     {
       "id": "general",
       "display_name": "Général",
-      "model_type": "chat",
-      "model_name": "Huihui-Qwen3-4B-abliterated-v2 Q4_K_M",
       "role": "general",
       "agent_engine": "direct",
       "orchestrator": "llama.cpp_local",
       "enabled": true,
       "display_order": 10,
-      "model_path": "models/general/Huihui-Qwen3-4B-abliterated-v2-Q4_K_M.gguf",
-      "expected_size_bytes": 2497276672,
-      "expected_sha256": "b5573dc1aec4ab39b0bdce907f7354034ca78a16635288765a4d51ae61e5b6a4",
-      "context_tokens": 8192,
       "generation": {
         "max_tokens": 1024,
         "system_template_reserve_tokens": 512,
         "max_user_message_bytes": 6000
       },
+      "prompt": {
+        "reliability_path": "config/prompts/reliability.md",
+        "profile_path": "config/prompts/general.md",
+        "memory_path": "config/prompts/memory.md"
+      },
+      "capabilities": [
+        "conversation",
+        "explicit_memory"
+      ],
+      "tools": [],
+      "workspace_permission": "none",
+      "resource_policy": "general_desktop",
+      "model_id": "qwen-general",
+      "required_model_capabilities": [
+        "chat"
+      ]
+    },
+    {
+      "id": "development",
+      "display_name": "Programmation",
+      "role": "development",
+      "agent_engine": "OpenHands",
+      "orchestrator": "agent_server_sdk",
+      "enabled": true,
+      "display_order": 20,
+      "generation": {
+        "max_tokens": 2048,
+        "system_template_reserve_tokens": 1024,
+        "max_user_message_bytes": 12900
+      },
+      "prompt": {
+        "reliability_path": "config/prompts/reliability.md",
+        "profile_path": "config/prompts/development.md",
+        "memory_path": "config/prompts/memory.md"
+      },
+      "capabilities": [
+        "conversation",
+        "explicit_memory",
+        "workspace_projects",
+        "agent_runs",
+        "checkpoints",
+        "openhands"
+      ],
+      "tools": [
+        "terminal",
+        "file_editor",
+        "task_tracker"
+      ],
+      "workspace_permission": "ia_workspace_project",
+      "resource_policy": "development_desktop",
+      "model_id": "qwen-coder",
+      "required_model_capabilities": [
+        "chat",
+        "tool_calling"
+      ]
+    }
+  ],
+  "models": [
+    {
+      "id": "qwen-general",
+      "engine": "llama.cpp",
+      "model_type": "chat",
+      "model_name": "Huihui-Qwen3-4B-abliterated-v2 Q4_K_M",
+      "model_path": "models/general/Huihui-Qwen3-4B-abliterated-v2-Q4_K_M.gguf",
+      "expected_size_bytes": 2497276672,
+      "expected_sha256": "b5573dc1aec4ab39b0bdce907f7354034ca78a16635288765a4d51ae61e5b6a4",
+      "context_tokens": 8192,
       "runtime": {
         "alias": "lea-general",
         "gpu_layers": 99,
@@ -143,41 +202,23 @@
         "skip_chat_parsing": false,
         "priority": -1
       },
-      "prompt": {
-        "reliability_path": "config/prompts/reliability.md",
-        "profile_path": "config/prompts/general.md",
-        "memory_path": "config/prompts/memory.md",
-        "strategy": "general_no_think",
-        "append_no_think": true,
-        "filter_thinking": true
-      },
       "capabilities": [
-        "conversation",
-        "explicit_memory"
+        "chat"
       ],
-      "tools": [],
-      "workspace_permission": "none",
-      "resource_policy": "general_desktop"
+      "append_no_think": true,
+      "chat_template_path": null,
+      "expected_chat_template_sha256": null,
+      "stop_sequences": []
     },
     {
-      "id": "development",
-      "display_name": "Programmation",
+      "id": "qwen-coder",
+      "engine": "llama.cpp",
       "model_type": "chat",
       "model_name": "Qwen2.5-Coder-7B-Instruct Q6_K",
-      "role": "development",
-      "agent_engine": "OpenHands",
-      "orchestrator": "agent_server_sdk",
-      "enabled": true,
-      "display_order": 20,
       "model_path": "models/development/qwen2.5-coder-7b-instruct-q6_k.gguf",
       "expected_size_bytes": 6254198784,
       "expected_sha256": "46291ddea1bfb608fe63d9a1907eea6918bda87a7626593edc4bf97c5fd73f9d",
       "context_tokens": 22000,
-      "generation": {
-        "max_tokens": 2048,
-        "system_template_reserve_tokens": 1024,
-        "max_user_message_bytes": 12900
-      },
       "runtime": {
         "alias": "lea-development-openhands",
         "gpu_layers": "auto",
@@ -196,29 +237,16 @@
         "skip_chat_parsing": false,
         "priority": -1
       },
-      "prompt": {
-        "reliability_path": "config/prompts/reliability.md",
-        "profile_path": "config/prompts/development.md",
-        "memory_path": "config/prompts/memory.md",
-        "strategy": "development_openhands_agent",
-        "append_no_think": false,
-        "filter_thinking": false
-      },
       "capabilities": [
-        "conversation",
-        "explicit_memory",
-        "workspace_projects",
-        "agent_runs",
-        "checkpoints",
-        "openhands"
+        "chat",
+        "tool_calling"
       ],
-      "tools": [
-        "terminal",
-        "file_editor",
-        "task_tracker"
-      ],
-      "workspace_permission": "ia_workspace_project",
-      "resource_policy": "development_desktop"
+      "append_no_think": false,
+      "chat_template_path": "tools/openhands/templates/qwen2.5-coder-function-call.jinja",
+      "expected_chat_template_sha256": "a6d3eb855df2b58b8121af5d8cb0e1849e3155de75c8cb332524fb1335867c34",
+      "stop_sequences": [
+        "</function_call>"
+      ]
     }
   ]
 }

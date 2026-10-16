@@ -21,7 +21,8 @@ _VALIDATION_TASK_RE = re.compile(
 )
 _VALIDATION_COMMAND_RE = re.compile(
     r"^\s*(?:cd\s+/workspace(?:/[A-Za-z0-9_.-]+)*\s+&&\s*)?(?:"
-    r"(?:(?:[A-Za-z0-9_./-]+/)?python(?:3(?:\.\d+)?)?\s+-m\s+(?:unittest|pytest)\b[^\r\n;&|<>]*)|"
+    # -B désactive seulement le bytecode : il ne change pas le module de test exécuté.
+    r"(?:(?:[A-Za-z0-9_./-]+/)?python(?:3(?:\.\d+)?)?\s+(?:-B\s+)?-m\s+(?:unittest|pytest)\b[^\r\n;&|<>]*)|"
     r"(?:pytest\b[^\r\n;&|<>]*)|"
     r"(?:npm\s+(?:run\s+)?(?:test|build|lint)\b[^\r\n;&|<>]*)|"
     r"(?:npx\s+--no-install\s+(?:vitest|jest|tsc|eslint)\b[^\r\n;&|<>]*)|"
@@ -55,7 +56,7 @@ _RAW_NAMED_ARGUMENTS_RE = re.compile(
 _FILE_EDITOR_READ_COMMANDS = frozenset({"view", "read"})
 _TERMINAL_EXPLICIT_NON_MUTATING_RE = re.compile(
     r"^\s*(?:cd\s+/workspace(?:/[A-Za-z0-9_.-]+)*\s+&&\s*)?(?:"
-    r"(?:python(?:3(?:\.\d+)?)?\s+-m\s+(?:unittest|pytest)\b[^\r\n;&|<>]*)|"
+    r"(?:python(?:3(?:\.\d+)?)?\s+(?:-B\s+)?-m\s+(?:unittest|pytest)\b[^\r\n;&|<>]*)|"
     r"(?:pytest\b[^\r\n;&|<>]*)|"
     r"(?:npm\s+(?:run\s+)?test\b[^\r\n;&|<>]*)|"
     r"(?:npx\s+--no-install\s+(?:vitest|jest)\b[^\r\n;&|<>]*)|"

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Own the local Qwen process used by Léa's Programming profile.
+"""Own the local model process used by Léa's Programming profile.
 
-The controller deliberately handles only the model process on port 8081.  It
+The controller handles only the model process on its configured local port. It
 does not start Docker Desktop, does not mount a project, and never adopts an
 unknown listener.  The FastAPI/OpenHands layer owns Agent Server containers.
 """
@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import ctypes
-import hashlib
 import json
 import os
 import re
@@ -30,9 +29,10 @@ SYSTEM32_DIRECTORY = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System
 NETSTAT_EXECUTABLE = SYSTEM32_DIRECTORY / "netstat.exe"
 TASKKILL_EXECUTABLE = SYSTEM32_DIRECTORY / "taskkill.exe"
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-# The registry chooses the active value; the helper accepts only the four
-# user-approved Stage 10 candidates and never silently launches another size.
-SUPPORTED_DEVELOPMENT_CONTEXT_TOKENS = {16_000, 18_000, 20_000, 22_000}
+sys.path.insert(0, str(PROJECT_ROOT / "backend"))
+
+from app.model_registry import RegistryError, load_model_registry  # noqa: E402
+from app.inference import inference_adapter, llama_cpp_arguments  # noqa: E402
 
 
 class RuntimeErrorPublic(RuntimeError):
@@ -48,45 +48,11 @@ class FileTime(ctypes.Structure):
 def parse_arguments() -> argparse.Namespace:
     """Accept only the three fixed lifecycle actions and an optional registry path."""
 
-    parser = argparse.ArgumentParser(description="Manage Léa's local OpenHands Qwen runtime.")
+    parser = argparse.ArgumentParser(description="Manage Léa's local OpenHands model runtime.")
     parser.add_argument("action", choices=("start", "stop", "status"))
     parser.add_argument("--registry", type=Path, default=PROJECT_ROOT / "config" / "models.json")
     parser.add_argument("--json", action="store_true")
     return parser.parse_args()
-
-
-def canonical_path(path: Path) -> Path:
-    """Resolve an existing local path and reject a value outside the project root."""
-
-    return path.resolve(strict=True)
-
-
-def relative_file(root: Path, value: object, allowed_root: Path, label: str) -> Path:
-    """Resolve a registry-relative file without accepting a drive, UNC path, or traversal."""
-
-    if not isinstance(value, str) or not value or "\x00" in value:
-        raise RuntimeErrorPublic(f"{label} est invalide.")
-    candidate = Path(value)
-    if candidate.is_absolute() or ".." in candidate.parts:
-        raise RuntimeErrorPublic(f"{label} doit rester relatif au projet.")
-    resolved = canonical_path(root / candidate)
-    try:
-        resolved.relative_to(allowed_root)
-    except ValueError as error:
-        raise RuntimeErrorPublic(f"{label} sort de sa racine autorisée.") from error
-    if not resolved.is_file():
-        raise RuntimeErrorPublic(f"{label} est introuvable.")
-    return resolved
-
-
-def sha256_file(path: Path) -> str:
-    """Hash a large local file by chunks so activation does not duplicate the GGUF in RAM."""
-
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def load_runtime_configuration(
@@ -96,69 +62,13 @@ def load_runtime_configuration(
 ) -> dict[str, Any]:
     """Load the exact profile and hash its large artifacts only before a new launch."""
 
-    root = canonical_path(PROJECT_ROOT)
-    registry = canonical_path(registry_path)
     try:
-        registry.relative_to(root)
-        document = json.loads(registry.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError) as error:
-        raise RuntimeErrorPublic("Le registre du profil Programmation est invalide.") from error
-    profiles = [profile for profile in document.get("profiles", []) if profile.get("id") == "development"]
-    if len(profiles) != 1:
-        raise RuntimeErrorPublic("Le profil Programmation est absent ou ambigu.")
-    profile = profiles[0]
-    openhands = document.get("openhands")
-    context_tokens = profile.get("context_tokens")
-    if (
-        profile.get("agent_engine") != "OpenHands"
-        or profile.get("model_name") != "Qwen2.5-Coder-7B-Instruct Q6_K"
-        or not isinstance(context_tokens, int)
-        or isinstance(context_tokens, bool)
-        or context_tokens not in SUPPORTED_DEVELOPMENT_CONTEXT_TOKENS
-        or not isinstance(openhands, dict)
-        or not isinstance(openhands.get("model_endpoint"), dict)
-    ):
-        raise RuntimeErrorPublic("Le registre ne décrit pas une fenêtre OpenHands Qwen2.5 Stage 10 autorisée.")
-    runtime = profile.get("runtime")
-    endpoint = openhands["model_endpoint"]
-    if not isinstance(runtime, dict) or endpoint.get("host") != "127.0.0.1":
-        raise RuntimeErrorPublic("Le runtime Programmation doit rester local.")
-    model_path = relative_file(root, profile.get("model_path"), root / "models", "Le modèle")
-    executable = relative_file(
-        root,
-        document.get("runtime", {}).get("executable"),
-        root / "runtime" / "llama.cpp",
-        "llama-server",
-    )
-    # The pinned template is the runtime contract for llama.cpp's native
-    # OpenAI parser.  Load and hash it before a Programming server can start.
-    template = relative_file(
-        root,
-        openhands.get("chat_template_path"),
-        root / "tools" / "openhands" / "templates",
-        "Le template OpenHands",
-    )
-    if model_path.stat().st_size != profile.get("expected_size_bytes"):
-        raise RuntimeErrorPublic("Le modèle Programmation ne correspond pas au registre.")
-    if verify_model and (
-        sha256_file(model_path) != profile.get("expected_sha256")
-        or sha256_file(template) != openhands.get("expected_chat_template_sha256")
-    ):
-        raise RuntimeErrorPublic("Le modèle ou le template Programmation ne correspond pas au registre.")
-    if runtime.get("parallel_slots") != 1 or runtime.get("fit_context_min_tokens") != context_tokens:
-        raise RuntimeErrorPublic("Le runtime Programmation ne respecte pas le contexte ou le slot validé.")
-    return {
-        "root": root,
-        "executable": executable,
-        "model_path": model_path,
-        "template": template,
-        "host": endpoint["host"],
-        "port": int(endpoint["port"]),
-        "models_path": endpoint["models_path"],
-        "alias": runtime["alias"],
-        "context": int(profile["context_tokens"]),
-        "runtime": runtime,
-    }
+        registry = load_model_registry(registry_path, project_root=PROJECT_ROOT)
+        return inference_adapter(registry, "development").launch_configuration(
+            verify_model=verify_model
+        )
+    except RegistryError as error:
+        raise RuntimeErrorPublic(str(error)) from error
 
 
 def process_identity(pid: int) -> dict[str, str | int] | None:
@@ -278,7 +188,7 @@ def write_state(state: dict[str, Any]) -> None:
 
 
 def model_ready(configuration: dict[str, Any]) -> bool:
-    """Check the local models endpoint for the single configured Qwen alias."""
+    """Check the local models endpoint for the single configured model alias."""
 
     url = f"http://{configuration['host']}:{configuration['port']}{configuration['models_path']}"
     try:
@@ -295,57 +205,11 @@ def model_ready(configuration: dict[str, Any]) -> bool:
 def runtime_arguments(configuration: dict[str, Any]) -> list[str]:
     """Translate only registry runtime fields into the fixed llama.cpp invocation."""
 
-    runtime = configuration["runtime"]
-    arguments = [
-        "-m",
-        str(configuration["model_path"]),
-        "--host",
-        str(configuration["host"]),
-        "--port",
-        str(configuration["port"]),
-        "--alias",
-        str(configuration["alias"]),
-        "--ctx-size",
-        str(configuration["context"]),
-        "--parallel",
-        str(runtime["parallel_slots"]),
-        "--cache-type-k",
-        str(runtime["cache_type_k"]),
-        "--cache-type-v",
-        str(runtime["cache_type_v"]),
-        "--cache-ram",
-        "1" if runtime["cache_ram"] else "0",
-        "--gpu-layers",
-        str(runtime["gpu_layers"]),
-        "--fit",
-        "on" if runtime["fit"] else "off",
-        "--fit-target",
-        str(runtime["fit_target_mib"]),
-        "--fit-ctx",
-        str(runtime["fit_context_min_tokens"]),
-        "--prio",
-        str(runtime["priority"]),
-        "--threads",
-        str(runtime["threads"]),
-        "--batch-size",
-        str(runtime["batch_size"]),
-        "--ubatch-size",
-        str(runtime["ubatch_size"]),
-    ]
-    if runtime["mmap"]:
-        arguments.append("--mmap")
-    if runtime["jinja"]:
-        # llama.cpp accepts an arbitrary custom Jinja file only after Jinja has
-        # been enabled; preserving this order keeps native tool parsing active.
-        arguments.append("--jinja")
-    arguments.extend(("--chat-template-file", str(configuration["template"])))
-    if not runtime["skip_chat_parsing"]:
-        arguments.append("--no-skip-chat-parsing")
-    return arguments
+    return llama_cpp_arguments(configuration)
 
 
 def start(configuration: dict[str, Any]) -> dict[str, Any]:
-    """Start one owned Qwen process only after the port and any prior state are safe."""
+    """Start one owned model process only after the port and any prior state are safe."""
 
     existing = read_state()
     if existing is not None:
@@ -431,7 +295,7 @@ def stop(configuration: dict[str, Any]) -> dict[str, Any]:
 
 
 def status(configuration: dict[str, Any]) -> dict[str, Any]:
-    """Report readiness only when the persisted identity and Qwen endpoint both agree."""
+    """Report readiness only when the persisted identity and model endpoint both agree."""
 
     state = read_state()
     if state is not None and state_is_owned(state, configuration) and model_ready(configuration):

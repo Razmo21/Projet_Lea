@@ -160,6 +160,28 @@ class OpenHandsEvidenceTests(unittest.TestCase):
         self.assertTrue(evidence.validation_observed)
         self.assertEqual(evidence.tool_names, ("file_editor", "finish", "terminal"))
 
+    def test_no_bytecode_python_validation_requires_a_real_green_observation(self) -> None:
+        """-B conserve la sémantique du test ; un échec ou un shell composé reste refusé."""
+
+        for command, exit_code, expected in (
+            ("python -B -m unittest -v", 0, True),
+            ("python3 -B -m pytest", 0, True),
+            ("cd /workspace && python -B -m unittest", 0, True),
+            ("python -B -m unittest -v", 1, False),
+            ("python -B -m unittest || true", 0, False),
+            ("echo python -B -m unittest", 0, False),
+            ("python -c 'print(0)'", 0, False),
+        ):
+            with self.subTest(command=command, exit_code=exit_code):
+                events = [
+                    *replacement("edit", 1, "a", "b"),
+                    action("terminal", "test", {"command": command}, 3),
+                    observation("terminal", "test", 4, exit_code=exit_code),
+                    *finish("Source corrigé et test exécuté.", 5),
+                ]
+                evidence = evaluate_agent_history("Corrige puis teste", events)
+                self.assertEqual(evidence.validated, expected)
+
     def test_validation_must_follow_the_last_mutation(self) -> None:
         """Reject a green test made stale by a later successful write."""
 

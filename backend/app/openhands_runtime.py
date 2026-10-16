@@ -1,7 +1,7 @@
 """Local OpenHands readiness checks used by the Programming profile.
 
 This module deliberately never starts Docker Desktop.  Docker is an explicit
-user prerequisite; the orchestrator only verifies the local engine, Qwen and
+user prerequisite; the orchestrator only verifies the local engine, the model and
 the minimal Agent Server before it permits an OpenHands run.
 """
 
@@ -20,12 +20,13 @@ from uuid import UUID
 import httpx
 
 from .model_registry import LoadedModelRegistry
+from .inference import inference_adapter
 
 
 DOCKER_REQUIRED_MESSAGE = (
     "Le profil Programmation nécessite Docker Desktop. Démarre Docker puis réessaie."
 )
-QWEN_UNAVAILABLE_MESSAGE = "Le modèle local du profil Programmation n’est pas prêt."
+MODEL_UNAVAILABLE_MESSAGE = "Le modèle local du profil Programmation n’est pas prêt."
 AGENT_SERVER_UNAVAILABLE_MESSAGE = "L’Agent Server OpenHands n’est pas prêt."
 AGENT_LABEL = "com.projet-lea.openhands.managed"
 AGENT_MODE_LABEL = "com.projet-lea.openhands.mode"
@@ -73,14 +74,17 @@ class DevelopmentReadiness:
 
     docker_available: bool
     agent_server_available: bool
-    qwen_available: bool
+    model_available: bool
     profile_ready: bool
     message: str
 
     def public(self) -> dict[str, bool | str]:
         """Serialize the stable API representation without implementation detail."""
 
-        return asdict(self)
+        payload = asdict(self)
+        # Nom historique du protocole frontend, conservé sans dépendance au modèle Qwen.
+        payload["qwen_available"] = payload.pop("model_available")
+        return payload
 
 
 @dataclass(frozen=True)
@@ -129,13 +133,6 @@ class OpenHandsRuntime:
         server = self.registry.document.openhands.agent_server
         return f"http://{server.host}:{server.port}"
 
-    @property
-    def model_url(self) -> str:
-        """Return the Qwen `/v1/models` endpoint that OpenHands must consume locally."""
-
-        endpoint = self.registry.document.openhands.model_endpoint
-        return f"http://{endpoint.host}:{endpoint.port}{endpoint.models_path}"
-
     async def _probe_docker_engine(self) -> bool:
         """Run one fixed, read-only Docker query and never attempt to launch Docker Desktop."""
 
@@ -164,18 +161,11 @@ class OpenHandsRuntime:
 
         return httpx.AsyncClient(timeout=2.0, transport=self._transport)
 
-    async def _qwen_available(self) -> bool:
-        """Confirm that the endpoint serves the exact Qwen alias declared for Programming."""
+    async def _model_available(self) -> bool:
+        """Confirm that the endpoint serves the configured model alias declared for Programming."""
 
-        expected_alias = self.registry.profile("development").runtime.alias
-        try:
-            async with await self._http_client() as client:
-                response = await client.get(self.model_url)
-                response.raise_for_status()
-            entries = response.json().get("data", [])
-        except (httpx.HTTPError, TypeError, ValueError):
-            return False
-        return any(isinstance(item, dict) and item.get("id") == expected_alias for item in entries)
+        adapter = inference_adapter(self.registry, "development")
+        return await adapter.is_ready(transport=self._transport)
 
     async def _agent_server_available(self) -> bool:
         """Check health and the three official tool names without deserializing SDK history."""
@@ -202,16 +192,16 @@ class OpenHandsRuntime:
         return required_tools.issubset({name for name in names if isinstance(name, str)})
 
     async def status(self) -> DevelopmentReadiness:
-        """Assess Docker, Qwen and Agent Server independently for a truthful user message."""
+        """Assess Docker, the model and Agent Server independently for a truthful user message."""
 
         docker_available = await self._docker_probe()
         if not docker_available:
             return DevelopmentReadiness(False, False, False, False, DOCKER_REQUIRED_MESSAGE)
-        qwen_available, agent_server_available = await asyncio.gather(
-            self._qwen_available(), self._agent_server_available()
+        model_available, agent_server_available = await asyncio.gather(
+            self._model_available(), self._agent_server_available()
         )
-        if not qwen_available:
-            return DevelopmentReadiness(True, agent_server_available, False, False, QWEN_UNAVAILABLE_MESSAGE)
+        if not model_available:
+            return DevelopmentReadiness(True, agent_server_available, False, False, MODEL_UNAVAILABLE_MESSAGE)
         if not agent_server_available:
             return DevelopmentReadiness(True, False, True, False, AGENT_SERVER_UNAVAILABLE_MESSAGE)
         return DevelopmentReadiness(True, True, True, True, "Le profil Programmation est prêt.")

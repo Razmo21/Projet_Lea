@@ -29,7 +29,6 @@ os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ROOT = PROJECT_ROOT / "backend"
-OPENHANDS_MINIMUM_CONTEXT_TOKENS = 16_384
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
@@ -40,7 +39,12 @@ from openhands.sdk.context.condenser import LLMSummarizingCondenser  # noqa: E40
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher  # noqa: E402
 from openhands.sdk.tool.defaults import DEFAULT_EXEC_TOOL_NAMES, default_tool_specs  # noqa: E402
 
-from app.model_registry import LoadedModelRegistry, load_model_registry  # noqa: E402
+from app.model_registry import (  # noqa: E402
+    OPENHANDS_MINIMUM_CONTEXT_TOKENS,
+    LoadedModelRegistry,
+    load_model_registry,
+)
+from app.inference import inference_adapter  # noqa: E402
 from app.openhands_evidence import (  # noqa: E402
     evaluate_agent_history,
     has_blocked_terminal_policy_action,
@@ -65,6 +69,7 @@ def parse_arguments() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description="Exécute un run OpenHands minimal pour Léa.")
     parser.add_argument("--server-url", required=True)
+    parser.add_argument("--registry", type=Path, default=PROJECT_ROOT / "config" / "models.json")
     parser.add_argument("--model-alias", required=True)
     parser.add_argument("--context-size", type=int, required=True)
     parser.add_argument("--run-id", required=True)
@@ -253,6 +258,7 @@ def build_agent(
     profile = registry.profile("development")
     if model_alias != profile.runtime.alias or context_size != profile.context_tokens:
         raise RuntimeError("Le runner OpenHands diverge du registre central.")
+    adapter = inference_adapter(registry, "development")
     history_budget = openhands_history_token_budget(registry)
     tool_specs = list(default_tool_specs(enable_browser=False))
     if tuple(tool.name for tool in tool_specs) != DEFAULT_EXEC_TOOL_NAMES:
@@ -260,16 +266,12 @@ def build_agent(
     llm = LLM(
         usage_id="agent",
         model=f"openai/{model_alias}",
-        base_url="http://host.docker.internal:8081/v1",
+        base_url=adapter.sdk_base_url,
         api_key=SecretStr("local-llm"),
         max_input_tokens=history_budget,
         max_output_tokens=registry.document.agent_policy.max_action_response_tokens,
         temperature=0.0,
-        litellm_extra_body={
-            "tool_choice": "auto",
-            "parallel_tool_calls": False,
-            "stop": ["</function_call>"],
-        },
+        litellm_extra_body=adapter.sdk_extra_body(),
         native_tool_calling=True,
         api_mode="chat",
         caching_prompt=False,
@@ -396,7 +398,7 @@ def run(arguments: argparse.Namespace) -> dict[str, Any]:
     diagnostic: str | None = None
 
     try:
-        registry = load_model_registry(project_root=PROJECT_ROOT)
+        registry = load_model_registry(arguments.registry, project_root=PROJECT_ROOT)
         agent = build_agent(registry, arguments.model_alias, arguments.context_size)
         workspace = Workspace(host=server_url, working_dir="/workspace")
         conversation = Conversation(

@@ -8,13 +8,19 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID
 
-import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from .inference import (
+    MODEL_INVALID_RESPONSE_MESSAGE,
+    MODEL_UNAVAILABLE_MESSAGE,
+    ModelResponseError,
+    ModelUnavailableError,
+    inference_adapter,
+)
 from .checkpoints import CheckpointConflictError, CheckpointError, CheckpointService
 from .database import (
     MAX_TITLE_LENGTH,
@@ -56,8 +62,6 @@ from .workspace import FrozenProject, WorkspaceGuard, WorkspacePathError
 MODEL_REGISTRY = load_model_registry(os.environ.get("LEA_MODEL_REGISTRY") or None)
 DEFAULT_PROFILE_ID = MODEL_REGISTRY.document.default_profile_id
 DEFAULT_PROFILE = MODEL_REGISTRY.profile(DEFAULT_PROFILE_ID)
-MODEL_UNAVAILABLE_MESSAGE = "Le modèle local de Léa n’est pas disponible."
-MODEL_INVALID_RESPONSE_MESSAGE = "Le modèle local de Léa n’a pas fourni de réponse exploitable."
 CONTEXT_WINDOW_TOKEN_LIMIT = DEFAULT_PROFILE.context_tokens
 FINAL_RESPONSE_TOKEN_LIMIT = DEFAULT_PROFILE.generation.max_tokens
 SYSTEM_AND_TEMPLATE_TOKEN_RESERVE = DEFAULT_PROFILE.generation.system_template_reserve_tokens
@@ -70,7 +74,7 @@ UTF8_BYTES_PER_ESTIMATED_TOKEN = 1
 MAX_USER_MESSAGE_BYTES = DEFAULT_PROFILE.generation.max_user_message_bytes
 MAX_ENABLED_PROFILE_USER_MESSAGE_BYTES = max(
     profile.generation.max_user_message_bytes
-    for profile in MODEL_REGISTRY.document.profiles
+    for profile in MODEL_REGISTRY.resolved_profiles()
     if profile.enabled
 )
 MAX_STORED_ASSISTANT_BYTES = 32768
@@ -100,15 +104,6 @@ THINK_MARKER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 NO_THINK_PATTERN = re.compile(r"/\s*no_think\b", re.IGNORECASE)
-
-
-# Erreurs internes converties plus bas en messages publics sans détail sensible.
-class ModelUnavailableError(RuntimeError):
-    """Signale que le modèle local ne répond pas dans le délai prévu."""
-
-
-class ModelResponseError(RuntimeError):
-    """Signale une réponse modèle vide, mal formée ou non publiable."""
 
 
 class ModelGateway(Protocol):
@@ -336,10 +331,10 @@ def build_internal_user_message(
     """Ajoute les souvenirs comme données avant la question strictement inchangée."""
 
     if not memory_contents:
-        return f"{question}\n/no_think" if profile.prompt.append_no_think else question
+        return f"{question}\n/no_think" if profile.model.append_no_think else question
     ensure_memory_capacity(memory_contents)
     memory_context = build_memory_context(memory_contents)
-    suffix = "\n/no_think" if profile.prompt.append_no_think else ""
+    suffix = "\n/no_think" if profile.model.append_no_think else ""
     return (
         f"{memory_context}\n\n"
         "QUESTION ACTUELLE DE L’UTILISATEUR\n"
@@ -348,43 +343,22 @@ def build_internal_user_message(
 
 
 class HttpModelGateway:
+    """Relie l’inférence au filtrage de publication, indépendant du moteur et du modèle."""
+
     def __init__(
         self,
         registry: LoadedModelRegistry = MODEL_REGISTRY,
         profile_id: str = DEFAULT_PROFILE_ID,
     ) -> None:
-        """Lie les requêtes HTTP à un profil déjà validé du registre central."""
+        """Fige l’adaptateur du profil actif sans charger de modèle supplémentaire."""
 
-        self.registry = registry
-        self.profile = registry.profile(profile_id)
-        runtime = registry.document.runtime
-        self.url = f"http://{runtime.host}:{runtime.port}{runtime.chat_completions_path}"
+        self.adapter = inference_adapter(registry, profile_id)
+        self.url = self.adapter.chat_url
 
     async def generate(self, messages: list[dict[str, str]]) -> str:
-        """Appelle l’unique endpoint local avec l’alias et le budget du profil."""
+        """Filtre toute réponse avant qu’elle puisse atteindre SQLite ou l’interface."""
 
-        payload = {
-            "model": self.profile.runtime.alias,
-            "messages": messages,
-            "stream": False,
-            "max_tokens": self.profile.generation.max_tokens,
-        }
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(self.url, json=payload)
-                response.raise_for_status()
-        except httpx.RequestError as error:
-            raise ModelUnavailableError(MODEL_UNAVAILABLE_MESSAGE) from error
-        except httpx.HTTPStatusError as error:
-            raise ModelResponseError(
-                "Le modèle local de Léa a renvoyé une erreur."
-            ) from error
-
-        try:
-            raw_content = response.json()["choices"][0]["message"]["content"]
-        except (IndexError, KeyError, TypeError, ValueError) as error:
-            raise ModelResponseError(MODEL_INVALID_RESPONSE_MESSAGE) from error
-        return filter_final_answer(raw_content)
+        return filter_final_answer(await self.adapter.generate(messages))
 
 
 class StrictRequest(BaseModel):
@@ -594,24 +568,8 @@ async def _is_active_model_ready(request: Request, profile_id: str) -> bool:
     # modèle disponible sans ouvrir de port local.
     if request.app.state.fixed_model_gateway is not None:
         return True
-    registry = request.app.state.model_registry
-    profile = registry.profile(profile_id)
-    runtime = registry.document.runtime
-    if profile.agent_engine == "OpenHands":
-        runtime = registry.document.openhands.model_endpoint
-    models_url = f"http://{runtime.host}:{runtime.port}{runtime.models_path}"
-    expected_alias = profile.runtime.alias
-    try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            response = await client.get(models_url)
-            response.raise_for_status()
-        entries = response.json()["data"]
-    except (httpx.HTTPError, KeyError, TypeError, ValueError):
-        return False
-    return any(
-        isinstance(entry, dict) and entry.get("id") == expected_alias
-        for entry in entries
-    )
+    adapter = inference_adapter(request.app.state.model_registry, profile_id)
+    return await adapter.is_ready()
 
 
 def _safe_failure_code(error: BaseException) -> tuple[int, str, str]:
@@ -906,7 +864,7 @@ def create_app(
             status["active_profile_id"] == "development"
             and request.app.state.fixed_model_gateway is None
         ):
-            # Qwen seul ne suffit pas : la readiness Programmation exige
+            # Le modèle seul ne suffit pas : la readiness Programmation exige
             # Docker, Agent Server et les vrais outils OpenHands locaux.
             readiness = await request.app.state.openhands_runtime.status()
             development_readiness = readiness.public()

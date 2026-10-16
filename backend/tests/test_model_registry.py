@@ -36,7 +36,7 @@ class ModelRegistryTests(unittest.TestCase):
         )
         # La racine miniature utilise un template factice : son hash doit rester
         # cohérent avec le registre afin de tester les mêmes contrôles que le dépôt.
-        self.document["openhands"]["expected_chat_template_sha256"] = hashlib.sha256(
+        self.document["models"][1]["expected_chat_template_sha256"] = hashlib.sha256(
             b"test"
         ).hexdigest()
         self.document["openhands"]["agent_runtime"]["expected_tiktoken_cache_sha256"] = (
@@ -44,9 +44,9 @@ class ModelRegistryTests(unittest.TestCase):
         )
         for relative_path in (
             "runtime/llama.cpp/llama-server.exe",
-            self.document["profiles"][0]["model_path"],
-            self.document["profiles"][1]["model_path"],
-            self.document["openhands"]["chat_template_path"],
+            self.document["models"][0]["model_path"],
+            self.document["models"][1]["model_path"],
+            self.document["models"][1]["chat_template_path"],
             self.document["openhands"]["agent_runtime"]["tiktoken_cache_path"],
             self.document["openhands"]["sdk_python_path"],
         ):
@@ -81,7 +81,13 @@ class ModelRegistryTests(unittest.TestCase):
         registry_path.write_text(json.dumps(document), encoding="utf-8")
         launcher_path = self.root / "lea.ps1"
         launcher_path.write_text(
-            (PROJECT_DIRECTORY / "lea.ps1").read_text(encoding="utf-8"),
+            (PROJECT_DIRECTORY / "lea.ps1").read_text(encoding="utf-8").replace(
+                "Join-Path $ProjectRoot 'backend\\.venv\\Scripts\\python.exe'",
+                "'" + sys.executable.replace("'", "''") + "'",
+            ).replace(
+                "Join-Path $ProjectRoot 'tools\\model_config.py'",
+                "'" + str(PROJECT_DIRECTORY / "tools" / "model_config.py").replace("'", "''") + "'",
+            ),
             encoding="utf-8",
         )
         return subprocess.run(
@@ -116,7 +122,7 @@ class ModelRegistryTests(unittest.TestCase):
         development = registry.profile("development")
         self.assertEqual(
             development.context_tokens,
-            self.document["profiles"][1]["context_tokens"],
+            self.document["models"][1]["context_tokens"],
         )
         self.assertEqual(development.model_name, "Qwen2.5-Coder-7B-Instruct Q6_K")
         self.assertEqual(development.agent_engine, "OpenHands")
@@ -134,7 +140,7 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertEqual(registry.profile("development").runtime.cache_type_k, "q8_0")
         self.assertEqual(
             registry.profile("development").runtime.fit_context_min_tokens,
-            self.document["profiles"][1]["runtime"]["fit_context_min_tokens"],
+            self.document["models"][1]["runtime"]["fit_context_min_tokens"],
         )
         self.assertEqual(registry.document.openhands.sdk_version, "1.43.1")
         self.assertEqual(registry.openhands_sdk_python().name.lower(), "python.exe")
@@ -172,7 +178,7 @@ class ModelRegistryTests(unittest.TestCase):
         """
 
         template = (
-            PROJECT_DIRECTORY / self.document["openhands"]["chat_template_path"]
+            PROJECT_DIRECTORY / self.document["models"][1]["chat_template_path"]
         ).read_text(encoding="utf-8")
         native_example = (
             '<function_call>\\n{\\"name\\": <function-name>, '
@@ -193,14 +199,14 @@ class ModelRegistryTests(unittest.TestCase):
         mutations = (
             (lambda data: data["profiles"][1].__setitem__("id", "general"), "uniques"),
             (lambda data: data["profiles"][0].__setitem__("display_name", " "), "vide"),
-            (lambda data: data["profiles"][0].__setitem__("expected_sha256", "bad"), "SHA-256"),
+            (lambda data: data["models"][0].__setitem__("expected_sha256", "bad"), "expected_sha256"),
             (
                 lambda data: data["openhands"]["agent_server"].__setitem__(
                     "image", "ghcr.io/openhands/agent-server@sha256:" + "z" * 64
                 ),
                 "digest SHA-256",
             ),
-            (lambda data: data["profiles"][0].__setitem__("model_type", "unknown"), "Type de modèle"),
+            (lambda data: data["models"][0].__setitem__("model_type", "unknown"), "model_type"),
         )
         for mutate, expected in mutations:
             with self.subTest(expected=expected):
@@ -223,7 +229,7 @@ class ModelRegistryTests(unittest.TestCase):
         mutations = (
             (lambda data: data["profiles"].pop(), "Profils obligatoires absents"),
             (
-                lambda data: data["profiles"][1]["runtime"].__setitem__("threads", 9),
+                lambda data: data["models"][1]["runtime"].__setitem__("threads", 9),
                 "dépasse le nombre de threads",
             ),
         )
@@ -257,7 +263,7 @@ class ModelRegistryTests(unittest.TestCase):
         for invalid_path in invalid_paths:
             with self.subTest(path=invalid_path):
                 data = copy.deepcopy(self.document)
-                data["profiles"][0]["model_path"] = invalid_path
+                data["models"][0]["model_path"] = invalid_path
                 with self.assertRaises(RegistryError):
                     self.load(data)
 
@@ -266,7 +272,7 @@ class ModelRegistryTests(unittest.TestCase):
 
         data = copy.deepcopy(self.document)
         data["profiles"][1]["enabled"] = False
-        data["profiles"][1]["model_path"] = "C:/outside.gguf"
+        data["models"][1]["model_path"] = "C:/outside.gguf"
         with self.assertRaisesRegex(RegistryError, "chemin relatif|sous"):
             self.load(data)
 
@@ -274,12 +280,12 @@ class ModelRegistryTests(unittest.TestCase):
         """Les budgets sans entrée et les seuils inversés ne peuvent pas démarrer."""
 
         mutations = (
-            lambda data: data["profiles"][0].__setitem__("context_tokens", 1000),
-            lambda data: data["profiles"][0]["runtime"].__setitem__("parallel_slots", 2),
-            lambda data: data["profiles"][1]["runtime"].__setitem__("fit_context_min_tokens", 4096),
-            lambda data: data["profiles"][1].__setitem__("context_tokens", 19_999),
-            lambda data: data["profiles"][1].__setitem__("context_tokens", 24_000),
-            lambda data: data["profiles"][1]["runtime"].__setitem__("cache_type_k", "unsafe"),
+            lambda data: data["models"][0].__setitem__("context_tokens", 1000),
+            lambda data: data["models"][0]["runtime"].__setitem__("parallel_slots", 2),
+            lambda data: data["models"][1]["runtime"].__setitem__("fit_context_min_tokens", 4096),
+            lambda data: data["models"][1].__setitem__("context_tokens", 19_999),
+            lambda data: data["models"][1].__setitem__("context_tokens", 24_000),
+            lambda data: data["models"][1]["runtime"].__setitem__("cache_type_k", "unsafe"),
             lambda data: data["resource_policies"]["general_desktop"].__setitem__(
                 "runtime_warning_bytes", 20000000000
             ),
@@ -300,16 +306,26 @@ class ModelRegistryTests(unittest.TestCase):
                 with self.assertRaises(RegistryError):
                     self.load(data)
 
+    def test_openhands_sdk_context_floor_is_checked_before_launch(self) -> None:
+        """Le budget utilisateur seul ne suffit pas au condenser du SDK épinglé."""
+
+        data = copy.deepcopy(self.document)
+        data["models"][1]["context_tokens"] = 16_000
+        data["models"][1]["runtime"]["fit_context_min_tokens"] = 16_000
+        data["profiles"][1]["generation"]["max_user_message_bytes"] = 1000
+        with self.assertRaisesRegex(RegistryError, "insuffisant pour le SDK"):
+            self.load(data)
+
     def test_openhands_engine_metadata_and_model_integrity_are_checked(self) -> None:
         """Le cerveau, le SDK et ses outils restent cohérents dans une seule source."""
 
         invalid_mutations = (
             lambda data: data["profiles"][1].__setitem__("agent_engine", "direct"),
-            lambda data: data["profiles"][1].__setitem__("model_name", "Qwen3-Coder-30B"),
+            lambda data: data["models"][1].__setitem__("engine", "unsupported"),
             lambda data: data["openhands"]["agent_server"].__setitem__("host", "0.0.0.0"),
             lambda data: data["openhands"]["agent_server"].__setitem__("tool_names", ["terminal"]),
             lambda data: data["profiles"][1].__setitem__("tools", ["terminal"]),
-            lambda data: data["openhands"].__setitem__("expected_chat_template_sha256", "bad"),
+            lambda data: data["models"][1].__setitem__("expected_chat_template_sha256", "bad"),
             lambda data: data["openhands"]["agent_runtime"].__setitem__("state_volume", "bad volume"),
         )
         for mutate in invalid_mutations:
@@ -320,10 +336,91 @@ class ModelRegistryTests(unittest.TestCase):
                     self.load(data)
 
         data = copy.deepcopy(self.document)
-        data["profiles"][1]["expected_size_bytes"] = 4
-        data["profiles"][1]["expected_sha256"] = hashlib.sha256(b"test").hexdigest()
+        data["models"][1]["expected_size_bytes"] = 4
+        data["models"][1]["expected_sha256"] = hashlib.sha256(b"test").hexdigest()
         registry = self.load(data)
         self.assertEqual(registry.verify_model_integrity("development").read_bytes(), b"test")
+
+    def test_model_replacement_is_resolved_without_changing_profile_contract(self) -> None:
+        """Un nouveau modèle déclaré remplace le cerveau sans copier les permissions."""
+
+        data = copy.deepcopy(self.document)
+        replacement = copy.deepcopy(data["models"][1])
+        replacement.update(id="compatible-model", model_name="Modèle compatible de test")
+        replacement["runtime"]["alias"] = "compatible-alias"
+        data["models"].append(replacement)
+        data["profiles"][1]["model_id"] = replacement["id"]
+        registry = self.load(data)
+
+        resolved = registry.profile("development")
+        self.assertEqual(resolved.model.id, "compatible-model")
+        self.assertEqual(resolved.runtime.alias, "compatible-alias")
+        self.assertEqual(resolved.tools, data["profiles"][1]["tools"])
+        self.assertEqual(resolved.workspace_permission, "ia_workspace_project")
+        self.assertEqual(registry.public_profiles()[1]["model_name"], replacement["model_name"])
+        self.assertEqual(registry.launcher_document()["profiles"][1]["model_path"], replacement["model_path"])
+
+    def test_unknown_model_engine_and_duplicate_configuration_are_rejected(self) -> None:
+        """Une référence inconnue ou une seconde source de paramètres échoue explicitement."""
+
+        mutations = (
+            lambda data: data["profiles"][1].__setitem__("model_id", "absent"),
+            lambda data: data["models"][1].__setitem__("engine", "colibri"),
+            lambda data: data["models"].append(copy.deepcopy(data["models"][0])),
+            lambda data: data["profiles"][0].__setitem__("context_tokens", 8192),
+            lambda data: data["models"][1].__setitem__("capabilities", []),
+            lambda data: data["models"][1].__setitem__("capabilities", ["chat"]),
+            lambda data: data.__setitem__("schema_version", 2),
+        )
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                data = copy.deepcopy(self.document)
+                mutate(data)
+                with self.assertRaises(RegistryError):
+                    self.load(data)
+
+    def test_two_profiles_share_a_model_without_sharing_permissions_or_prompts(self) -> None:
+        """Une seule définition modèle suffit ; chaque contrat de profil reste distinct."""
+
+        data = copy.deepcopy(self.document)
+        data["profiles"][0]["model_id"] = data["models"][1]["id"]
+        registry = self.load(data)
+        general = registry.profile("general")
+        development = registry.profile("development")
+
+        self.assertIs(general.model, development.model)
+        self.assertEqual(general.runtime.alias, development.runtime.alias)
+        self.assertEqual(general.tools, [])
+        self.assertEqual(general.workspace_permission, "none")
+        self.assertEqual(development.tools, ["terminal", "file_editor", "task_tracker"])
+        self.assertNotEqual(registry.system_prompt("general"), registry.system_prompt("development"))
+        self.assertEqual(len(registry.document.models), 2)
+
+    def test_model_configuration_cannot_remove_profile_requirements_or_grant_permissions(self) -> None:
+        """Les capacités déclarées du cerveau ne sont jamais une autorisation d’outils."""
+
+        mutations = (
+            lambda data: data["profiles"][1].__setitem__("required_model_capabilities", ["chat"]),
+            lambda data: data["profiles"][1].__setitem__("model_id", data["models"][0]["id"]),
+            lambda data: data["profiles"][0].__setitem__("tools", ["terminal"]),
+            lambda data: data["workspace_permissions"]["none"].__setitem__("read", True),
+            lambda data: data.__setitem__("default_profile_id", "development"),
+            lambda data: data["models"][1]["runtime"].__setitem__("skip_chat_parsing", True),
+        )
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                data = copy.deepcopy(self.document)
+                mutate(data)
+                with self.assertRaises(RegistryError):
+                    self.load(data)
+
+    def test_malformed_json_is_reported_as_a_registry_error(self) -> None:
+        """Le chargeur transforme un JSON tronqué en erreur de configuration lisible."""
+
+        path = self.root / "config" / "models.json"
+        path.write_text('{"models":', encoding="utf-8")
+        with self.assertRaisesRegex(RegistryError, "Registre des modèles invalide"):
+            load_model_registry(path, project_root=self.root)
 
     def test_models_api_is_driven_by_registry_and_keeps_paths_private(self) -> None:
         """FastAPI expose la liste dynamique sans dupliquer les profils côté frontend."""
@@ -377,9 +474,9 @@ class ModelRegistryTests(unittest.TestCase):
         """Le lanceur refuse les chaînes déguisées en port ou booléen avant tout run."""
 
         invalid_documents = (
-            (lambda data: data["runtime"].__setitem__("port", "8080"), "port du runtime"),
-            (lambda data: data["profiles"][0].__setitem__("enabled", "false"), "type JSON invalide"),
-            (lambda data: data["profiles"][1].__setitem__("context_tokens", 24_000), "fenêtre Stage 10 autorisée"),
+            (lambda data: data["runtime"].__setitem__("port", "8080"), "runtime.port"),
+            (lambda data: data["profiles"][0].__setitem__("enabled", "false"), "profiles.0.enabled"),
+            (lambda data: data["models"][1].__setitem__("context_tokens", 24_000), "fit"),
             (
                 lambda data: data["resource_policies"]["development_desktop"].__setitem__(
                     "runtime_hard_limit_bytes", 24 * 1024**3

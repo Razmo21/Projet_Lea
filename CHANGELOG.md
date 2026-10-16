@@ -1,5 +1,49 @@
 # Changelog — Projet Léa
 
+## [0.0.11] — Architecture indépendante des modèles
+
+### Modifié
+
+- Registre `config/models.json` au schéma 3 : définitions de modèles séparées
+  des profils, association par `model_id`, capacités requises et validation des
+  références, budgets et chemins. Les deux Qwen et leurs paramètres sont conservés.
+- Adaptateur llama.cpp unique pour les arguments, endpoints, réponses et readiness.
+  Les lanceurs existants gardent la propriété des processus ; leur lecture de
+  configuration passe par le même validateur Python, sans nouvelle dépendance.
+- Template, arrêt de génération et directive `/no_think` rattachés au modèle,
+  sans déplacer les contrats, permissions, conversations ou souvenirs.
+- OpenHands reçoit l’alias, le contexte, le port et les séquences d’arrêt du
+  registre. Le nom API historique `qwen_available` reste compatible avec le
+  frontend, mais ne commande aucune logique spécifique à Qwen.
+- Retrait des validateurs dupliqués, anciennes fonctions de résolution/hash,
+  variables inutilisées et métadonnées de prompt sans consommateur.
+- Documentation de remplacement des modèles et roadmap 11–25 actualisées.
+
+### Corrigé
+
+- La preuve de validation reconnaît maintenant `python -B -m unittest` et
+  `python -B -m pytest`, uniquement avec une observation terminal authentique
+  réussie. Le premier run réel a révélé ce faux négatif ; son checkpoint a été
+  restauré, puis deux runs ont été réellement validés. Aucune récupération de
+  décision du modèle ni heuristique spécifique à un benchmark n’a été ajoutée.
+- Le plancher de contexte du condenser OpenHands est contrôlé dès le chargement
+  du registre, et plus seulement au démarrage du runner.
+
+### Validation et limites
+
+- 194 tests backend, 14 tests frontend et build React/TypeScript réussis.
+- Tests réels avec les deux modèles : conversations, mémoire après redémarrage,
+  commutation, deux petits runs OpenHands, tests verts, Rollback et Accept.
+- Substitution et partage de modèles vérifiés avec des configurations de test ;
+  aucun troisième GGUF, autre moteur ou parcours visuel Edge complet testé.
+- Un arrêt transitoire de llama.cpp Général a été signalé par Windows comme une
+  erreur d’accès fichier (`0xc0000006`, information `0xC000026E`). Un redémarrage
+  contrôlé, sans changer les paramètres, a permis tous les tests suivants.
+  La cause matérielle/stockage n’est pas établie ni déclarée corrigée.
+- Base utilisateur inchangée, sécurité/checkpoints préservés, aucune modification
+  du laboratoire GLM/Colibrì ni installation supplémentaire. Les limites Qwen de
+  l’étape 10 restent acceptées. Validation manuelle finale encore attendue.
+
 ## [0.0.10] — Profil Programmation et runs OpenHands
 
 ### Ajouté

@@ -107,22 +107,19 @@ class OpenHandsRunnerContractTests(unittest.TestCase):
         keywords = {keyword.arg: keyword.value for keyword in llm_call.keywords}
         self.assertEqual(keywords["temperature"].value, 0.0)  # type: ignore[attr-defined]
         extra_body = keywords["litellm_extra_body"]
-        self.assertIsInstance(extra_body, ast.Dict)
-        values = {
-            key.value: value.value
-            for key, value in zip(extra_body.keys, extra_body.values, strict=True)
-            if isinstance(key, ast.Constant)
-            and isinstance(value, ast.Constant)
-        }
-        self.assertEqual(values["tool_choice"], "auto")
-        self.assertIs(values["parallel_tool_calls"], False)
+        self.assertIsInstance(extra_body, ast.Call)
+        self.assertEqual(ast.unparse(extra_body), "adapter.sdk_extra_body()")
+        self.assertEqual(ast.unparse(keywords["base_url"]), "adapter.sdk_base_url")
+        self.assertNotIn("http://host.docker.internal:8081", self.source)
+        self.assertNotIn('"</function_call>"', self.source)
         self.assertIn("tool_concurrency_limit=1", self.source)
 
     def test_runner_uses_the_official_bounded_condenser(self) -> None:
         """Bound history with the SDK condenser rather than another agent loop."""
 
         self.assertIn("LLMSummarizingCondenser", self.source)
-        self.assertIn("OPENHANDS_MINIMUM_CONTEXT_TOKENS = 16_384", self.source)
+        self.assertIn("OPENHANDS_MINIMUM_CONTEXT_TOKENS", self.source)
+        self.assertNotIn("OPENHANDS_MINIMUM_CONTEXT_TOKENS =", self.source)
         self.assertIn("condenser=build_history_condenser(registry, llm)", self.source)
         self.assertIn('"native_tool_calling": False', self.source)
 

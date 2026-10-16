@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 
 BACKEND_DIRECTORY = Path(__file__).resolve().parents[1]
@@ -59,7 +60,7 @@ class FakeOpenHandsRuntime:
         return DevelopmentReadiness(
             docker_available=True,
             agent_server_available=self.ready,
-            qwen_available=True,
+            model_available=True,
             profile_ready=self.ready,
             message="Le profil Programmation est prêt." if self.ready else "Agent absent.",
         )
@@ -123,6 +124,41 @@ class ModelControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await controller.activate("general"), "general")
         self.assertEqual(runtime.calls, ["stop_idle"])
         self.assertEqual(controller.calls, ["development:stop", "general:start-model"])
+
+    async def test_failed_model_readiness_restores_general_without_starting_agent_server(self) -> None:
+        """Une absence de readiness du modèle déclenche le rollback existant."""
+
+        runtime = FakeOpenHandsRuntime()
+        controller = RecordingController(runtime, development_ready=False)
+        with self.assertRaisesRegex(ModelControllerError, "n’est pas prêt"):
+            await controller.activate("development")
+        self.assertEqual(
+            controller.calls,
+            ["general:stop-model", "development:start", "development:stop", "general:start-model"],
+        )
+        self.assertEqual(runtime.calls, ["require_docker"])
+
+    async def test_agent_readiness_failure_stops_the_owned_container_and_rolls_back(self) -> None:
+        """La readiness SDK reste indispensable même si le modèle répond."""
+
+        runtime = FakeOpenHandsRuntime(ready=False)
+        controller = RecordingController(runtime)
+        with self.assertRaisesRegex(ModelControllerError, "Agent absent"):
+            await controller.activate("development")
+        self.assertIn(f"stop:{runtime.handle.container_id}", runtime.calls)
+        self.assertEqual(controller.calls[-2:], ["development:stop", "general:start-model"])
+
+    async def test_lifecycle_children_receive_the_same_registry(self) -> None:
+        """Aucun sous-processus ne retombe sur un registre officiel différent de FastAPI."""
+
+        controller = PowerShellModelController(registry=load_model_registry())
+        with patch.object(controller, "_run", new=AsyncMock(return_value='{"state":"ready"}')) as run:
+            await controller._general_script("start-model")
+            self.assertEqual(run.call_args.args[-2:], ("-RegistryPath", str(controller.registry.registry_path)))
+            await controller._development_script("start")
+            args = run.call_args.args
+            self.assertEqual(args[args.index("--registry") + 1], str(controller.registry.registry_path))
+            self.assertIn("-B", args)
 
 
 if __name__ == "__main__":

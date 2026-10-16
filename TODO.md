@@ -67,8 +67,35 @@ reste un prérequis démarré manuellement.
 - [x] 10I — Persistance SQLite compacte des runs, sessions et checkpoints.
 - [x] 10J — Validation finale, sécurité minimale et non-régressions.
 
-## Plus tard
+## ÉTAPE 11 — Architecture indépendante des modèles — techniquement terminée
 
-Étape 11 — améliorations avancées du profil Programmation ; étape 12 — voix
-partagée. Restent également reportés : refonte visuelle complète, mémoire
-automatique ou sémantique, Santé animale, Vision, Web, RAG et autres fonctions.
+- [x] 11A — Auditer les dépendances aux modèles, moteurs et lanceurs existants.
+- [x] 11B — Centraliser le registre validé et supprimer les parseurs concurrents.
+- [x] 11C — Séparer les modèles des contrats, permissions et budgets des profils.
+- [x] 11D — Isoler le protocole et les arguments llama.cpp dans un adaptateur simple.
+- [x] 11E — Conserver le cycle de vie sûr et adapter les consommateurs OpenHands.
+- [x] 11F — Valider résolution, erreurs, sécurité, non-régressions et vrais modèles.
+- [x] 11G — Relire, commenter, nettoyer les doublons prouvés et documenter.
+- [ ] Validation manuelle finale de l’utilisateur ; arrêt avant l’étape 12.
+
+Preuves réelles : Général, historique, mémoire explicite après redémarrage,
+commutation, deux petits runs OpenHands validés, rollback exact et Accept.
+Substitution/partage de modèle validés en configuration de test, sans nouveau
+GGUF. Aucun benchmark difficile relancé, aucun mécanisme de récupération ajouté.
+
+## Roadmap validée — non commencée
+
+- Étape 12 — Centre de paramètres de Léa.
+- Étape 13 — Programmation avancée (périmètre à rediscuter plus tard).
+- Étape 14 — Entrées multimodales.
+- Étape 15 — Veterinary.
+- Étape 16 — Auxiliaire.
+- Étape 17 — Génération d’images.
+- Étape 18 — Web Gateway.
+- Étape 19 — Speech-to-Speech.
+- Étape 20 — Refonte visuelle.
+- Étape 21 — Mémoire avancée.
+- Étape 22 — Fine-tuning optionnel.
+- Étape 23 — Sécurité finale.
+- Étape 24 — Tests finaux.
+- Étape 25 — Logiciel desktop final.

@@ -98,15 +98,20 @@ class PowerShellModelController:
             "-File",
             str(self.script_path),
             action,
+            "-RegistryPath",
+            str(self.registry.registry_path),
         )
 
     async def _development_script(self, action: str) -> dict[str, object]:
-        """Invoke Qwen's stateful helper and require a JSON confirmation from its own owner."""
+        """Invoke the Programming process owner and require its JSON confirmation."""
 
         output = await self._run(
             str(self.python_path),
+            "-B",
             str(self.development_script),
             action,
+            "--registry",
+            str(self.registry.registry_path),
             "--json",
             capture_output=True,
         )
@@ -135,6 +140,8 @@ class PowerShellModelController:
             profile = self.registry.profile(profile_id)
         except RuntimeError as error:
             raise ModelControllerError("Le profil demandé est inconnu.") from error
+        if not profile.enabled:
+            raise ModelControllerError("Le profil demandé est désactivé.")
         if profile.id == "general":
             await self._restore_general()
             return "general"
@@ -148,7 +155,7 @@ class PowerShellModelController:
             await self._general_script("stop-model")
             started = await self._development_script("start")
             if started.get("state") != "ready":
-                raise ModelControllerError("Qwen Programmation n’est pas prêt.")
+                raise ModelControllerError("Le modèle Programmation n’est pas prêt.")
             idle_handle = await self.openhands_runtime.start_agent_server()
             # Health can precede the native tool registry by a brief interval,
             # so the runtime returns only a bounded, verified readiness state.

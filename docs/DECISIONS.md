@@ -163,3 +163,48 @@ SQLite conserve uniquement le registre compact des runs, leurs résultats, leurs
 identifiants de session et les métadonnées/hashs de checkpoint. Les snapshots
 restent dans le stockage local de checkpoints et les événements détaillés de la
 session restent dans le volume d’état de l’Agent Server.
+
+## D-021 — Modèles remplaçables et adaptateur d’inférence unique
+
+L’étape 11 conserve Léa comme application et orchestrateur. Un profil définit
+le comportement, les prompts, les outils, les budgets et les permissions ; un
+modèle définit les poids interchangeables, les capacités déclarées et les
+paramètres d’inférence. Le registre `config/models.json`, schéma 3, les associe
+par `model_id`. Les identités Qwen ne sont plus des conditions de validation
+du code métier. La configuration actuelle conserve exactement les deux GGUF.
+
+`model_registry.py` valide les références, les capacités nécessaires aux deux
+profils actuels, les budgets, les limites de ressources et les fichiers confinés.
+La déclaration d’une capacité ne remplace jamais un essai réel : Programmation
+exige du tool calling natif fonctionnel. Deux profils peuvent référencer la même
+définition compatible, sans fusion des contrats ni des permissions.
+
+`inference.py` contient le seul adaptateur implémenté, llama.cpp : commande,
+endpoints, protocole de génération et readiness par alias. Les lanceurs existants
+gardent la propriété et l’identité des processus, l’arrêt sûr et le contrôle de
+ressources. `tools/model_config.py` fournit aux scripts PowerShell une projection
+éphémère du même registre, pas un second fichier de configuration.
+
+Le runner OpenHands lit le même registre que le contrôleur. Le template et les
+séquences d’arrêt sont propres au modèle ; les hooks, preuves d’outils, limites
+agentiques et checkpoints restent indépendants. Le champ public historique
+`qwen_available` est conservé pour la compatibilité du frontend, sans couplage
+interne à cette famille. L’option Python `-B` ne change pas le résultat des tests :
+elle est reconnue dans les preuves terminal uniquement avec un vrai succès.
+
+Aucun framework de plugins, moteur additionnel ou mécanisme de secours n’est
+créé. Un futur moteur nécessitera son adaptateur, sa validation de configuration,
+son intégration aux propriétaires de processus et ses tests ; les données et
+contrats de Léa ne doivent pas être reconstruits. L’étape 12 pourra s’appuyer sur
+ce validateur central, mais aucune interface ou API d’édition n’est ajoutée ici.
+
+## D-022 — Roadmap après séparation des modèles
+
+La roadmap autorisée est celle des étapes 11 à 25 indiquée dans le README et le
+TODO : 11 Architecture indépendante des modèles, 12 Centre de paramètres de
+Léa, 13 Programmation avancée, 14 Entrées multimodales, 15 Veterinary,
+16 Auxiliaire, 17 Génération d’images, 18 Web Gateway, 19 Speech-to-Speech,
+20 Refonte visuelle, 21 Mémoire avancée, 22 Fine-tuning optionnel,
+23 Sécurité finale, 24 Tests finaux, 25 Logiciel desktop final.
+Le contenu précis de l’étape 13 sera rediscuté ultérieurement. Aucun travail
+d’étape suivante n’est autorisé avant validation manuelle et demande explicite.

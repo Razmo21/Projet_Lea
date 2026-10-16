@@ -11,18 +11,15 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "config" / "models.json"
-PROFILE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 PINNED_IMAGE_PATTERN = re.compile(
     r"^[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$"
 )
 ALLOWED_CPU_PRIORITIES = {"idle", "below_normal", "normal"}
-# The active Programming window remains in models.json.  These are the only
-# Stage 10 windows approved for an evidence-based local memory validation.
-SUPPORTED_DEVELOPMENT_CONTEXT_TOKENS = frozenset({16_000, 18_000, 20_000, 22_000})
 MAX_RUNTIME_HARD_LIMIT_BYTES = 24 * 1024**3
 MESSAGE_TOKEN_OVERHEAD = 8
+# Le condenser du SDK 1.43.1 impose ce plancher, indépendamment du modèle.
+OPENHANDS_MINIMUM_CONTEXT_TOKENS = 16_384
 EXPECTED_WORKSPACE_ROOT = PureWindowsPath(r"L:\IA_WORKSPACE")
 
 
@@ -81,7 +78,7 @@ class OpenHandsAgentServerConfig(StrictRegistryModel):
 
 
 class OpenHandsModelEndpointConfig(StrictRegistryModel):
-    """Décrit l'unique endpoint local Qwen consommé par le SDK OpenHands."""
+    """Décrit l'unique endpoint local du modèle consommé par le SDK OpenHands."""
 
     host: str
     port: int = Field(ge=1, le=65535)
@@ -124,13 +121,11 @@ class OpenHandsAgentRuntimeConfig(StrictRegistryModel):
 
 
 class OpenHandsConfig(StrictRegistryModel):
-    """Configuration commune de l'orchestrateur, sans dupliquer le cerveau Qwen."""
+    """Configuration commune de l'orchestrateur, indépendante des poids et du template."""
 
     sdk_version: str
     sdk_python_path: str
     agent_server: OpenHandsAgentServerConfig
-    chat_template_path: str
-    expected_chat_template_sha256: str
     agent_runtime: OpenHandsAgentRuntimeConfig
     model_endpoint: OpenHandsModelEndpointConfig
 
@@ -141,15 +136,6 @@ class OpenHandsConfig(StrictRegistryModel):
 
         if value != "1.43.1":
             raise ValueError("OpenHands SDK doit utiliser la version validée 1.43.1.")
-        return value
-
-    @field_validator("expected_chat_template_sha256")
-    @classmethod
-    def validate_chat_template_hash(cls, value: str) -> str:
-        """Require a pinned template hash before the SDK can format tool calls."""
-
-        if SHA256_PATTERN.fullmatch(value) is None:
-            raise ValueError("Le SHA-256 du template OpenHands doit contenir 64 caractères hexadécimaux.")
         return value
 
 
@@ -164,7 +150,7 @@ class GenerationConfig(StrictRegistryModel):
 class ProfileRuntimeConfig(StrictRegistryModel):
     """Contient uniquement les paramètres llama.cpp autorisés par le lanceur."""
 
-    alias: str
+    alias: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,95}$")
     gpu_layers: int | Literal["auto"]
     parallel_slots: int = Field(ge=1, le=8)
     jinja: bool
@@ -185,6 +171,8 @@ class ProfileRuntimeConfig(StrictRegistryModel):
     def validate_runtime_relationships(self) -> ProfileRuntimeConfig:
         """Garantit un slot unique et des batches compatibles avec llama.cpp."""
 
+        if isinstance(self.gpu_layers, int) and not 0 <= self.gpu_layers <= 999:
+            raise ValueError("Nombre de couches GPU invalide.")
         if self.parallel_slots != 1:
             raise ValueError("Chaque profil conversationnel doit utiliser un seul slot.")
         if self.ubatch_size > self.batch_size:
@@ -205,23 +193,11 @@ class ProfileRuntimeConfig(StrictRegistryModel):
 
 
 class PromptConfig(StrictRegistryModel):
-    """Référence les prompts versionnés et la stratégie d’injection interne."""
+    """Référence les trois contrats versionnés composés par le backend."""
 
     reliability_path: str
     profile_path: str
     memory_path: str
-    strategy: str
-    append_no_think: bool
-    filter_thinking: bool
-
-    @field_validator("strategy")
-    @classmethod
-    def validate_strategy(cls, value: str) -> str:
-        """Refuse une stratégie vide qui rendrait le comportement ambigu."""
-
-        if not value.strip():
-            raise ValueError("La stratégie de prompt ne peut pas être vide.")
-        return value
 
 
 class ResourcePolicy(StrictRegistryModel):
@@ -281,101 +257,156 @@ class AgentPolicy(StrictRegistryModel):
     max_tool_result_to_model_bytes: int = Field(ge=1024, le=65_536)
 
 
-class ModelProfile(StrictRegistryModel):
-    """Représente un cerveau, ses capacités, son modèle et ses limites."""
+class ModelDefinition(StrictRegistryModel):
+    """Décrit un modèle remplaçable, sans contrat métier ni permission workspace."""
 
-    id: str
+    id: str = Field(pattern=r"^[a-z][a-z0-9_-]{1,63}$")
+    engine: Literal["llama.cpp"]
+    model_type: Literal["chat"]
+    model_name: str = Field(min_length=1)
+    model_path: str
+    expected_size_bytes: int = Field(gt=0)
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    context_tokens: int = Field(gt=0, le=131072)
+    runtime: ProfileRuntimeConfig
+    capabilities: list[Literal["chat", "tool_calling"]]
+    append_no_think: bool
+    chat_template_path: str | None = None
+    expected_chat_template_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    stop_sequences: list[str] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_model(self) -> ModelDefinition:
+        """Vérifie les capacités déclarées et les paramètres spécifiques au GGUF."""
+
+        if not self.model_name.strip():
+            raise ValueError("Le nom du modèle ne peut pas être vide.")
+        if "chat" not in self.capabilities or len(set(self.capabilities)) != len(self.capabilities):
+            raise ValueError("Capacités modèle absentes ou dupliquées.")
+        if bool(self.chat_template_path) != bool(self.expected_chat_template_sha256):
+            raise ValueError("Le template modèle exige un chemin et un SHA-256 ensemble.")
+        if self.chat_template_path and not self.runtime.jinja:
+            raise ValueError("Un template personnalisé exige jinja.")
+        if "tool_calling" in self.capabilities and (
+            not self.runtime.jinja or self.runtime.skip_chat_parsing
+        ):
+            raise ValueError("Les appels d’outils exigent Jinja et le parsing natif du moteur.")
+        if any(not value or len(value) > 128 or "\x00" in value for value in self.stop_sequences):
+            raise ValueError("Séquence d’arrêt modèle invalide.")
+        if self.runtime.fit and self.runtime.fit_context_min_tokens != self.context_tokens:
+            raise ValueError("Le modèle doit interdire à --fit de réduire son contexte.")
+        if not self.runtime.fit and self.runtime.fit_context_min_tokens != 0:
+            raise ValueError("fit_context_min_tokens exige --fit.")
+        return self
+
+
+class ProfileConfig(StrictRegistryModel):
+    """Conserve le contrat, les permissions et les budgets propres à un profil."""
+
+    id: str = Field(pattern=r"^[a-z][a-z0-9_-]{1,31}$")
     display_name: str
-    model_type: str
-    model_name: str
+    model_id: str
+    required_model_capabilities: list[Literal["chat", "tool_calling"]]
     role: str
     agent_engine: str
     orchestrator: str
     enabled: bool
     display_order: int = Field(ge=0)
-    model_path: str
-    expected_size_bytes: int = Field(gt=0)
-    expected_sha256: str
-    context_tokens: int = Field(gt=0, le=131072)
     generation: GenerationConfig
-    runtime: ProfileRuntimeConfig
     prompt: PromptConfig
     capabilities: list[str]
     tools: list[str]
     workspace_permission: str
     resource_policy: str
 
-    @field_validator("id")
-    @classmethod
-    def validate_id(cls, value: str) -> str:
-        """Impose un identifiant stable utilisable dans l’API et SQLite."""
-
-        if PROFILE_ID_PATTERN.fullmatch(value) is None:
-            raise ValueError(f"Identifiant de profil invalide : {value!r}")
-        return value
-
     @field_validator(
-        "display_name",
-        "model_name",
-        "role",
-        "agent_engine",
-        "orchestrator",
-        "workspace_permission",
-        "resource_policy",
+        "display_name", "model_id", "role", "agent_engine", "orchestrator",
+        "workspace_permission", "resource_policy",
     )
     @classmethod
     def validate_non_empty_text(cls, value: str) -> str:
-        """Refuse les libellés et références vides ou composés d’espaces."""
+        """Refuse une référence ou un libellé vide avant la résolution du modèle."""
 
         if not value.strip():
             raise ValueError("Une valeur textuelle du profil ne peut pas être vide.")
         return value
 
-    @field_validator("expected_sha256")
-    @classmethod
-    def validate_sha256(cls, value: str) -> str:
-        """Exige un SHA-256 canonique en minuscules sur 64 caractères."""
+    @model_validator(mode="after")
+    def validate_lists(self) -> ProfileConfig:
+        """Les capacités exigées et les outils ne doivent pas être ambigus."""
 
-        if SHA256_PATTERN.fullmatch(value) is None:
-            raise ValueError("Le SHA-256 attendu doit contenir 64 caractères hexadécimaux.")
-        return value
+        for values in (self.capabilities, self.tools, self.required_model_capabilities):
+            if len(values) != len(set(values)):
+                raise ValueError(f"Capacités ou outils dupliqués pour {self.id}.")
+        if "chat" not in self.required_model_capabilities:
+            raise ValueError(f"Le profil {self.id} doit exiger la capacité chat.")
+        return self
+
+
+class ModelProfile(ProfileConfig):
+    """Vue résolue profil/modèle pour les consommateurs, sans seconde configuration.
+
+    Les propriétés conservent le contrat interne existant. Elles lisent toujours
+    le modèle référencé, jamais une copie de paramètres dans le profil JSON.
+    """
+
+    model: ModelDefinition
+
+    @property
+    def model_type(self) -> str:
+        """Expose le type du modèle associé au catalogue public."""
+        return self.model.model_type
+
+    @property
+    def model_name(self) -> str:
+        """Expose le libellé du modèle associé, sans interpréter son identité."""
+        return self.model.model_name
+
+    @property
+    def model_path(self) -> str:
+        """Fournit le chemin relatif privé au lanceur."""
+        return self.model.model_path
+
+    @property
+    def expected_size_bytes(self) -> int:
+        """Fournit la taille attendue pour la vérification avant activation."""
+        return self.model.expected_size_bytes
+
+    @property
+    def expected_sha256(self) -> str:
+        """Fournit l’empreinte attendue du GGUF sélectionné."""
+        return self.model.expected_sha256
+
+    @property
+    def context_tokens(self) -> int:
+        """Applique la fenêtre du modèle aux budgets du profil."""
+        return self.model.context_tokens
+
+    @property
+    def runtime(self) -> ProfileRuntimeConfig:
+        """Fournit les paramètres du moteur pour le modèle sélectionné."""
+        return self.model.runtime
 
     @model_validator(mode="after")
-    def validate_profile_lists_and_budget(self) -> ModelProfile:
-        """Refuse les doublons et les budgets qui ne laissent aucun contexte d’entrée."""
+    def validate_resolved_budget(self) -> ModelProfile:
+        """Refuse une association dont les capacités ou le contexte sont insuffisants."""
 
-        if len(self.capabilities) != len(set(self.capabilities)):
-            raise ValueError(f"Capacités dupliquées pour {self.id}.")
-        if len(self.tools) != len(set(self.tools)):
-            raise ValueError(f"Outils dupliqués pour {self.id}.")
+        missing = set(self.required_model_capabilities) - set(self.model.capabilities)
+        if missing:
+            raise ValueError(f"Capacités modèle manquantes pour {self.id}: {sorted(missing)}")
         reserved = self.generation.max_tokens + self.generation.system_template_reserve_tokens
-        if reserved >= self.context_tokens:
-            raise ValueError(f"Le profil {self.id} ne conserve aucun budget d’entrée.")
-        if self.id == "development" and self.context_tokens not in SUPPORTED_DEVELOPMENT_CONTEXT_TOKENS:
-            raise ValueError(
-                "Le profil development doit utiliser une fenêtre Stage 10 autorisée "
-                "(16K, 18K, 20K ou 22K)."
-            )
         available_input = self.context_tokens - reserved
         if self.generation.max_user_message_bytes + MESSAGE_TOKEN_OVERHEAD > available_input:
-            raise ValueError(
-                f"Le plafond de message du profil {self.id} dépasse son budget d’entrée."
-            )
-        if self.runtime.fit and self.runtime.fit_context_min_tokens != self.context_tokens:
-            raise ValueError(
-                f"Le profil {self.id} doit interdire à --fit de réduire son contexte."
-            )
-        if not self.runtime.fit and self.runtime.fit_context_min_tokens != 0:
-            raise ValueError(
-                f"Le profil {self.id} ne doit pas définir fit_context_min_tokens sans --fit."
-            )
+            raise ValueError(f"Le plafond de message du profil {self.id} dépasse son budget d’entrée.")
         return self
 
 
 class RegistryDocument(StrictRegistryModel):
     """Valide les catalogues et toutes les références croisées du registre."""
 
-    schema_version: int = Field(ge=1)
+    schema_version: Literal[3]
     default_profile_id: str
     workspace_root: str
     runtime: RuntimeServerConfig
@@ -386,7 +417,8 @@ class RegistryDocument(StrictRegistryModel):
     workspace_permissions: dict[str, WorkspacePermission]
     resource_policies: dict[str, ResourcePolicy]
     agent_policy: AgentPolicy
-    profiles: list[ModelProfile]
+    models: list[ModelDefinition]
+    profiles: list[ProfileConfig]
 
     @model_validator(mode="after")
     def validate_cross_references(self) -> RegistryDocument:
@@ -401,12 +433,18 @@ class RegistryDocument(StrictRegistryModel):
             raise ValueError(
                 f"Profils obligatoires absents : {sorted(missing_profile_ids)}"
             )
-        aliases = [profile.runtime.alias for profile in self.profiles]
+        model_ids = [model.id for model in self.models]
+        if len(model_ids) != len(set(model_ids)):
+            raise ValueError("Les identifiants de modèles doivent être uniques.")
+        models = {model.id: model for model in self.models}
+        aliases = [model.runtime.alias for model in self.models]
         if len(aliases) != len(set(aliases)):
             raise ValueError("Les alias llama.cpp doivent être uniques.")
         if self.default_profile_id not in profile_ids:
             raise ValueError("Le profil par défaut est introuvable.")
         default_profile = next(profile for profile in self.profiles if profile.id == self.default_profile_id)
+        if self.default_profile_id != "general":
+            raise ValueError("Général doit rester le profil de démarrage.")
         if not default_profile.enabled:
             raise ValueError("Le profil par défaut doit être activé.")
         if len(self.model_types) != len(set(self.model_types)) or not self.model_types:
@@ -416,7 +454,20 @@ class RegistryDocument(StrictRegistryModel):
         if not self.capability_catalog or not self.workspace_permissions or not self.resource_policies:
             raise ValueError("Les catalogues de capacités, permissions et ressources sont requis.")
 
-        for profile in self.profiles:
+        for definition in self.profiles:
+            model = models.get(definition.model_id)
+            if model is None:
+                raise ValueError(f"Modèle inconnu pour {definition.id}: {definition.model_id}")
+            profile = ModelProfile(**definition.model_dump(), model=model)
+            if profile.agent_engine == "OpenHands":
+                history_budget = max(
+                    self.agent_policy.max_context_input_tokens,
+                    OPENHANDS_MINIMUM_CONTEXT_TOKENS,
+                )
+                if history_budget + self.agent_policy.max_action_response_tokens > profile.context_tokens:
+                    raise ValueError(
+                        f"Le contexte du modèle {model.id} est insuffisant pour le SDK OpenHands."
+                    )
             if profile.model_type not in self.model_types:
                 raise ValueError(f"Type de modèle inconnu pour {profile.id}: {profile.model_type}")
             unknown_capabilities = set(profile.capabilities) - set(self.capability_catalog)
@@ -449,8 +500,15 @@ class RegistryDocument(StrictRegistryModel):
                         f"La boucle agent dépasse le budget d'entrée du profil {profile.id}."
                     )
         development = next(profile for profile in self.profiles if profile.id == "development")
-        if development.model_name != "Qwen2.5-Coder-7B-Instruct Q6_K":
-            raise ValueError("Le cerveau Programmation doit être Qwen2.5-Coder-7B-Instruct Q6_K.")
+        general = next(profile for profile in self.profiles if profile.id == "general")
+        if general.agent_engine != "direct" or general.tools or general.workspace_permission != "none":
+            raise ValueError("Le profil Général reste conversationnel et sans outils workspace.")
+        if any(self.workspace_permissions["none"].model_dump().values()):
+            raise ValueError("La permission none ne peut pas accorder un accès workspace.")
+        if development.workspace_permission != "ia_workspace_project":
+            raise ValueError("Programmation doit conserver sa permission de projet confiné.")
+        if "tool_calling" not in development.required_model_capabilities:
+            raise ValueError("Programmation doit exiger la capacité tool_calling.")
         if development.agent_engine != "OpenHands" or development.orchestrator != "agent_server_sdk":
             raise ValueError("Le profil Programmation doit être orchestré par OpenHands Agent Server / SDK.")
         if set(development.tools) != set(self.openhands.agent_server.tool_names):
@@ -503,8 +561,44 @@ class LoadedModelRegistry:
 
         for profile in self.document.profiles:
             if profile.id == profile_id:
-                return profile
+                model = next(model for model in self.document.models if model.id == profile.model_id)
+                return ModelProfile(**profile.model_dump(), model=model)
         raise RegistryError(f"Profil de modèle inconnu : {profile_id}")
+
+    def resolved_profiles(self) -> list[ModelProfile]:
+        """Résout toutes les associations sans stocker de profils modèle dupliqués."""
+
+        return [self.profile(profile.id) for profile in self.document.profiles]
+
+    def launcher_document(self) -> dict[str, Any]:
+        """Projette le registre validé pour les propriétaires PowerShell existants.
+
+        Cette projection transitoire en mémoire n’est jamais un second fichier
+        de configuration. Les scripts n’ont plus leur propre parseur métier.
+        """
+
+        document = self.document.model_dump()
+        document["profiles"] = []
+        for profile in self.resolved_profiles():
+            entry = profile.model_dump(exclude={"model"})
+            entry.update(profile.model.model_dump(exclude={"id", "capabilities"}))
+            document["profiles"].append(entry)
+        return document
+
+    def model_template(self, profile_id: str) -> Path | None:
+        """Résout et épingle un template propre au modèle, ou utilise celui du GGUF."""
+
+        model = self.profile(profile_id).model
+        if model.chat_template_path is None:
+            return None
+        path = _require_file_within(
+            self.project_root, model.chat_template_path,
+            self.project_root / "tools" / "openhands" / "templates",
+            "Template modèle",
+        )
+        if sha256(path.read_bytes()).hexdigest() != model.expected_chat_template_sha256:
+            raise RegistryError("Le SHA-256 du template modèle ne correspond pas au registre.")
+        return path
 
     def model_path(self, profile_id: str) -> Path:
         """Résout le GGUF d’un profil sous le dossier models du projet."""
@@ -596,7 +690,7 @@ class LoadedModelRegistry:
                 "max_user_message_bytes": profile.generation.max_user_message_bytes,
                 "capabilities": list(profile.capabilities),
             }
-            for profile in sorted(self.document.profiles, key=lambda item: item.display_order)
+            for profile in sorted(self.resolved_profiles(), key=lambda item: item.display_order)
         ]
 
 
@@ -645,16 +739,6 @@ def load_model_registry(
     if runtime_path.name.lower() != "llama-server.exe":
         raise RegistryError("Le runtime doit référencer llama-server.exe.")
 
-    template_path = _require_file_within(
-        root,
-        document.openhands.chat_template_path,
-        root / "tools" / "openhands" / "templates",
-        "Template OpenHands",
-    )
-    # Le template influence directement le format des appels d'outils : une
-    # dérive locale doit être détectée avant d'activer le profil Programmation.
-    if sha256(template_path.read_bytes()).hexdigest() != document.openhands.expected_chat_template_sha256:
-        raise RegistryError("Le SHA-256 du template OpenHands ne correspond pas au registre.")
     tokenizer_cache = _require_file_within(
         root,
         document.openhands.agent_runtime.tiktoken_cache_path,
@@ -673,7 +757,23 @@ def load_model_registry(
     )
 
     prompt_texts: dict[str, str] = {}
-    for profile in document.profiles:
+    registry = LoadedModelRegistry(document, root, path, prompt_texts)
+    # Même les modèles non associés restent confinés et leurs templates épinglés.
+    for model in document.models:
+        candidate = _resolve_relative_path(root, model.model_path, f"Modèle {model.id}")
+        try:
+            candidate.relative_to((root / "models").resolve())
+        except ValueError as error:
+            raise RegistryError(f"Modèle {model.id} n’est pas situé sous models.") from error
+        if model.chat_template_path is not None:
+            template = _require_file_within(
+                root, model.chat_template_path, root / "tools" / "openhands" / "templates",
+                "Template modèle",
+            )
+            if sha256(template.read_bytes()).hexdigest() != model.expected_chat_template_sha256:
+                raise RegistryError("Le SHA-256 du template modèle ne correspond pas au registre.")
+
+    for profile in registry.resolved_profiles():
         # Même un profil désactivé ne peut conserver un chemin extérieur : le
         # registre reste une source de vérité sûre avant sa future activation.
         model_path = _resolve_relative_path(
@@ -710,9 +810,4 @@ def load_model_registry(
                 raise RegistryError(f"Le prompt {prompt_path} est vide.")
             prompt_texts[relative_prompt] = prompt_text
 
-    return LoadedModelRegistry(
-        document=document,
-        project_root=root,
-        registry_path=path,
-        prompt_texts=prompt_texts,
-    )
+    return registry

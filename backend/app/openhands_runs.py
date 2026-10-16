@@ -196,7 +196,10 @@ class OpenHandsRunManager:
         result_path = directory / "result.json"
         return await self._process_starter(
             str(self.registry.openhands_sdk_python()),
+            "-B",
             str(self.runner_script),
+            "--registry",
+            str(self.registry.registry_path),
             "--server-url",
             self.runtime.agent_server_url,
             "--model-alias",

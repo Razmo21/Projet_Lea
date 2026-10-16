@@ -7,27 +7,17 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $registryPath = Join-Path $projectRoot 'config\models.json'
 try {
-    $registry = Get-Content -LiteralPath $registryPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-    $developmentMatches = @($registry.profiles | Where-Object { $_.id -eq 'development' })
-    if ($developmentMatches.Count -ne 1 -or $null -eq $registry.openhands) {
-        throw 'Le profil Programmation ou sa configuration OpenHands est absent.'
+    $registryPython = Join-Path $projectRoot 'backend\.venv\Scripts\python.exe'
+    $registryBridge = Join-Path $projectRoot 'tools\model_config.py'
+    $output = & $registryPython -B $registryBridge --registry $registryPath --project-root $projectRoot
+    $exitCode = $LASTEXITCODE
+    $registry = ($output -join [Environment]::NewLine) | ConvertFrom-Json
+    if ($exitCode -ne 0) {
+        throw $registry.error
     }
-    $developmentProfile = $developmentMatches[0]
-    $supportedContexts = @(16000, 18000, 20000, 22000)
-    if ([string]$developmentProfile.agent_engine -ne 'OpenHands' -or $supportedContexts -notcontains [int]$developmentProfile.context_tokens) {
-        throw 'Le registre ne décrit pas une fenêtre OpenHands Qwen2.5 Stage 10 autorisée.'
-    }
-    if ([int]$developmentProfile.runtime.fit_context_min_tokens -ne [int]$developmentProfile.context_tokens) {
-        throw 'Le runtime OpenHands doit reprendre exactement le contexte déclaré par le registre.'
-    }
-    if ([string]$developmentProfile.runtime.alias -ne 'lea-development-openhands') {
-        throw 'L''alias OpenHands du registre est invalide.'
-    }
+    $developmentProfile = @($registry.profiles | Where-Object { $_.id -eq 'development' })[0]
     $agentServer = $registry.openhands.agent_server
     $modelEndpoint = $registry.openhands.model_endpoint
-    if ([string]$agentServer.host -ne '127.0.0.1' -or [string]$modelEndpoint.host -ne '127.0.0.1') {
-        throw 'Les endpoints OpenHands doivent rester locaux.'
-    }
 } catch {
     throw "Registre OpenHands invalide : $($_.Exception.Message)"
 }
@@ -58,9 +48,9 @@ $script:OpenHandsSdkConfig = [ordered]@{
     ModelPath = Join-Path $projectRoot ([string]$developmentProfile.model_path)
     ModelSizeBytes = [int64]$developmentProfile.expected_size_bytes
     ModelSha256 = [string]$developmentProfile.expected_sha256
-    ModelRuntime = $developmentProfile.runtime
-    ChatTemplatePath = Join-Path $projectRoot ([string]$registry.openhands.chat_template_path)
-    ChatTemplateSha256 = [string]$registry.openhands.expected_chat_template_sha256
+    ModelLaunchArguments = [string]$developmentProfile.launch.windows_arguments
+    ChatTemplatePath = if ($developmentProfile.chat_template_path) { Join-Path $projectRoot ([string]$developmentProfile.chat_template_path) } else { $null }
+    ChatTemplateSha256 = [string]$developmentProfile.expected_chat_template_sha256
     LlamaHost = [string]$modelEndpoint.host
     LlamaPort = [int]$modelEndpoint.port
     ModelAlias = [string]$developmentProfile.runtime.alias
@@ -363,7 +353,7 @@ function Assert-OpenHandsSdkDockerReady {
 # Verifie une fois le runtime, la taille, le hash et les options llama.cpp reellement supportees.
 function Assert-OpenHandsSdkModelAndRuntime {
     $config = Get-OpenHandsSdkConfig
-    foreach ($path in @($config.LlamaExecutable, $config.ModelPath, $config.ChatTemplatePath, $config.SdkPython, $config.SdkRunner)) {
+    foreach ($path in @($config.LlamaExecutable, $config.ModelPath, $config.SdkPython, $config.SdkRunner)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
             throw "Le composant OpenHands SDK requis est absent : $path"
         }
@@ -377,9 +367,12 @@ function Assert-OpenHandsSdkModelAndRuntime {
     if ($actualHash -ne $config.ModelSha256) {
         throw "Le SHA-256 GGUF ne correspond pas au modele impose : $actualHash"
     }
-    $templateHash = (Get-FileHash -LiteralPath $config.ChatTemplatePath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($templateHash -ne $config.ChatTemplateSha256) {
-        throw "Le SHA-256 du template Jinja OpenHands ne correspond pas a la configuration epinglee : $templateHash"
+    $templateHash = $null
+    if ($config.ChatTemplatePath) {
+        $templateHash = (Get-FileHash -LiteralPath $config.ChatTemplatePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($templateHash -ne $config.ChatTemplateSha256) {
+            throw "Le SHA-256 du template Jinja OpenHands ne correspond pas a la configuration epinglee : $templateHash"
+        }
     }
 
     $help = @(& $config.LlamaExecutable --help 2>&1) -join "`n"
@@ -683,7 +676,6 @@ function Start-OpenHandsSdkLlamaServer {
 
     $config = Get-OpenHandsSdkConfig
     Assert-OpenHandsSdkConfiguredContext -ContextSize $ContextSize | Out-Null
-    $runtime = $config.ModelRuntime
     Assert-OpenHandsSdkPortFree -Port $config.LlamaPort -Label 'llama-server OpenHands SDK'
     Ensure-OpenHandsSdkStateDirectories
     $stdin = Join-Path $config.StateRoot 'llama.stdin.empty'
@@ -691,32 +683,8 @@ function Start-OpenHandsSdkLlamaServer {
     $stamp = [datetime]::UtcNow.ToString('yyyyMMddTHHmmssZ')
     $stdout = Join-Path $config.LogsRoot "llama-$ContextSize-$stamp.stdout.log"
     $stderr = Join-Path $config.LogsRoot "llama-$ContextSize-$stamp.stderr.log"
-    $arguments = @(
-        '-m', $config.ModelPath,
-        '--host', $config.LlamaHost,
-        '--port', [string]$config.LlamaPort,
-        '--alias', $config.ModelAlias,
-        '--ctx-size', [string]$ContextSize,
-        '--parallel', [string][int]$runtime.parallel_slots,
-        '--cache-type-k', [string]$runtime.cache_type_k,
-        '--cache-type-v', [string]$runtime.cache_type_v,
-        '--cache-ram', $(if ([bool]$runtime.cache_ram) { '1' } else { '0' }),
-        '--gpu-layers', [string]$runtime.gpu_layers,
-        '--fit', $(if ([bool]$runtime.fit) { 'on' } else { 'off' }),
-        '--fit-target', [string][int]$runtime.fit_target_mib,
-        '--fit-ctx', [string][int]$runtime.fit_context_min_tokens,
-        '--prio', [string][int]$runtime.priority,
-        '--threads', [string][int]$runtime.threads,
-        '--batch-size', [string][int]$runtime.batch_size,
-        '--ubatch-size', [string][int]$runtime.ubatch_size
-    )
-    if ([bool]$runtime.mmap) { $arguments += '--mmap' }
-    if ([bool]$runtime.jinja) {
-        # llama.cpp n'accepte un template Jinja arbitraire que si --jinja le precede.
-        $arguments += '--jinja'
-    }
-    $arguments += @('--chat-template-file', $config.ChatTemplatePath)
-    if (-not [bool]$runtime.skip_chat_parsing) { $arguments += '--no-skip-chat-parsing' }
+    # Même adaptateur que les runs Léa ; les PID du diagnostic restent isolés.
+    $arguments = $config.ModelLaunchArguments
 
     $process = $null
     $record = $null
@@ -1043,7 +1011,7 @@ function Test-OpenHandsSdkContainerLlamaEndpoint {
     $python = "import json, urllib.request; data=json.load(urllib.request.urlopen('http://host.docker.internal:$($config.LlamaPort)/v1/models', timeout=10)); assert any(item.get('id') == '$($config.ModelAlias)' for item in data.get('data', [])); print('$($config.ModelAlias)')"
     $result = Invoke-OpenHandsSdkDocker -Arguments @('container', 'exec', $containerId, 'python', '-c', $python)
     if (($result -join "`n").Trim() -ne $config.ModelAlias) {
-        throw 'Le test depuis Agent Server ne confirme pas l alias Qwen local.'
+        throw 'Le test depuis Agent Server ne confirme pas l alias du modèle local.'
     }
     return $true
 }
@@ -1150,7 +1118,7 @@ function Stop-OpenHandsSdkAgentServer {
     }
 }
 
-# Effectue un vrai appel OpenAI-compatible avec tools avant le run afin de confirmer le tool calling natif de Qwen.
+# Effectue un vrai appel OpenAI-compatible avec tools avant le run pour vérifier le tool calling natif.
 function Invoke-OpenHandsSdkNativeToolProbe {
     $config = Get-OpenHandsSdkConfig
     $body = [ordered]@{
@@ -1158,7 +1126,7 @@ function Invoke-OpenHandsSdkNativeToolProbe {
         temperature = 0
         max_tokens = 128
         messages = @(
-            [ordered]@{ role = 'system'; content = 'You are Qwen, created by Alibaba Cloud. You are a helpful assistant.' },
+            [ordered]@{ role = 'system'; content = 'You are a local programming assistant. Use the requested native tool.' },
             [ordered]@{ role = 'user'; content = 'Call the record_smoke_probe function with value ok. Return no prose before the tool call.' }
         )
         tools = @([ordered]@{

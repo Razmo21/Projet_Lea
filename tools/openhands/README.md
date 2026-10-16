@@ -7,24 +7,37 @@ chemin. Le dépôt `L:\Projet_Lea` n'est jamais monté dans Docker.
 
 ## État opérationnel
 
-L’étape 10 utilise désormais l’intégration Léa / SDK / Agent Server, et non un
-bootstrap séparé. Le chemin normal est : Léa → Agent Server OpenHands minimal
+Depuis l’étape 10, Léa utilise l’intégration SDK / Agent Server, et non un
+bootstrap séparé. L’étape 11 découple la définition du modèle sans changer ce
+chemin : Léa → Agent Server OpenHands minimal
 dans Docker → llama.cpp local. Agent Canvas n’est jamais une précondition de ce
 chemin.
 
 ## Architecture et composants épinglés
 
 ```text
-Léa -> Agent Server OpenHands 1.43.1 dans Docker isolé -> llama.cpp local -> Qwen2.5-Coder-7B-Instruct Q6_K
+Léa -> Agent Server OpenHands 1.43.1 dans Docker isolé -> llama.cpp local -> modèle associé à development
 ```
 
-- modèle unique : `models\development\qwen2.5-coder-7b-instruct-q6_k.gguf`, SHA-256 `46291ddea1bfb608fe63d9a1907eea6918bda87a7626593edc4bf97c5fd73f9d`, à 22 000 tokens avec un seul slot ;
+- modèle actuellement associé : `models\development\qwen2.5-coder-7b-instruct-q6_k.gguf`, SHA-256 `46291ddea1bfb608fe63d9a1907eea6918bda87a7626593edc4bf97c5fd73f9d`, à 22 000 tokens avec un seul slot ;
 - image Agent Server : `ghcr.io/openhands/agent-server@sha256:8ec6bd808b35cf50b7e5032f618ccbb33dd8e2bd80f8d130f12dafee24bab66a` (1.43.1) ;
 - llama.cpp b10516 : `runtime\llama.cpp\llama-server.exe`, exposé uniquement sur `127.0.0.1:8081` sous l'alias `lea-development-openhands` ;
 - Agent Server exposé uniquement sur `127.0.0.1:18010` ;
 - template outillé épinglé : `tools\openhands\templates\qwen2.5-coder-function-call.jinja`, contrôlé par le registre avant le démarrage.
 
-Le SDK utilise exclusivement `openai/lea-development-openhands` et la clé locale factice `local-llm`. Aucun LLM cloud, autre modèle, Canvas, MCP externe, recherche Web ou téléchargement n'est configuré. Docker Desktop doit être démarré manuellement : Léa vérifie sa disponibilité, mais ne le démarre jamais.
+Le SDK utilise `openai/<alias configuré>` (actuellement
+`openai/lea-development-openhands`) et la clé locale factice `local-llm`.
+Aucun LLM cloud, modèle de secours, Canvas, MCP externe, recherche Web ou
+téléchargement n’est configuré. Docker Desktop doit être démarré manuellement :
+Léa vérifie sa disponibilité, mais ne le démarre jamais.
+
+La source de vérité reste `config/models.json`, schéma 3. `models` contient les
+poids, le contexte, le template optionnel et les séquences d’arrêt ;
+`profiles[id=development].model_id` sélectionne le modèle sans déplacer les
+permissions. Le runner et les lanceurs lisent ce registre via le validateur et
+l’adaptateur communs. Le port SDK découle de l’endpoint configuré, jamais d’une
+constante propre à Qwen. Voir le README principal pour remplacer un modèle,
+arrêter/redémarrer et vérifier sa compatibilité réelle.
 
 ## Registre d'outils et historique
 
@@ -50,8 +63,9 @@ restent dans le stockage local de checkpoints.
 ## Commandes de diagnostic SDK
 
 Les scripts ci-dessous servent au diagnostic isolé du SDK. Ils lisent le
-registre courant et appliquent leurs propres contrôles avant d’allouer un
-runtime ; ils ne remplacent pas l’intégration et les validations de Léa.
+registre courant via le même validateur, puis vérifient l’identité de leurs
+services avant d’allouer un runtime ; ils ne remplacent pas les validations de
+Léa. `-ContextSize` doit correspondre au modèle associé au profil.
 
 ```powershell
 # Rend le fixture volontairement rouge, sans lancer Docker ni Qwen.
@@ -84,7 +98,17 @@ lea_openhands_sdk_smoke_v2 -> /home/openhands/.openhands
 
 Il est non privilégié, n'a pas de socket Docker, applique `no-new-privileges`, désactive VNC, VS Code, preload d'outils et webhooks. Il ne monte jamais `L:\Projet_Lea`. Docker conserve une connectivité potentielle vers `host.docker.internal` pour le LLM local, mais le smoke interdit réseau, téléchargements, Git et tout fichier hors du fixture. Ce smoke Linux ne valide ni PowerShell Windows, ni `lea.ps1`, ni Edge Stable, ni les validations Windows de l'étape 10.
 
-## Étape 10
+## Validation actuelle
 
-L’étape 10 est techniquement complète et attend la validation manuelle finale
-de l’utilisateur. Aucun commit n’est créé par ces scripts.
+L’étape 10 est terminée et l’étape 11 est techniquement complète, en attente
+de validation manuelle finale. Deux petits runs réels ont confirmé lecture,
+édition, `python -B -m unittest -v`, bilan final validé, puis respectivement
+Rollback et Accept. Le premier essai avait détecté un faux négatif de preuve
+sur l’option `-B`, corrigé sans modifier la politique d’outils ni récupérer les
+décisions du modèle. Le smoke SDK historique n’a pas été rejoué pour l’étape 11.
+
+Qwen2.5-Coder-7B peut échouer sur des tâches agentiques multi-fichiers longues lorsque file_editor exige des remplacements textuels exacts. Léa détecte ces boucles, refuse les mutations invalides, valide les changements par des tests et peut restaurer le checkpoint.
+
+`Lea_FinalValidation_Test` reste un benchmark difficile pour le futur comparatif
+GLM-5.3-Flash / Qwen ; il n’a pas été relancé ici. Aucun commit n’est créé par
+ces scripts.

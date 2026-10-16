@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one isolated OpenHands SDK smoke-test conversation against local Qwen."""
+"""Run one isolated OpenHands SDK smoke against the configured local model."""
 
 from __future__ import annotations
 
@@ -28,6 +28,10 @@ os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
 
 from openhands.sdk import Agent, Conversation, LLM, Workspace
 from openhands.sdk.tool.defaults import DEFAULT_EXEC_TOOL_NAMES, default_tool_specs
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
+from app.inference import inference_adapter  # noqa: E402
+from app.model_registry import load_model_registry  # noqa: E402
 
 
 POWERSHELL_EXECUTABLE = (
@@ -599,8 +603,13 @@ def is_pricing_write_action(action: dict[str, Any]) -> bool:
 
 
 def build_agent(model_alias: str, context_size: int) -> Agent:
-    """Construct a no-browser SDK agent bound exclusively to the local OpenAI-compatible Qwen endpoint."""
+    """Construct a no-browser SDK agent from the same registry as normal Léa runs."""
 
+    registry = load_model_registry(os.environ.get("LEA_MODEL_REGISTRY") or None)
+    profile = registry.profile("development")
+    if model_alias != profile.runtime.alias or context_size != profile.context_tokens:
+        raise RuntimeError("Le smoke SDK diverge du modèle configuré.")
+    adapter = inference_adapter(registry, "development")
     tool_specs = list(default_tool_specs(enable_browser=False))
     tool_names = tuple(tool.name for tool in tool_specs)
     if tool_names != DEFAULT_EXEC_TOOL_NAMES:
@@ -611,10 +620,11 @@ def build_agent(model_alias: str, context_size: int) -> Agent:
     llm = LLM(
         usage_id="agent",
         model=f"openai/{model_alias}",
-        base_url="http://host.docker.internal:8081/v1",
+        base_url=adapter.sdk_base_url,
         api_key=SecretStr("local-llm"),
         max_input_tokens=context_size,
-        max_output_tokens=2048,
+        max_output_tokens=profile.generation.max_tokens,
+        litellm_extra_body=adapter.sdk_extra_body(),
         native_tool_calling=True,
         api_mode="chat",
         caching_prompt=False,
