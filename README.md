@@ -15,8 +15,12 @@ l’interface permet de reprendre, rechercher et gérer les conversations.
 
 L’étape 11 sépare désormais les profils, les modèles remplaçables et le moteur
 d’inférence. Les deux Qwen actuels, les données et le parcours OpenHands sont
-conservés. L’étape est techniquement terminée ; sa validation manuelle finale
-reste attendue avant toute nouvelle étape.
+conservés. L’étape 11 a été validée manuellement par l’utilisateur avant
+l’autorisation de l’étape 12.
+
+L’étape 12 ajoute le centre de paramètres de Léa, utilisable sans modèle ni
+FastAPI chargés. Elle est techniquement terminée ; sa validation manuelle finale
+reste attendue. L’étape 13 n’est pas commencée.
 
 ## Philosophie
 
@@ -48,7 +52,8 @@ On ne commence jamais une nouvelle fonctionnalité tant que l'étape actuelle n'
 8. Conversations locales persistantes et fiables — terminée.
 9. Mémoire générale explicite et persistante — terminée.
 10. Multi-modèles et profil Programmation — terminée.
-11. Architecture indépendante des modèles — techniquement terminée.
+11. Architecture indépendante des modèles — terminée.
+12. Centre de paramètres de Léa — techniquement terminé.
 
 ## Démarrage local
 
@@ -95,7 +100,7 @@ opérations suppriment volontairement la suite devenue incohérente. Les
 révisions empêchent un onglet périmé d’écraser silencieusement un autre onglet.
 
 Le navigateur ne transmet jamais l’historique, un rôle `system` ou
-`/no_think`. Le backend relit uniquement les messages validés dans SQLite,
+une directive de raisonnement ajoutée par l’interface. Le backend relit uniquement les messages validés dans SQLite,
 sélectionne les paires complètes les plus récentes et construit lui-même la
 requête du modèle. Aucun échange n’est stocké dans `localStorage`,
 `sessionStorage` ou `IndexedDB`.
@@ -137,9 +142,9 @@ RAG ou embeddings à cette étape. Pour oublier un fait, il faut employer
 `Oublie que ...` avec le même fait après normalisation déterministe.
 
 Le profil Général utilise une fenêtre `-c 8192` avec un seul slot. Le backend réserve
-1 024 tokens pour la réponse finale et 512 pour les instructions et le
+1 024 tokens pour la génération (réflexion éventuelle comprise) et 512 pour les instructions et le
 template, puis applique une borne conservatrice d’un octet UTF-8 par token.
-La directive `/no_think` existe uniquement dans la copie interne envoyée au
+La directive `/no_think` (Low) ou `/think` (High) existe uniquement dans la copie interne envoyée au
 modèle : ni elle, ni les balises de pensée, ni une pensée interne ne sont
 renvoyées à l’interface ou enregistrées dans SQLite.
 
@@ -239,7 +244,7 @@ Le chargeur `backend/app/model_registry.py` valide la même configuration pour
 FastAPI, OpenHands et les lanceurs. `tools/model_config.py` transmet aux scripts
 PowerShell une projection temporaire du registre et les arguments calculés par
 l’adaptateur : ce n’est pas une seconde configuration. Le modèle possède ses
-options `append_no_think`, `stop_sequences` et son éventuel template ; les
+options `append_no_think`, `reasoning_control`, `stop_sequences` et son éventuel template ; les
 contrats de profil et le filtrage des réponses restent indépendants de lui.
 
 ### Remplacer un modèle par configuration
@@ -260,7 +265,10 @@ contrats de profil et le filtrage des réponses restent indépendants de lui.
    GPU, caches KV, threads, batches, Jinja, mmap, fit et priorité. Les seuils de
    ressources restent imposés par le profil. Un seul slot est autorisé et
    `fit_context_min_tokens` doit égaler le contexte lorsque `fit` est actif.
-   Définir `append_no_think` et les séquences d’arrêt selon le modèle. Un template
+   Définir `append_no_think` et les séquences d’arrêt selon le modèle. Laisser
+   `reasoning_control` à `none` (défaut) sauf preuve réelle de compatibilité avec
+   `think_directives`. Cette capacité active le contrôle Général, pas une permission.
+   Un template
    personnalisé doit rester sous `tools/openhands/templates/`, avec son hash ;
    sans template explicite, le moteur utilise celui du GGUF.
 5. Pour Général, modifier uniquement `profiles[id=general].model_id` vers
@@ -295,7 +303,8 @@ Ajouter ultérieurement un autre moteur demandera son adaptateur, sa validation
 de configuration, son intégration aux propriétaires de processus et des tests
 de lancement/readiness/arrêt. Les contrats de profils, SQLite et les outils
 n’ont pas à être reconstruits. Aucun autre moteur, système de plugins, API
-d’édition des paramètres ou interface Paramètres n’est implémenté ici.
+d’édition du registre des modèles n’est implémenté. Les préférences de l’étape 12
+ne modifient jamais ce registre.
 
 ### Vérifications de l’étape 11
 
@@ -318,9 +327,96 @@ npm run build
 git diff --check
 ```
 
+## Paramètres de Léa — étape 12
+
+Le bouton **Paramètres**, à côté du titre Léa, ouvre une page dédiée. Choisir
+Low ou High puis **Valider** ; la confirmation apparaît après commit et relecture
+de la valeur enregistrée. **Retour aux conversations** préserve le brouillon,
+l’historique, le profil et le run courant. Un brouillon de préférence non validé
+demande confirmation avant d’être abandonné ; une sauvegarde en cours bloque ce retour.
+
+- Général commence en **Low** : directive interne `/no_think`.
+- **High** utilise `/think`, avec le même budget de génération. Les essais réels
+  sur le Qwen3 installé montrent une réflexion non vide en High, vide en Low,
+  puis une réponse correcte dans les deux cas. Ce sont des directives du modèle,
+  pas un paramètre API `reasoning_effort` supporté par le template actuel.
+- Le choix s’applique à la **prochaine requête Général**, y compris retry,
+  modification et régénération. Aucun redémarrage, changement de modèle ou arrêt
+  d’un run en cours. High peut être plus lent et épuiser le budget ; une réponse
+  inutilisable reste un échec explicite, sans fallback dissimulé.
+- Aucun bloc ni marqueur de réflexion généré n’est affiché ou persisté. Les
+  textes saisis par l’utilisateur ne sont pas réécrits en fonction de ce choix.
+- Programmation n’affiche **aucun faux contrôle Low/High** : le template
+  Qwen2.5-Coder, le moteur servi et le chemin OpenHands actuel ne fournissent pas
+  de mécanisme de raisonnement réglable validé. Les outils, tests et checkpoints
+  restent identiques ; une stratégie d’agent serait un autre réglage, non implémenté.
+
+### Persistance et fonctionnement IA arrêtée
+
+`user_preferences`, ajoutée par la migration SQLite 8 dans `data/lea.sqlite3`,
+conserve `general_reasoning` et une révision. Le registre `config/models.json`
+reste exclusivement technique : modèles, capacités et profils. Les préférences
+n’appartiennent ni à Qwen, ni au navigateur, ni à un fichier JSON concurrent.
+
+`npm run dev` suffit pour ouvrir, modifier et relire les paramètres lorsque
+FastAPI et les modèles sont arrêtés. Il faut néanmoins Vite, l’environnement
+Python **déjà installé** dans `backend/.venv` et l’accès à SQLite. Le contrôleur
+Vite lance brièvement `tools/preferences.py` avec l’action fixe `read` ou `save`,
+puis le processus se ferme. Aucun nouveau serveur Python, modèle ou Docker ne
+démarre. Une page statique `dist/` seule ne fournit pas ce contrôleur local.
+`LEA_DB_PATH` doit être défini identiquement avant de lancer Vite et le backend
+pour les essais isolés ; le navigateur ne peut pas choisir ce chemin.
+
+Une révision périmée, une valeur inconnue, un JSON invalide, une base illisible
+ou une sauvegarde refusée produisent une erreur sans confirmation mensongère.
+**Recharger les paramètres** retrouve l’état persistant après un conflit ou une
+réponse perdue. Un stockage réellement absent est initialisé en Low ; une valeur
+corrompue n’est jamais réinitialisée silencieusement. Si le modèle de remplacement
+ne déclare pas la capacité, le contrôle devient indisponible sans supprimer le choix.
+Modifier le registre reste une opération administrative exigeant l’arrêt/reprise
+documenté plus haut ; aucun réglage utilisateur actuel n’exige de redémarrage.
+
+### Ajouter ultérieurement un paramètre
+
+Ajouter une migration additive et son champ typé/validé dans
+`backend/app/preferences.py`, écrire uniquement la colonne concernée, étendre le
+contrat de `src/preferences.ts` et ajouter son contrôle dans `src/Settings.tsx`.
+Brancher sa consommation au point métier pertinent et documenter son moment
+d’application. Les révisions et transactions existantes restent réutilisées.
+Tester défaut, aller-retour, refus, concurrence et préservation des autres champs.
+Un test de colonne fictive isolée démontre cette préservation ; aucun réglage
+futur n’est livré dans l’interface et aucun framework générique n’est ajouté.
+
+### Vérifications de l’étape 12
+
+213 tests backend, 21 tests frontend, build et vérification du diff réussis.
+Les tests unitaires/integration utilisent SQLite temporaire, gateways simulés,
+processus CLI réels et doubles de transport selon le cas. Edge a réellement
+exercé la page IA arrêtée, Low/High, les brouillons, erreurs et conflits,
+l’historique et la mémoire après arrêt/reprise des trois services.
+
+Le petit projet autorisé `L:\IA_WORKSPACE\Lea_Stage12_20261016` a produit un run
+OpenHands validé, avec test vert, diff source unique et rollback exact depuis
+Edge. Une préférence a été sauvegardée pendant ce run sans interrompre ni changer
+son modèle. Accept reste couvert par la non-régression automatisée ; il n’a pas
+été recliqué dans cet essai. Aucun benchmark long, nouveau modèle ni moteur testé.
+
+Les scénarios réels sont dans `tests/e2e/edge-stage12.mjs` : phases `settings`,
+`general`, `errors`, `programming`, `persistence`, `native`, `security`, `visual`.
+Ils exigent des services **isolés** et un Edge de test avec CDP loopback 9232
+(`LEA_EDGE_CDP_PORT` modifiable). Ne pas les lancer sur la base utilisateur :
+ils changent des préférences et créent des conversations de test. `settings`
+part de Low et fonctionne sans cœur ; `general` crée la conversation ;
+`errors` part de High ; `programming` exige le projet jetable et Programmation
+déjà actif ; `persistence` suit un arrêt/reprise complet sur la même base.
+`native` exige Général ; `visual` part de la conversation et sauvegarde une
+capture dans le répertoire de test existant. Une panne réseau Edge est simulée ;
+les conflits HTTP, l’inférence et le run sont réels.
+
 ## Roadmap
 
-L’étape 11 est techniquement terminée. Les suivantes ne sont pas implémentées :
+L’étape 11 est terminée, l’étape 12 est techniquement terminée en attente de
+validation manuelle. Les étapes 13 à 25 ne sont pas implémentées :
 
 - Étape 11 — Architecture indépendante des modèles.
 - Étape 12 — Centre de paramètres de Léa.

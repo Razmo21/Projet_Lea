@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from .model_registry import LoadedModelRegistry, RegistryError
+from .model_registry import LoadedModelRegistry, ModelProfile, RegistryError
 
 
 MODEL_UNAVAILABLE_MESSAGE = "Le modèle local de Léa n’est pas disponible."
@@ -59,6 +59,14 @@ def llama_cpp_arguments(configuration: dict[str, Any]) -> list[str]:
         "--skip-chat-parsing" if runtime["skip_chat_parsing"] else "--no-skip-chat-parsing"
     )
     return arguments
+
+
+def reasoning_directive(profile: ModelProfile, *, high: bool = False) -> str:
+    """Traduit le choix fonctionnel uniquement si le modèle déclare ce mécanisme."""
+
+    if profile.model.reasoning_control == "think_directives":
+        return "/think" if high else "/no_think"
+    return "/no_think" if profile.model.append_no_think else ""
 
 
 class LlamaCppAdapter:

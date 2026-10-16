@@ -20,6 +20,7 @@ from .inference import (
     ModelResponseError,
     ModelUnavailableError,
     inference_adapter,
+    reasoning_directive,
 )
 from .checkpoints import CheckpointConflictError, CheckpointError, CheckpointService
 from .database import (
@@ -57,6 +58,7 @@ from .model_registry import (
 from .openhands_runtime import OpenHandsRuntime
 from .openhands_runs import OpenHandsRunError, OpenHandsRunManager
 from .workspace import FrozenProject, WorkspaceGuard, WorkspacePathError
+from .preferences import PreferencesError, PreferencesStore, ReasoningLevel
 
 
 MODEL_REGISTRY = load_model_registry(os.environ.get("LEA_MODEL_REGISTRY") or None)
@@ -103,7 +105,7 @@ THINK_MARKER_PATTERN = re.compile(
     r"|(?P<bracket_close>\[\s*end\s+thinking\s*\])",
     re.IGNORECASE,
 )
-NO_THINK_PATTERN = re.compile(r"/\s*no_think\b", re.IGNORECASE)
+REASONING_DIRECTIVE_PATTERN = re.compile(r"/\s*(?:no_think|think)\b", re.IGNORECASE)
 
 
 class ModelGateway(Protocol):
@@ -142,7 +144,7 @@ def contains_internal_marker(content: str) -> bool:
             THINK_XML_CLOSE,
             THINK_BRACKET_OPEN,
             THINK_BRACKET_CLOSE,
-            NO_THINK_PATTERN,
+            REASONING_DIRECTIVE_PATTERN,
         )
     )
 
@@ -268,6 +270,7 @@ def select_history_for_context(
     question: str,
     memory_contents: list[str] | tuple[str, ...] = (),
     profile: ModelProfile = DEFAULT_PROFILE,
+    reasoning_level: ReasoningLevel = "low",
 ) -> list[dict[str, str]]:
     """Conserve le suffixe récent de paires complètes qui tient dans le profil."""
 
@@ -276,7 +279,9 @@ def select_history_for_context(
         - profile.generation.max_tokens
         - profile.generation.system_template_reserve_tokens
     )
-    internal_question = build_internal_user_message(question, memory_contents, profile)
+    internal_question = build_internal_user_message(
+        question, memory_contents, profile, reasoning_level,
+    )
     question_cost = estimate_content_tokens(internal_question)
     if question_cost > input_budget:
         raise ValueError("Le message est trop grand pour la fenêtre de contexte active.")
@@ -307,11 +312,16 @@ def build_model_messages(
     memory_contents: list[str] | tuple[str, ...] = (),
     profile: ModelProfile = DEFAULT_PROFILE,
     registry: LoadedModelRegistry = MODEL_REGISTRY,
+    reasoning_level: ReasoningLevel = "low",
 ) -> list[dict[str, str]]:
     """Construit le contexte d'un profil à partir du registre lié à l'application."""
 
-    retained = select_history_for_context(stored_history, question, memory_contents, profile)
-    internal_question = build_internal_user_message(question, memory_contents, profile)
+    retained = select_history_for_context(
+        stored_history, question, memory_contents, profile, reasoning_level,
+    )
+    internal_question = build_internal_user_message(
+        question, memory_contents, profile, reasoning_level,
+    )
     system_message = registry.system_prompt(
         profile.id,
         include_memory=bool(memory_contents),
@@ -327,14 +337,18 @@ def build_internal_user_message(
     question: str,
     memory_contents: list[str] | tuple[str, ...] = (),
     profile: ModelProfile = DEFAULT_PROFILE,
+    reasoning_level: ReasoningLevel = "low",
 ) -> str:
-    """Ajoute les souvenirs comme données avant la question strictement inchangée."""
+    """Entoure la question des souvenirs-données et de la directive interne choisie."""
 
+    directive = reasoning_directive(
+        profile, high=profile.id == "general" and reasoning_level == "high",
+    )
+    suffix = f"\n{directive}" if directive else ""
     if not memory_contents:
-        return f"{question}\n/no_think" if profile.model.append_no_think else question
+        return f"{question}{suffix}"
     ensure_memory_capacity(memory_contents)
     memory_context = build_memory_context(memory_contents)
-    suffix = "\n/no_think" if profile.model.append_no_think else ""
     return (
         f"{memory_context}\n\n"
         "QUESTION ACTUELLE DE L’UTILISATEUR\n"
@@ -534,6 +548,17 @@ def _database(request: Request) -> Database:
     return request.app.state.database
 
 
+def _reasoning_level(request: Request, profile: ModelProfile) -> ReasoningLevel:
+    """Fige le choix avant génération ; une sauvegarde ultérieure ne modifie pas la requête."""
+
+    if profile.id != "general" or profile.model.reasoning_control == "none":
+        return "low"
+    try:
+        return request.app.state.preferences.read().general_reasoning
+    except PreferencesError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
 def _gateway(request: Request, profile_id: str) -> ModelGateway:
     """Retourne le faux gateway de test ou un client lié au profil figé."""
 
@@ -699,6 +724,7 @@ def create_app(
         lifespan=lifespan,
     )
     application.state.database = database
+    application.state.preferences = PreferencesStore(database)
     application.state.model_registry = model_registry
     application.state.fixed_model_gateway = model_gateway
     application.state.openhands_runtime = openhands_runtime
@@ -1209,6 +1235,7 @@ def create_app(
                             memory_contents,
                             profile,
                             request.app.state.model_registry,
+                            _reasoning_level(request, profile),
                         )
                     except (MemoryCapacityError, ValueError) as error:
                         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -1241,6 +1268,7 @@ def create_app(
                                 memory_contents,
                                 profile,
                                 request.app.state.model_registry,
+                                _reasoning_level(request, profile),
                             )
                         except (MemoryCapacityError, ValueError) as error:
                             raise HTTPException(status_code=422, detail=str(error)) from error
@@ -1339,6 +1367,7 @@ def create_app(
                         memory_contents,
                         profile,
                         request.app.state.model_registry,
+                        _reasoning_level(request, profile),
                     )
                 except (MemoryCapacityError, ValueError) as error:
                     raise HTTPException(status_code=422, detail=str(error)) from error
@@ -1408,6 +1437,7 @@ def create_app(
                         memory_contents,
                         profile,
                         request.app.state.model_registry,
+                        _reasoning_level(request, profile),
                     )
                 except (MemoryCapacityError, ValueError) as error:
                     raise HTTPException(status_code=422, detail=str(error)) from error
@@ -1468,6 +1498,7 @@ def create_app(
                         memory_contents,
                         profile,
                         request.app.state.model_registry,
+                        _reasoning_level(request, profile),
                     )
                 except (MemoryCapacityError, ValueError) as error:
                     raise HTTPException(status_code=422, detail=str(error)) from error

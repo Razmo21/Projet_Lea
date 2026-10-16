@@ -93,6 +93,34 @@ Server. Les snapshots de fichiers résident dans le stockage local de
 checkpoints et l’historique détaillé des sessions reste dans le volume d’état
 de l’Agent Server.
 
+## Préférences fonctionnelles — étape 12
+
+La migration 8 ajoute `user_preferences` (une ligne, `revision`,
+`general_reasoning` limité à `low`/`high`, défaut `low`). `PreferencesStore`
+partage la base existante, sans cache global ni table de souvenirs supplémentaire.
+Les sauvegardes transactionnelles vérifient `expected_revision`, modifient
+uniquement la colonne concernée et relisent avant de confirmer le commit.
+
+`GET /api/preferences` et `POST /api/preferences` sont servis par **Vite sur
+5173**, pas par FastAPI. Le pont ponctuel `tools/preferences.py read|save`
+réutilise les modèles Pydantic et SQLite ; seule son entrée JSON va sur stdin,
+jamais dans une commande shell. Il initialise avec `recover_generations=False` :
+ouvrir les paramètres ne doit pas marquer une génération active comme interrompue.
+Seul le démarrage normal de FastAPI conserve cette récupération.
+
+Le POST exige l’origine locale, le bon Host et du JSON borné à 1 024 octets.
+Champs supplémentaires, chemins, commandes, valeurs et types inconnus sont refusés.
+Les réponses ne sont pas cachées ; conflits 409, entrées invalides 422,
+indisponibilité 503. Le navigateur vérifie également le choix et la nouvelle révision.
+`general_reasoning_available` est une capacité dérivée du registre, non une
+préférence persistée. Aucun modèle ni serveur n’est lancé par ces routes.
+
+Avant chaque génération Général, FastAPI fige le choix dans les messages
+internes. Le modèle doit déclarer `reasoning_control: think_directives` dans
+le registre ; `none` est le défaut pour un autre modèle. Une préférence invalide
+refuse la génération avant mutation de conversation ; aucun Low de secours caché.
+Le paramètre Général n’est pas consulté par le runner OpenHands.
+
 ## Profil Programmation et OpenHands
 
 La source de vérité est `config/models.json`. Le profil Programmation utilise
@@ -148,13 +176,13 @@ conserve le fait global jusqu’à une commande exacte `Oublie que`.
 
 ## Fenêtre de contexte et pensée interne
 
-Pour le profil Général (`-c 8192`), le backend réserve 1 024 tokens pour la réponse finale et 512
+Pour le profil Général (`-c 8192`), le backend réserve 1 024 tokens pour la génération (réflexion comprise) et 512
 pour les instructions et le template. Les autres budgets proviennent de `config/models.json`. Il estime prudemment un token par octet
 UTF-8, garde toujours la question courante et sélectionne les paires complètes
 les plus récentes dans la limite restante, sans supprimer les anciens messages
 de la base.
 
-Le backend ajoute `/no_think` uniquement à une copie interne de la question
+Le backend ajoute `/no_think` en Low ou `/think` en High uniquement à une copie interne de la question
 envoyée au modèle. Il retire ensuite les blocs de pensée complets, multiples ou
 incomplets et refuse toute réponse finale vide ou encore marquée. Ni la
 directive interne, ni un rôle `system`, ni la pensée ne sont persistés.
@@ -172,7 +200,7 @@ le budget de contexte avant la sélection des paires historiques.
 Depuis la racine :
 
 ```powershell
-.\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -v
+.\backend\.venv\Scripts\python.exe -B -m unittest discover -s backend\tests -v
 npm run test:frontend
 npm run build
 npm run test:edge
@@ -181,3 +209,6 @@ npm run test:edge
 Le scénario Edge requiert Microsoft Edge Stable, Vite, le cœur local et une
 base définie par `LEA_EDGE_DB_PATH`; les tests automatisés du projet utilisent
 un profil Edge et une base SQLite temporaires.
+
+Les scénarios de l’étape 12 et leurs prérequis isolés sont détaillés dans le
+README racine. Ils ne remplacent pas le scénario historique `test:edge`.

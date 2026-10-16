@@ -206,6 +206,7 @@
         "chat"
       ],
       "append_no_think": true,
+      "reasoning_control": "think_directives",
       "chat_template_path": null,
       "expected_chat_template_sha256": null,
       "stop_sequences": []

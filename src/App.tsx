@@ -37,6 +37,7 @@ import {
   runtimeStatusPresentation,
 } from './agentRuns'
 import type { AgentRun, AgentRunChanges, PollingHealth } from './agentRuns'
+import Settings from './Settings'
 
 type CoreState = 'stopped' | 'starting' | 'ready' | 'stopping' | 'error'
 
@@ -131,6 +132,15 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
 
 // Orchestre l'interface locale sans dupliquer l'état autoritaire du backend.
 function App() {
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const settingsButton = useRef<HTMLButtonElement>(null)
+
+  // Fermer les paramètres ne recharge ni la conversation ni son brouillon.
+  function closeSettings() {
+    setSettingsOpen(false)
+    window.requestAnimationFrame(() => settingsButton.current?.focus())
+  }
+
   // État visible : brouillon, liste locale, conversation active et éditeurs.
   const [question, setQuestion] = useState('')
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
@@ -1123,8 +1133,14 @@ function App() {
   const projectCapabilityActive = Boolean(activeProfile?.capabilities.includes('workspace_projects'))
   return (
     <main>
-      <section className="chat" aria-labelledby="page-title">
-        <h1 id="page-title">Léa</h1>
+      {settingsOpen && <Settings onBack={closeSettings} />}
+      <section className="chat" aria-labelledby="page-title" hidden={settingsOpen}>
+        <div className="page-header">
+          <h1 id="page-title">Léa</h1>
+          <button type="button" className="secondary-button" ref={settingsButton} onClick={() => setSettingsOpen(true)}>
+            Paramètres
+          </button>
+        </div>
 
         <section className="core-controls" aria-label="Contrôle local de Léa">
           <p className={`core-status status-${corePollingTone}`} aria-live="polite">

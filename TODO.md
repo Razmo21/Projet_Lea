@@ -67,7 +67,7 @@ reste un prérequis démarré manuellement.
 - [x] 10I — Persistance SQLite compacte des runs, sessions et checkpoints.
 - [x] 10J — Validation finale, sécurité minimale et non-régressions.
 
-## ÉTAPE 11 — Architecture indépendante des modèles — techniquement terminée
+## ÉTAPE 11 — Architecture indépendante des modèles — terminée
 
 - [x] 11A — Auditer les dépendances aux modèles, moteurs et lanceurs existants.
 - [x] 11B — Centraliser le registre validé et supprimer les parseurs concurrents.
@@ -76,16 +76,36 @@ reste un prérequis démarré manuellement.
 - [x] 11E — Conserver le cycle de vie sûr et adapter les consommateurs OpenHands.
 - [x] 11F — Valider résolution, erreurs, sécurité, non-régressions et vrais modèles.
 - [x] 11G — Relire, commenter, nettoyer les doublons prouvés et documenter.
-- [ ] Validation manuelle finale de l’utilisateur ; arrêt avant l’étape 12.
+- [x] Validation manuelle confirmée par l’utilisateur dans l’autorisation de l’étape 12.
 
 Preuves réelles : Général, historique, mémoire explicite après redémarrage,
 commutation, deux petits runs OpenHands validés, rollback exact et Accept.
 Substitution/partage de modèle validés en configuration de test, sans nouveau
 GGUF. Aucun benchmark difficile relancé, aucun mécanisme de récupération ajouté.
 
-## Roadmap validée — non commencée
+## ÉTAPE 12 — Centre de paramètres de Léa — techniquement terminée
 
-- Étape 12 — Centre de paramètres de Léa.
+- [x] 12A — Audit du cycle de vie et de la persistance existants.
+- [x] 12B — Préférences SQLite indépendantes, migration additive et contrôle local hors IA.
+- [x] 12C — Page dédiée, navigation préservée, validation explicite et erreurs visibles.
+- [x] 12D — Général Low par défaut / High, directives réellement testées et filtrage privé.
+- [x] 12E — Audit Programmation : aucun contrôle fictif ; comportement OpenHands conservé.
+- [x] 12F — Conflits, corruptions, indisponibilité et sauvegardes pendant génération/run.
+- [x] 12G — Extension localisée démontrée par une colonne de test, sans réglage futur livré.
+- [x] 12H — Edge, vrais modèles, run OpenHands validé, rollback et persistance après reprise.
+- [x] 12I — Relecture, commentaires, documentation et ménage ciblé.
+- [x] 12J — Non-régression complète et clôture technique sans commit/push.
+- [ ] Validation manuelle finale de l’utilisateur : Paramètres hors IA, Low/High,
+  reprise après redémarrage, navigation et Programmation sur projet autorisé.
+
+Programmation : aucun mécanisme Low/High suffisamment fiable n’a été établi
+avec Qwen2.5-Coder. Pas de faux High par défaut ni de réduction des protections.
+Le choix d’une éventuelle stratégie agentique distincte est reporté, sans bloquer
+le centre de paramètres. Aucun travail de l’étape 13 n’est autorisé par cette clôture.
+
+## Roadmap validée — étapes suivantes non commencées
+
+- Étape 12 — Centre de paramètres de Léa (validation manuelle finale attendue).
 - Étape 13 — Programmation avancée (périmètre à rediscuter plus tard).
 - Étape 14 — Entrées multimodales.
 - Étape 15 — Veterinary.

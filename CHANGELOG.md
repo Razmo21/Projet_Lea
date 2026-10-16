@@ -1,5 +1,90 @@
 # Changelog — Projet Léa
 
+## [0.0.12] — Centre de paramètres de Léa
+
+### Ajouté et adapté
+
+- Page Paramètres accessible depuis l’en-tête, Low/High Général, validation
+  explicite, état enregistré distinct du brouillon, erreurs/relecture et retour
+  sans perte de conversation, brouillon ou run. Aucun contrôle futur factice.
+- Table SQLite `user_preferences`, migration additive 8, défaut Low, révision
+  optimiste et transactions. Pas de fichier de préférences concurrent ni cache navigateur.
+- Route locale Vite `/api/preferences` et CLI Python ponctuel : fonctionnement
+  sans FastAPI actif ni modèle chargé, sans nouveau serveur ni dépendance.
+- Capacité déclarative `reasoning_control` dans le registre ; choix utilisateur
+  dans SQLite. Général applique `/no_think` ou `/think` à la prochaine requête,
+  sans interrompre une génération/run ni redémarrer de modèle.
+- Programmation : audit documenté, pas de Low/High trompeur. Runner, outils,
+  contrats, budgets, tests, Accept et Rollback inchangés.
+- Prompt d’étape disponible sous `prompts/PROMPT_ETAPE_12_CODEX.md` avec son
+  extension correcte ; documentation d’utilisation et d’extension localisée.
+
+### Sécurité et stabilisation
+
+- Le helper SQLite ne marque jamais une génération en cours comme interrompue.
+  La récupération reste réservée au démarrage du backend ; migrations concurrentes
+  revérifiées sous verrou. Aucune modification de données utilisateur réelles.
+- JSON strict et borné, origine/Host loopback, aucune commande/chemin utilisateur,
+  subprocess sans shell, délais bornés, conflit entre onglets explicite, refus
+  des préférences corrompues et absence de confirmation sur erreur.
+- Filtrage existant de la pensée conservé, refus d’un `/think` résiduel ajouté.
+  La préférence n’écrit ni l’historique, ni les souvenirs, ni le registre des modèles.
+- Fonctions nouvelles documentées, migration rangée avec les précédentes,
+  doublon de test retiré ; ménage limité aux artefacts de test identifiés.
+
+### Validation du 16 octobre 2026
+
+- 213 tests backend et 21 frontend, build React/TypeScript et `git diff --check`
+  réussis. SQLite temporaire réel ; modèles et certains transports/processus
+  simulés dans les suites automatisées, distinction conservée dans les tests.
+- Edge réel : Paramètres avec seulement Vite, lecture/écriture Low/High,
+  confirmation, rechargement, brouillon conservé, navigation, focus et capture
+  relue. Conflit HTTP réel et panne de transport simulée dans Edge, sans faux succès.
+- Général réel : réponses Low/High correctes et filtrées. Sonde native finale :
+  15 tokens avec bloc privé vide en Low, 310 avec bloc non vide en High pour
+  la même question et température 0 ; réponse correcte dans les deux cas.
+  Aucun contenu de réflexion conservé dans les données applicatives.
+- Arrêt/reprise de FastAPI, modèle et Vite : High, historique et souvenir
+  `AZUR12` retrouvés, puis souvenir correctement utilisé par le modèle réel.
+- Commutation Général → Programmation → Général réussie. Run réel
+  `3ea6702a-2175-4810-b679-46205399f0e1` sur `Lea_Stage12_20261016` : lectures,
+  seule source `calculator.py` modifiée, `python -B -m unittest -v` vert,
+  `completed` / `validated`, diff affiché et rollback demandé dans Edge.
+  Hash de source restauré exactement ; checkpoint limité aux trois fichiers
+  du projet, sans `__pycache__`, `.pyc` ou `.pytest_cache`.
+- Préférence sauvegardée pendant ce run, modèle figé inchangé ; sauvegarde
+  pendant génération couverte par test API concurrent avec gateway bloqué simulé.
+- Refus HTTP réels : origine distante/absente, mauvais format, payload trop gros,
+  JSON invalide, valeur inconnue, champs de chemin/commande. SQLite test : écriture
+  refusée, base absente/corrompue, ligne absente/invalide, modèle sans capacité,
+  concurrent writers et ajout fictif de colonne préservée.
+- Base utilisateur : SHA-256 avant/après identique
+  `B331FC986282808C19910D64FFF34DA0D530B466B12A061D0CC7E9415F289454`.
+  Base de test : intégrité OK, aucune violation de clé étrangère ni marqueur privé
+  dans les messages. Données et checkpoints conservés pour audit.
+
+### Limites et clôture
+
+- High reste dans le budget existant et peut échouer sur une question trop longue.
+  Aucun mécanisme supplémentaire pour compenser les décisions de Qwen.
+- Accept reste couvert automatiquement et validé réellement à l’étape 11 ; pas
+  de nouvelle acceptation réelle dans cette étape. Pas de relance du benchmark
+  difficile, de troisième modèle, de nouveau moteur ni du scénario Edge historique
+  complet de l’étape 8 ; parcours concernés exercés par les scénarios étape 12.
+- Avertissement préexistant Starlette/TestClient sur `httpx` : tests réussis,
+  aucune installation ou mise à jour opportuniste pour le masquer.
+- Un échec temporaire du service d’autorisation (crédits) n’a exécuté aucune
+  action ; la reprise autorisée a ensuite permis le test réel. Aucun contournement.
+- Ménage final : 363 fichiers du profil Edge de test, 3 fichiers `dist/` et
+  13 `.pyc` retirés après contrôle des cibles, sans lien/reparse point. Ces
+  artefacts sont régénérables ; aucun fichier source suivi supprimé. Base de
+  validation, capture, projet test restauré, checkpoints et volumes conservés.
+- Contrôle final : zéro processus Léa/OpenHands/navigateur de test, zéro port
+  en écoute parmi 5173/8000/8080/8081/18010/9232, zéro conteneur actif.
+  Services de test arrêtés ; Docker Desktop préexistant conservé.
+  Aucun commit/push. Étape 12 techniquement terminée, validation manuelle finale
+  attendue ; étape 13 non commencée.
+
 ## [0.0.11] — Architecture indépendante des modèles
 
 ### Modifié

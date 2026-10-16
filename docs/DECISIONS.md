@@ -208,3 +208,80 @@ Léa, 13 Programmation avancée, 14 Entrées multimodales, 15 Veterinary,
 23 Sécurité finale, 24 Tests finaux, 25 Logiciel desktop final.
 Le contenu précis de l’étape 13 sera rediscuté ultérieurement. Aucun travail
 d’étape suivante n’est autorisé avant validation manuelle et demande explicite.
+
+## D-023 — Préférences de Léa disponibles sans cœur chargé
+
+L’audit 12A a confirmé que Vite possède déjà un contrôleur local de cycle de
+vie et reste disponible après `stop-core`. Le conserver évite un nouveau serveur
+et un modèle démarré pour ouvrir des paramètres. `tools/preferences-controller.ts`
+ajoute uniquement `/api/preferences` ; un CLI Python ponctuel partage les modèles
+Pydantic et le stockage existants. Dépendances inchangées : Vite, Python installé,
+SQLite et registre local valides restent nécessaires, pas FastAPI actif ou Docker.
+
+La migration 8 ajoute une table à ligne unique : choix `general_reasoning`
+(`low`/`high`, défaut `low`) et révision. Les transactions atomiques et la révision
+attendue empêchent une écriture périmée ; les colonnes étrangères au réglage ne
+sont pas remplacées. Un stockage absent est créé ; une corruption est signalée,
+jamais réinitialisée silencieusement. Le helper ne récupère pas les générations
+interrompues : seul le propriétaire backend effectue cette opération au démarrage.
+La vérification des versions de migration est répétée sous verrou transactionnel
+pour les ouvertures concurrentes de Vite et FastAPI.
+
+La page dédiée conserve le panneau conversation monté mais masqué, donc ses
+brouillons et son suivi de run. La valeur provisoire reste distincte du dernier
+commit confirmé. Relecture après conflit, timeout ou réponse perdue ; aucun faux
+succès. Origine et Host loopback imposés, payload borné, JSON strict, commande
+Python et actions fixes, sans shell ni chemin fourni par le navigateur. Aucun
+réglage ne peut démarrer un service ou modifier le registre.
+
+## D-024 — Raisonnement disponible uniquement après preuve de compatibilité
+
+Le choix fonctionnel appartient à SQLite. Sa traduction dépend uniquement de
+la capacité `models[].reasoning_control` : `none` par défaut ou `think_directives`
+après essai réel. Pas de condition métier sur le nom Qwen, pas de parseur de
+modèles concurrent. Sans capacité, le contrôle Général devient indisponible,
+le choix reste conservé et une sauvegarde est refusée explicitement.
+
+Avec le Qwen3 actuel et llama.cpp b10516, `/no_think` produit un bloc de pensée
+vide et `/think` un bloc non vide avant la réponse. Le moteur servi n’annonce
+pas `supports_reasoning_effort` : aucune fausse option API n’est envoyée. Le
+backend fige la directive pour la prochaine génération (envoi, retry, édition,
+régénération), sans redémarrage et sans modification d’une requête en cours.
+Le filtrage privé existant est conservé et inclut le refus d’un `/think` résiduel.
+Le budget reste 1 024 tokens, réflexion comprise : High n’est pas une garantie
+de qualité, de délai ou de réponse exploitable sur toute question.
+
+L’audit Programmation a couvert le template hashé `function_call`, le prompt
+de profil, le runner SDK 1.43.1 et le serveur réel : outils natifs disponibles,
+pas de capacité `reasoning_effort`, aucun commutateur de réflexion validé dans
+ce chemin. LLM reste à température 0, appels sériels et budgets inchangés.
+Des consignes « plus approfondies » ou un budget accru ne prouveraient pas un
+raisonnement natif et pourraient perturber les appels d’outils. Aucun Low/High
+ni faux High par défaut n’est donc livré pour Programmation, conformément au
+cas autorisé en 12E. Une future stratégie d’agent devra être nommée, autorisée
+et testée séparément ; aucun choix supplémentaire n’est requis pour clôturer 12.
+
+Qwen2.5-Coder-7B peut échouer sur des tâches agentiques multi-fichiers longues lorsque file_editor exige des remplacements textuels exacts. Léa détecte ces boucles, refuse les mutations invalides, valide les changements par des tests et peut restaurer le checkpoint.
+
+Le benchmark `Lea_FinalValidation_Test` reste conservé pour une comparaison
+future avec GLM-5.3-Flash ; il n’a pas été relancé ni compensé dans cette étape.
+
+## D-025 — Extension localisée et clôture de l’étape 12
+
+Un futur paramètre exige sa migration additive, son contrat strict, un contrôle
+dans `Settings.tsx`, son consommateur métier et ses tests. La préservation des
+autres colonnes est démontrée par un test isolé ; aucun réglage factice ne reste
+dans l’interface. Pas de routeur global, framework de paramètres ou refonte du
+cycle de vie. Le périmètre de l’étape 13 reste à rediscuter.
+
+Revue KEEP / ADAPT / REMOVE : conserver les propriétaires de processus, contrats,
+gardes de sécurité, outils, mémoire, données, checkpoints, volumes et laboratoires ;
+adapter la construction du message Général et la navigation minimale ; retirer
+uniquement un doublon de test, les caches de navigateur/build générés pour
+cette étape et le bytecode Python régénérable. Aucun fichier source historique
+n’est déclaré inutile sans preuve.
+
+La validation réelle utilise une base isolée et un projet jetable sous
+`L:\IA_WORKSPACE`, jamais le dépôt principal comme cible OpenHands. Le hash de la
+base utilisateur reste identique. Les détails et limites des essais sont inscrits
+dans le changelog ; la validation manuelle finale de l’étape 12 reste attendue.

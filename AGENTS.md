@@ -47,12 +47,11 @@ Après modification :
 
 ## Étape actuelle
 
-L’étape 10 est terminée. L’étape 11 — architecture indépendante des modèles —
-est techniquement complète. Ses barrières automatisées et ses validations
-réelles sont terminées ; sa validation manuelle finale reste attendue.
+Les étapes 10 et 11 sont terminées ; l’autorisation de l’étape 12 confirmait
+la validation manuelle de l’étape 11. L’étape 12 — centre de paramètres de Léa —
+est techniquement complète. Sa validation manuelle finale reste attendue.
 
-Ne commence ni l’étape 12 ni l’étape 13 sans une nouvelle autorisation explicite
-de l’utilisateur.
+Ne commence pas l’étape 13 sans une nouvelle autorisation explicite de l’utilisateur.
 
 ## Interdictions actuelles
 
@@ -67,16 +66,25 @@ Ne crée PAS :
 - authentification ;
 - télémétrie ;
 - mémoire automatique ou sémantique ;
-- une fonctionnalité reportée à l’étape 12 ou aux étapes ultérieures.
+- une fonctionnalité reportée à l’étape 13 ou aux étapes ultérieures.
 
 `config/models.json` (schéma 3) est l’unique registre. Les profils portent leurs
 contrats et permissions ; `models` porte les paramètres des modèles et
 `profiles[].model_id` les associe. Ne réintroduis pas de dépendance au nom de
 Qwen dans le code métier ni de parseur concurrent dans les lanceurs.
 
+Les préférences fonctionnelles sont dans SQLite (`user_preferences`, migration 8),
+pas dans le registre. Le contrôleur Vite peut les lire/sauver sans FastAPI ni
+modèle chargé, via le CLI ponctuel existant. Ne déclenche pas la récupération
+des générations en ouvrant les paramètres. Général Low/High prend effet à la
+requête suivante ; aucun contrôle de raisonnement fictif pour Programmation.
+
 ## Validation avant une étape suivante
 
-La validation manuelle doit confirmer le flux utilisateur principal : démarrer
+La validation manuelle doit confirmer Paramètres (ouverture, Low/High, Valider,
+erreurs lisibles, retour sans perte de brouillon), également avec l’IA arrêtée,
+puis la préférence conservée après redémarrage. Elle doit aussi confirmer le
+flux utilisateur principal : démarrer
 Docker manuellement, choisir Programmation, sélectionner un projet strictement
 confiné à `L:\IA_WORKSPACE`, lancer un run OpenHands réel, consulter le diff,
 puis accepter ou restaurer les changements sans régression du profil Général ni

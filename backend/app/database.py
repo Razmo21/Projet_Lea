@@ -191,7 +191,7 @@ class Database:
             else:
                 connection.commit()
 
-    def initialize(self) -> int:
+    def initialize(self, *, recover_generations: bool = True) -> int:
         """Prépare le fichier, applique les migrations et vérifie ses invariants."""
 
         try:
@@ -206,7 +206,10 @@ class Database:
                         f"Version SQLite inattendue : {version} au lieu de {SCHEMA_VERSION}."
                     )
                 self._validate_schema(connection)
-            self.recover_interrupted_generations()
+            # Le contrôleur de préférences peut ouvrir SQLite pendant une réponse.
+            # Seul le démarrage du backend possède la récupération des générations.
+            if recover_generations:
+                self.recover_interrupted_generations()
             return version
         except (OSError, sqlite3.Error) as error:
             raise RuntimeError(
@@ -221,6 +224,7 @@ class Database:
         # les cascades font partie des garanties structurelles du stockage.
         required_objects = {
             "schema_migrations": "table",
+            "user_preferences": "table",
             "conversations": "table",
             "messages": "table",
             "memories": "table",

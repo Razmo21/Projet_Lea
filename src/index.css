@@ -360,3 +360,65 @@ button:disabled {
 .copy-feedback {
   color: #166534;
 }
+
+/* La navigation conserve le panneau conversation monté, mais hors affichage et clavier. */
+[hidden] {
+  display: none !important;
+}
+
+.page-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.page-header h1 {
+  margin: 0;
+}
+
+.settings-description {
+  line-height: 1.5;
+  color: #475569;
+}
+
+.settings-group {
+  margin: 16px 0;
+  padding: 20px;
+  border: 1px solid #d8dee9;
+  border-radius: 8px;
+}
+
+.settings-group legend {
+  padding: 0 8px;
+  font-weight: bold;
+}
+
+.reasoning-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.reasoning-options label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.reasoning-options input {
+  width: auto;
+  margin: 0;
+}
+
+.settings button:focus-visible,
+.reasoning-options input:focus-visible {
+  outline: 3px solid #2563eb;
+  outline-offset: 3px;
+}

@@ -12,7 +12,7 @@ from .memory import (
 
 
 MigrationOperation = str | Callable[[sqlite3.Connection], None]
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def _backfill_memory_sources(connection: sqlite3.Connection) -> None:
@@ -395,6 +395,19 @@ MIGRATIONS: Mapping[int, Sequence[MigrationOperation]] = {
         ON agent_runs(validation_status, created_at DESC, run_id)
         """,
     ),
+    # v8 : préférences indépendantes du registre, de l'historique et des souvenirs.
+    # Les futures colonnes auront leur migration sans réinitialiser les choix.
+    8: (
+        """
+        CREATE TABLE user_preferences (
+            id INTEGER PRIMARY KEY CHECK(id = 1),
+            revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+            general_reasoning TEXT NOT NULL DEFAULT 'low'
+                CHECK(general_reasoning IN ('low', 'high'))
+        )
+        """,
+        "INSERT INTO user_preferences(id) VALUES (1)",
+    ),
 }
 
 
@@ -437,6 +450,13 @@ def apply_migrations(
 
         try:
             connection.execute("BEGIN IMMEDIATE")
+            # Le backend et le contrôleur local peuvent ouvrir la base ensemble.
+            # Recontrôler sous le verrou SQLite évite d'appliquer deux fois une migration.
+            if connection.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = ?", (version,)
+            ).fetchone() is not None:
+                connection.commit()
+                continue
             for operation in migrations[version]:
                 if isinstance(operation, str):
                     connection.execute(operation)

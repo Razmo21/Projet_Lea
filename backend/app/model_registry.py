@@ -271,6 +271,8 @@ class ModelDefinition(StrictRegistryModel):
     runtime: ProfileRuntimeConfig
     capabilities: list[Literal["chat", "tool_calling"]]
     append_no_think: bool
+    # Capacité déclarée après essai réel, jamais inférée du nom commercial du GGUF.
+    reasoning_control: Literal["none", "think_directives"] = "none"
     chat_template_path: str | None = None
     expected_chat_template_sha256: str | None = Field(
         default=None, pattern=r"^[0-9a-f]{64}$"
