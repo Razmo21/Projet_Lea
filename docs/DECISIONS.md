@@ -285,3 +285,80 @@ La validation réelle utilise une base isolée et un projet jetable sous
 `L:\IA_WORKSPACE`, jamais le dépôt principal comme cible OpenHands. Le hash de la
 base utilisateur reste identique. Les détails et limites des essais sont inscrits
 dans le changelog ; la validation manuelle finale de l’étape 12 reste attendue.
+
+## D-026 — Périmètre confirmé de l’étape 13 et audit
+
+L’autorisation explicite de l’étape 13 confirme la validation manuelle de 12.
+L’utilisateur précise : Docker Desktop et l’interface OpenHands s’ouvrent
+manuellement ; seul « Lancer le run » peut créer le conteneur Agent Server.
+La création du serveur idle à l’activation et après finalisation est retirée.
+Le support de l’identification/arrêt des anciens idle reste utile à la migration.
+
+Audit KEEP : registre/adaptateur uniques, propriétaires de processus, SDK natif,
+politique hashée des outils, evidence gates, checkpoints, mémoire et SQLite.
+IMPROVE/ADAPT : attente parent bornée, arrêt confirmé, blocage des reprises
+incertaines, diagnostics publics filtrés, cadence frontend, PID recyclés.
+ADD : unique échantillonneur en RAM, route de lecture cachée, petite vue
+facultative et préférence dans le stockage existant. REMOVE : allocations idle
+automatiques et seuls caches de test prouvés régénérables. Aucune heuristique
+de raisonnement, dépendance supplémentaire ou grande refonte.
+
+## D-027 — Interruption : incertain n’est ni absent ni réussi
+
+Un échec d’inspection Docker exige une liste exacte réussie pour conclure à
+l’absence. L’arrêt et la suppression revérifient ID, labels, image, mounts et
+restrictions. Un état Running illisible reste incertain. Le parent borne le
+processus SDK au budget + 60 s et refuse un succès sans code de sortie nul
+ou avec mauvais run_id. Un échec conserve le checkpoint et exige Rollback
+explicite ; aucune mutation n’est rejouée au redémarrage.
+
+Les diagnostics affichables viennent d’une liste exacte de textes backend.
+Un run persistant non maîtrisé interdit toute nouvelle activité modèle jusqu’à
+son arrêt vérifié. Le lanceur peut oublier un ancien PID uniquement si sa date
+de création prouve sa réutilisation ; le nouveau processus n’est jamais retourné
+aux fonctions d’arrêt et les contrôles de port continuent de refuser un occupant.
+
+Le conteneur arrêté d’un run réussi, dont preuves et checkpoint sont persistés,
+est temporaire : suppression ciblée sans `--force` et sans volume. Les conteneurs
+échoués et les données de session restent conservés pour diagnostic. Pas de
+maintenance globale ou périodique, de prune ou de suppression concurrente.
+
+## D-028 — Surveillance légère, sans autorité sur les charges
+
+Une seule tâche asyncio FastAPI, commune à tous les profils IA actifs : RAM disponible
+Windows et CPU par intervalle à 10 s, NVIDIA et Docker à 30 s. Aucun PowerShell
+périodique ni base de télémétrie. Le navigateur lit uniquement un snapshot et
+ne peut fournir d’arguments de sonde. Le modèle est vérifié par readiness et
+alias, Agent Server seulement pendant un run. Un endpoint muet reste incertain.
+
+Complément demandé avant clôture : la tâche démarre dès Général et reste la même
+pendant les commutations. Les seuils suivent la politique du profil courant ;
+les données système ne dépendent d’aucun nom de modèle ou de profil. Seules les
+sondes Docker/OpenHands restent conditionnées au moteur agentique (ou à un run
+interrompu en récupération). L’arrêt du cœur ferme la tâche ; aucune nouvelle
+boucle ni nouvelle préférence. Un snapshot est corrélé au profil pour refuser
+les diagnostics tardifs d’une ancienne sélection. « Votre question » reprend
+la classe CSS `conversation`, sans nouveau composant ni refonte visuelle.
+
+Seuils RAM 8/6 Gio issus du registre pour ce PC de 32 Go, deux relevés et marge
+de récupération 1 Gio. CPU 90 % sur trois relevés, retour sous 80 % sur deux.
+VRAM sous 1 Gio sur deux relevés frais, retour à 1,25 Gio. Une sonde absente
+reste inconnue ; une anomalie indispensable pendant un run devient CRITICAL.
+Aucun niveau ne déclenche d’arrêt automatique. Le diagramme n’a pas d’autorité
+sur les alertes : préférence additive SQLite 9, false par défaut, sauvegarde
+partielle avec révision, indépendante de la capacité de raisonnement Général.
+
+## D-029 — Barrières Edge et Windows
+
+L’automatisation Edge agentique est reportée avec accord explicite : le CDP
+local et une liste d’URL ne prouvent pas le blocage des redirections, WebSocket,
+workers et sous-ressources externes. Ne pas annoncer une isolation fictive.
+Les scénarios Edge de validation restent des outils développeur locaux, à profil
+jetable, non accessibles au modèle. Aucun navigateur agentique livré.
+
+L’audit Windows ne justifie pas un nouveau pont : les propriétaires de PID et
+les compteurs natifs couvrent le besoin. Aucun terminal PowerShell arbitraire,
+endpoint de commandes, droit administrateur ou accès hôte supplémentaire à l’agent.
+Les protections existantes sont conservées ; aucune isolation noyau/réseau
+Docker absolue n’est revendiquée. Étape 14 inchangée, consacrée au multimodal,
+non commencée sans validation manuelle de 13 et nouvelle demande.

@@ -41,7 +41,7 @@ def main() -> None:
         registry = load_model_registry(os.environ.get("LEA_MODEL_REGISTRY") or None)
         general = registry.profile("general")
         available = general.enabled and general.model.reasoning_control == "think_directives"
-        if change is not None and not available:
+        if change is not None and change.general_reasoning is not None and not available:
             raise PreferencesError("Le modèle Général configuré ne propose pas ce réglage de raisonnement.")
         database = Database()
         database.initialize(recover_generations=False)
@@ -52,7 +52,7 @@ def main() -> None:
     except RegistryError:
         status, body = 503, {"detail": "La configuration locale des modèles est invalide. Paramètres non confirmés."}
     except (ValidationError, ValueError):
-        status, body = 422, {"detail": "Préférence invalide : choisissez Low ou High et une révision valide."}
+        status, body = 422, {"detail": "Préférence invalide : vérifiez le réglage, son type et la révision."}
     except PreferencesConflict as error:
         status, body = 409, {"detail": str(error)}
     except PreferencesError as error:

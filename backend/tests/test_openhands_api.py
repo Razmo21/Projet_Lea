@@ -8,6 +8,7 @@ import time
 import unittest
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
@@ -17,7 +18,7 @@ if str(BACKEND_DIRECTORY) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIRECTORY))
 
 from app.checkpoints import CheckpointService  # noqa: E402
-from app.main import create_app  # noqa: E402
+from app.main import GenerationConflictError, create_app  # noqa: E402
 from app.memory import parse_memory_command  # noqa: E402
 from app.model_registry import load_model_registry  # noqa: E402
 from app.openhands_runs import OpenHandsRunManager  # noqa: E402
@@ -71,6 +72,11 @@ class FakeRuntime:
         """Record release of the idle server before the fake run server starts."""
 
         self.stopped.append("idle")
+
+    async def remove_stopped_agent_server(self, handle: AgentServerHandle) -> None:
+        """Model removal of only a completed test-owned container, without Docker."""
+
+        return None
 
     async def start_agent_server(
         self, *, run_id: str | None = None, project_path: Path | None = None
@@ -180,6 +186,29 @@ class OpenHandsApiTests(unittest.TestCase):
                 return run
             time.sleep(0.02)
         self.fail("Le run OpenHands factice n'a pas atteint un état terminal.")
+
+    def test_uncertain_recovery_blocks_new_activity_and_exposes_safe_diagnostic(self) -> None:
+        """An unowned persisted run remains visible without starting another model or task."""
+
+        database = self.application.state.database
+        project_id = self.client.get("/api/projects").json()["projects"][0]["id"]
+        run_id = str(uuid4())
+        database.create_agent_run(run_id, project_id, "development", "Test interrompu")
+        database.update_agent_run(run_id, state="running", result_summary="private raw model text")
+        self.assertIsNone(self.client.get(f"/api/agent-runs/{run_id}").json()["failure_detail"])
+        diagnostic = "Arrêt non confirmé. Vérifie Docker puis redémarre Léa pour récupérer ce run."
+        database.update_agent_run(run_id, result_summary=diagnostic)
+        self.assertEqual(self.client.get(f"/api/agent-runs/{run_id}").json()["failure_detail"], diagnostic)
+        status = self.client.get("/api/models/status").json()
+        self.assertTrue(status["recovery_pending"])
+        self.assertTrue(status["agent_run_active"])
+        self.assertEqual(status["state"], "error")
+        self.assertEqual(self.client.post("/api/models/development/activate").status_code, 409)
+        coordinator = self.application.state.runtime_coordinator
+        for operation in (coordinator.begin_generation(), coordinator.begin_agent_run("development")):
+            with self.assertRaisesRegex(GenerationConflictError, "arrêt vérifié"):
+                asyncio.run(operation)
+        self.assertEqual(database.get_agent_run(run_id)["state"], "running")
 
     def test_programming_run_is_persisted_and_can_be_rolled_back_through_the_api(self) -> None:
         """The UI contract starts one frozen run and exposes its post-run checkpoint without direct file tools."""

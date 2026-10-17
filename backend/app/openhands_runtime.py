@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Protocol
@@ -113,6 +114,16 @@ class OpenHandsRuntime:
         self.registry = registry
         self._docker_probe = docker_probe or self._probe_docker_engine
         self._transport = transport
+        self._docker_sample: tuple[float, bool] | None = None
+        self._docker_probe_lock = asyncio.Lock()
+
+    async def docker_available(self, *, max_age: float = 30) -> bool:
+        """Share read-only readiness samples; mutations always demand a fresh probe."""
+
+        async with self._docker_probe_lock:
+            if self._docker_sample is None or time.monotonic() - self._docker_sample[0] >= max_age:
+                self._docker_sample = (time.monotonic(), await self._docker_probe())
+            return self._docker_sample[1]
 
     @property
     def _agent_config(self):
@@ -191,37 +202,47 @@ class OpenHandsRuntime:
         }
         return required_tools.issubset({name for name in names if isinstance(name, str)})
 
-    async def status(self) -> DevelopmentReadiness:
+    async def status(self, *, require_agent_server: bool = True) -> DevelopmentReadiness:
         """Assess Docker, the model and Agent Server independently for a truthful user message."""
 
-        docker_available = await self._docker_probe()
+        docker_available = await self.docker_available()
         if not docker_available:
             return DevelopmentReadiness(False, False, False, False, DOCKER_REQUIRED_MESSAGE)
-        model_available, agent_server_available = await asyncio.gather(
-            self._model_available(), self._agent_server_available()
-        )
+        model_available = await self._model_available()
+        agent_server_available = await self._agent_server_available() if require_agent_server else False
         if not model_available:
             return DevelopmentReadiness(True, agent_server_available, False, False, MODEL_UNAVAILABLE_MESSAGE)
+        if not require_agent_server:
+            return DevelopmentReadiness(
+                True, False, True, True,
+                "Programmation est prêt à lancer un run. L’Agent Server sera créé au lancement.",
+            )
         if not agent_server_available:
             return DevelopmentReadiness(True, False, True, False, AGENT_SERVER_UNAVAILABLE_MESSAGE)
         return DevelopmentReadiness(True, True, True, True, "Le profil Programmation est prêt.")
 
-    async def wait_until_ready(self, *, timeout_seconds: float = 30) -> DevelopmentReadiness:
+    async def wait_until_ready(self, *, timeout_seconds: float = 30, require_agent_server: bool = True) -> DevelopmentReadiness:
         """Wait through Agent Server startup races and return the last readiness result."""
 
         deadline = asyncio.get_running_loop().time() + timeout_seconds
-        latest = await self.status()
+        latest = await self.status(require_agent_server=require_agent_server)
         while not latest.profile_ready and asyncio.get_running_loop().time() < deadline:
             # Health can answer just before the native tools registry settles.
             await asyncio.sleep(0.5)
-            latest = await self.status()
+            latest = await self.status(require_agent_server=require_agent_server)
         return latest
 
     async def require_docker(self) -> None:
         """Raise the prescribed message before any attempt to create an Agent Server container."""
 
-        if not await self._docker_probe():
+        if not await self.docker_available(max_age=0):
             raise OpenHandsRuntimeError(DOCKER_REQUIRED_MESSAGE)
+
+    async def require_run_prerequisites(self) -> None:
+        """Verify the manually opened engine and installed image without creating anything."""
+
+        await self.require_docker()
+        await self._image_available()
 
     async def _docker(self, *arguments: str, timeout_seconds: float = 30) -> str:
         """Run one fixed Docker CLI command without a shell and return its bounded textual output."""
@@ -372,17 +393,27 @@ class OpenHandsRuntime:
                     pass
 
     async def _inspect_container(self, name: str) -> dict[str, object] | None:
-        """Inspect a named container read-only and treat a missing name as the normal empty state."""
+        """Require positive evidence of absence; a Docker failure never means stopped."""
 
         try:
             raw = await self._docker("container", "inspect", name)
         except OpenHandsRuntimeError:
-            return None
+            # A successful, exact-name listing distinguishes absence from a
+            # disconnected daemon, timeout or unreadable inspection response.
+            present = await self._docker(
+                "container", "ls", "--all", "--filter", f"name=^/{re.escape(name)}$",
+                "--format", "{{.ID}}",
+            )
+            if not present:
+                return None
+            raise
         try:
             value = json.loads(raw)[0]
         except (IndexError, TypeError, ValueError) as error:
             raise OpenHandsRuntimeError("Le conteneur OpenHands existant est illisible.") from error
-        return value if isinstance(value, dict) else None
+        if not isinstance(value, dict):
+            raise OpenHandsRuntimeError("Le conteneur OpenHands existant est illisible.")
+        return value
 
     def _verify_container(
         self,
@@ -716,8 +747,32 @@ class OpenHandsRuntime:
         if inspected.get("Id") != handle.container_id or not self._verify_container(inspected, handle):
             raise OpenHandsRuntimeError("Le conteneur OpenHands à arrêter n’est plus vérifiable.")
         state = inspected.get("State") if isinstance(inspected.get("State"), dict) else {}
-        if state.get("Running"):
+        if state.get("Running") is True:
             await self._docker("container", "stop", "--time", "30", handle.container_id, timeout_seconds=45)
+            inspected = await self._inspect_container(handle.name)
+            if inspected is None:
+                return
+            if inspected.get("Id") != handle.container_id or not self._verify_container(inspected, handle):
+                raise OpenHandsRuntimeError("L'identité du conteneur a changé pendant l'arrêt.")
+            state = inspected.get("State") if isinstance(inspected.get("State"), dict) else {}
+        if state.get("Running") is not False:
+            raise OpenHandsRuntimeError("L'arrêt du conteneur OpenHands n'est pas confirmé.")
+
+    async def remove_stopped_agent_server(self, handle: AgentServerHandle) -> None:
+        """Remove only a completed owner's stopped container, never its persistent volume."""
+
+        inspected = await self._inspect_container(handle.name)
+        if inspected is None:
+            return
+        state = inspected.get("State") if isinstance(inspected.get("State"), dict) else {}
+        if (
+            handle.run_id is None or inspected.get("Id") != handle.container_id
+            or not self._verify_container(inspected, handle) or state.get("Running") is not False
+        ):
+            raise OpenHandsRuntimeError("Le conteneur temporaire n'est pas supprimable en sécurité.")
+        # No force, volumes, images or global prune. Docker also refuses a
+        # container that another actor restarted between inspection and removal.
+        await self._docker("container", "rm", handle.container_id)
 
     async def find_run_agent_server(self, run_id: str, project_path: Path) -> AgentServerHandle | None:
         """Recover only the exact labelled run container matching its persisted lexical mount."""

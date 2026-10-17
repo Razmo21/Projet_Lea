@@ -38,6 +38,8 @@ $env:LEA_MODEL_REGISTRY = 'config/models.json'
 ## Routes
 
 - `GET /health` retourne `{ "status": "ok" }`.
+- `GET /api/resources` retourne le dernier snapshot en RAM, sans déclencher
+  de sonde ni exposer de PID/chemin. `stale` signale l’absence de mesure récente.
 - `GET /api/conversations?search=...` liste ou recherche les conversations.
 - `POST /api/conversations/messages` crée la conversation au premier message
   ou ajoute un message à une conversation existante. Cette route intercepte
@@ -100,6 +102,10 @@ La migration 8 ajoute `user_preferences` (une ligne, `revision`,
 partage la base existante, sans cache global ni table de souvenirs supplémentaire.
 Les sauvegardes transactionnelles vérifient `expected_revision`, modifient
 uniquement la colonne concernée et relisent avant de confirmer le commit.
+La migration 9 ajoute `show_resource_chart` (booléen strict, défaut false).
+Le POST accepte un ou les deux réglages ; champs omis préservés, `null`, types
+coercibles et modifications vides refusés. Seule une modification du raisonnement
+exige la capacité du modèle Général ; le diagramme en est indépendant.
 
 `GET /api/preferences` et `POST /api/preferences` sont servis par **Vite sur
 5173**, pas par FastAPI. Le pont ponctuel `tools/preferences.py read|save`
@@ -133,6 +139,8 @@ Docker Desktop doit être démarré manuellement. Le backend vérifie sa
 disponibilité, mais ne démarre pas Docker. À l’activation, le profil Général est
 arrêté avant Programmation ; en cas d’échec, le contrôleur restaure le profil
 précédent. Un seul run OpenHands peut posséder le runtime à la fois.
+L’activation vérifie les prérequis locaux sans créer d’Agent Server. Son conteneur
+n’est créé que par `POST /api/agent-runs` ; aucun serveur idle après finalisation.
 
 Un run fige le `project_id`, le chemin relatif et l’identité du projet sous
 `L:\IA_WORKSPACE` avant de lancer les outils `terminal`, `file_editor` et
@@ -142,6 +150,28 @@ l’arrêt du conteneur Agent Server identifié avant de publier une annulation,
 timeout ou toute autre fin terminale. Les changements restent consultables ; ils
 exigent une acceptation explicite ou un rollback, qui refuse toute modification
 externe plutôt que de l’écraser.
+
+Le parent borne le SDK au budget du registre + 60 s. Un résultat d’un autre run
+ou un succès accompagné d’un exit code non nul échoue. Une erreur Docker ne
+prouve jamais l’absence d’un conteneur : seule une inspection/liste réussie
+l’établit. Au redémarrage, un arrêt invérifiable conserve le run non terminal
+et bloque générations, commutations et nouveaux runs. Les diagnostics publics
+`failure_detail` sont filtrés par liste exacte, pas issus d’une exception brute.
+
+`resources.py` possède une seule tâche asyncio commune à tous les profils actifs,
+fermée avec le lifespan même si l’arrêt d’un run échoue. Compteurs Windows
+RAM disponible/CPU : 10 s ; NVIDIA et cache de disponibilité Docker : 30 s.
+Elle démarre avec le profil par défaut et réutilise la même tâche lors des
+commutations. Les seuils suivent la politique du profil sélectionné ; un
+snapshot porte son `profile_id` et une sonde tardive de l’ancien profil est ignorée.
+Docker/OpenHands ne sont consultés que pour un profil agentique OpenHands ou
+un run OpenHands en récupération ; Général n’en dépend pas. La disponibilité
+du modèle passe par l’adaptateur générique du profil, pas par celui de Programmation.
+Les mutations Docker imposent une sonde fraîche. Les seuils RAM/VRAM viennent
+du registre ; persistance des franchissements, marges et états NORMAL/WARNING/
+CRITICAL sont détaillés dans le README racine. Aucune mesure en SQLite et aucune
+autorité d’arrêt. Les sondes HTTP signalent une disponibilité, pas la mort
+certaine d’un processus ; la propriété des PID reste aux lanceurs existants.
 
 ## Mémoire générale explicite
 
@@ -212,3 +242,5 @@ un profil Edge et une base SQLite temporaires.
 
 Les scénarios de l’étape 12 et leurs prérequis isolés sont détaillés dans le
 README racine. Ils ne remplacent pas le scénario historique `test:edge`.
+Les preuves réelles et les scénarios de panne de l’étape 13 sont décrits dans
+`docs/ETAPE_13_VALIDATION.md`. Ne jamais lancer ces scénarios sur la base utilisateur.

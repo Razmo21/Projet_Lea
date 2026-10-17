@@ -59,6 +59,7 @@ from .openhands_runtime import OpenHandsRuntime
 from .openhands_runs import OpenHandsRunError, OpenHandsRunManager
 from .workspace import FrozenProject, WorkspaceGuard, WorkspacePathError
 from .preferences import PreferencesError, PreferencesStore, ReasoningLevel
+from .resources import ResourceMonitor
 
 
 MODEL_REGISTRY = load_model_registry(os.environ.get("LEA_MODEL_REGISTRY") or None)
@@ -453,7 +454,7 @@ class ConversationLockRegistry:
 class RuntimeCoordinator:
     """Sérialise les générations, runs agents et changements de cerveau."""
 
-    def __init__(self, active_profile_id: str) -> None:
+    def __init__(self, active_profile_id: str, database: Database | None = None) -> None:
         """Démarre toujours sur le profil par défaut déclaré par le registre."""
 
         self.active_profile_id = active_profile_id
@@ -461,11 +462,29 @@ class RuntimeCoordinator:
         self.active_generations = 0
         self.active_agent_runs = 0
         self._lock = asyncio.Lock()
+        self.database = database
+
+    def _recovery_pending(self) -> bool:
+        """Detect persisted runs not owned by this instance without inventing a terminal state."""
+
+        return bool(
+            not self.active_agent_runs and self.database is not None
+            and self.database.list_incomplete_agent_runs()
+        )
+
+    def _require_recovered(self) -> None:
+        """Prevent new model activity until orphaned containers have a verified shutdown."""
+
+        if self._recovery_pending():
+            raise GenerationConflictError(
+                "Un run attend un arrêt vérifié. Vérifie Docker puis redémarre Léa."
+            )
 
     async def begin_generation(self) -> str:
         """Fige le profil d'une réponse et interdit une génération pendant une bascule."""
 
         async with self._lock:
+            self._require_recovered()
             if self.switching_profile_id is not None:
                 raise GenerationConflictError("Un changement de profil est en cours.")
             self.active_generations += 1
@@ -482,6 +501,7 @@ class RuntimeCoordinator:
         """Réserve le slot agent seulement sur le profil actif et sans autre activité."""
 
         async with self._lock:
+            self._require_recovered()
             if self.switching_profile_id is not None:
                 raise GenerationConflictError("Un changement de profil est en cours.")
             if self.active_profile_id != required_profile_id:
@@ -501,6 +521,7 @@ class RuntimeCoordinator:
         """Réserve la bascule seulement quand aucune activité modèle n'est en cours."""
 
         async with self._lock:
+            self._require_recovered()
             if self.switching_profile_id is not None:
                 raise GenerationConflictError("Un changement de profil est déjà en cours.")
             if self.active_generations or self.active_agent_runs:
@@ -527,7 +548,8 @@ class RuntimeCoordinator:
                 "active_profile_id": self.active_profile_id,
                 "loading_profile_id": self.switching_profile_id,
                 "generation_active": self.active_generations > 0,
-                "agent_run_active": self.active_agent_runs > 0,
+                "agent_run_active": self.active_agent_runs > 0 or self._recovery_pending(),
+                "recovery_pending": self._recovery_pending(),
             }
 
 
@@ -712,10 +734,19 @@ def create_app(
             [(project.name, project.relative_path) for project in discovered]
         )
         await openhands_runs.recover()
+        # The default profile is already selected at backend startup. Tests
+        # injecting a model gateway keep OS probes dormant unless opted in.
+        application.state.resource_monitor.set_active(
+            model_gateway is None, profile_id=model_registry.document.default_profile_id
+        )
+        application.state.resource_monitor.start()
         try:
             yield
         finally:
-            await openhands_runs.close()
+            try:
+                await openhands_runs.close()
+            finally:
+                await application.state.resource_monitor.close()
 
     application = FastAPI(
         docs_url=None,
@@ -738,7 +769,36 @@ def create_app(
     application.state.conversation_locks = ConversationLockRegistry()
     application.state.memory_lock = asyncio.Lock()
     application.state.runtime_coordinator = RuntimeCoordinator(
-        model_registry.document.default_profile_id
+        model_registry.document.default_profile_id, database
+    )
+
+    async def resource_services() -> dict:
+        """Observe the selected model; probe Docker only for an OpenHands workload."""
+
+        state = await application.state.runtime_coordinator.status()
+        profile_id = state["loading_profile_id"] or state["active_profile_id"]
+        profile = model_registry.profile(profile_id)
+        # An interrupted Programming run still needs Docker diagnostics even
+        # when a fresh backend has selected its default conversation profile.
+        openhands_required = profile.agent_engine == "OpenHands" or state["recovery_pending"]
+        model = await inference_adapter(model_registry, profile_id).is_ready()
+        docker = await openhands_runtime.docker_available() if openhands_required else None
+        agent = (
+            await openhands_runtime._agent_server_available()
+            if openhands_required and state["agent_run_active"] else None
+        )
+        return {
+            "openhands_required": openhands_required,
+            "backend_available": True, "docker_available": docker, "model_available": model,
+            "agent_server_available": agent, "run_active": state["agent_run_active"],
+            "loading": state["loading_profile_id"] is not None,
+        }
+
+    application.state.resource_monitor = ResourceMonitor(
+        model_registry.document.resource_policies[
+            model_registry.profile(model_registry.document.default_profile_id).resource_policy
+        ],
+        resource_services,
     )
 
     # L'API reste locale ; toute origine navigateur déclarée doit être connue.
@@ -883,16 +943,20 @@ def create_app(
 
         status = await _runtime(request).status()
         development_readiness: dict[str, bool | str] | None = None
-        if status["loading_profile_id"]:
+        if status["recovery_pending"]:
+            state = "error"
+            message = "Un run attend un arrêt vérifié. Vérifie Docker puis redémarre Léa."
+        elif status["loading_profile_id"]:
             state = "loading"
             message = "Changement de profil en cours."
         elif (
             status["active_profile_id"] == "development"
             and request.app.state.fixed_model_gateway is None
         ):
-            # Le modèle seul ne suffit pas : la readiness Programmation exige
-            # Docker, Agent Server et les vrais outils OpenHands locaux.
-            readiness = await request.app.state.openhands_runtime.status()
+            # Hors run, l'absence de serveur est volontaire, pas une panne.
+            readiness = await request.app.state.openhands_runtime.status(
+                require_agent_server=bool(status["agent_run_active"])
+            )
             development_readiness = readiness.public()
             state = "ready" if readiness.profile_ready else "error"
             message = readiness.message
@@ -921,6 +985,12 @@ def create_app(
             "agent_run_active": bool(status["agent_run_active"]),
         }
 
+    @application.get("/api/resources")
+    async def resource_status(request: Request) -> dict:
+        """Expose an in-memory snapshot, never paths, commands or persistent telemetry."""
+
+        return request.app.state.resource_monitor.snapshot()
+
     @application.post("/api/models/{profile_id}/activate")
     async def activate_model(
         profile_id: str,
@@ -939,6 +1009,12 @@ def create_app(
 
         runtime = _runtime(request)
         await runtime.begin_switch(profile_id)
+        monitor = request.app.state.resource_monitor
+        if request.app.state.fixed_model_gateway is None:
+            monitor.set_active(
+                True, profile_id=profile_id,
+                policy=registry.document.resource_policies[profile.resource_policy],
+            )
         succeeded = False
         rolled_back = False
         try:
@@ -949,6 +1025,14 @@ def create_app(
             raise HTTPException(status_code=503, detail=str(error)) from error
         finally:
             await runtime.finish_switch(succeeded=succeeded)
+            if request.app.state.fixed_model_gateway is None:
+                # A failed activation must restore the previous profile's
+                # thresholds and diagnostics, not those of the requested one.
+                current_profile = registry.profile(runtime.active_profile_id)
+                monitor.set_active(
+                    True, profile_id=current_profile.id,
+                    policy=registry.document.resource_policies[current_profile.resource_policy],
+                )
         if rolled_back:
             raise HTTPException(
                 status_code=503,

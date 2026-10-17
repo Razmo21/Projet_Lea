@@ -20,6 +20,7 @@ export type AgentRun = {
   started_at: string | null
   finished_at: string | null
   result_summary: string | null
+  failure_detail?: string | null
   checkpoint_id: string | null
   created_at: string
   updated_at: string
@@ -98,6 +99,7 @@ export function isAgentRun(value: unknown): value is AgentRun {
     (run.started_at === null || typeof run.started_at === 'string') &&
     (run.finished_at === null || typeof run.finished_at === 'string') &&
     (run.result_summary === null || typeof run.result_summary === 'string') &&
+    (run.failure_detail == null || typeof run.failure_detail === 'string') &&
     (run.checkpoint_id === null || typeof run.checkpoint_id === 'string') &&
     typeof run.created_at === 'string' &&
     typeof run.updated_at === 'string' &&

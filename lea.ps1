@@ -574,12 +574,27 @@ function Test-ProcessRecord {
 
     $nameMatches = $process.ProcessName -ieq [string](Get-ObjectValue -Object $Record -Name 'processName')
     $timeMatches = $false
+    $pidReused = $false
     try {
         $recordedStart = [datetime]::Parse([string](Get-ObjectValue -Object $Record -Name 'startTimeUtc')).ToUniversalTime()
         $actualStart = $process.StartTime.ToUniversalTime()
         $timeMatches = [math]::Abs(($actualStart - $recordedStart).TotalSeconds) -lt 1
+        $pidReused = -not $timeMatches
     } catch {
         $timeMatches = $false
+    }
+
+    # Une autre date de naissance prouve la disparition du processus enregistré.
+    # Ne jamais retourner le nouveau propriétaire du PID aux fonctions d'arrêt.
+    # Une date illisible reste ambiguë ; le contrôle des ports reste indépendant.
+    if ($pidReused) {
+        return [pscustomobject]@{
+            Exists = $false
+            Verified = $false
+            Listening = $false
+            Process = $null
+            Reason = 'Le PID enregistré a été réutilisé par un autre processus.'
+        }
     }
 
     $pathMatches = $true

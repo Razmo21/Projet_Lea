@@ -30,6 +30,10 @@ Le SDK utilise `openai/<alias configuré>` (actuellement
 Aucun LLM cloud, modèle de secours, Canvas, MCP externe, recherche Web ou
 téléchargement n’est configuré. Docker Desktop doit être démarré manuellement :
 Léa vérifie sa disponibilité, mais ne le démarre jamais.
+Depuis l’étape 13, l’activation de Programmation ne crée plus de serveur idle :
+le seul lancement explicite d’un run crée son Agent Server. Léa n’ouvre jamais
+l’application OpenHands. Les scripts administratifs ci-dessous restent des
+actions manuelles séparées, pas des dépendances du parcours utilisateur.
 
 La source de vérité reste `config/models.json`, schéma 3. `models` contient les
 poids, le contexte, le template optionnel et les séquences d’arrêt ;
@@ -98,10 +102,9 @@ lea_openhands_sdk_smoke_v2 -> /home/openhands/.openhands
 
 Il est non privilégié, n'a pas de socket Docker, applique `no-new-privileges`, désactive VNC, VS Code, preload d'outils et webhooks. Il ne monte jamais `L:\Projet_Lea`. Docker conserve une connectivité potentielle vers `host.docker.internal` pour le LLM local, mais le smoke interdit réseau, téléchargements, Git et tout fichier hors du fixture. Ce smoke Linux ne valide ni PowerShell Windows, ni `lea.ps1`, ni Edge Stable, ni les validations Windows de l'étape 10.
 
-## Validation actuelle
+## Validation historique des étapes 10–11
 
-L’étape 10 est terminée et l’étape 11 est techniquement complète, en attente
-de validation manuelle finale. Deux petits runs réels ont confirmé lecture,
+Les étapes 10 et 11 sont terminées. Deux petits runs réels ont confirmé lecture,
 édition, `python -B -m unittest -v`, bilan final validé, puis respectivement
 Rollback et Accept. Le premier essai avait détecté un faux négatif de preuve
 sur l’option `-B`, corrigé sans modifier la politique d’outils ni récupérer les
@@ -112,3 +115,22 @@ Qwen2.5-Coder-7B peut échouer sur des tâches agentiques multi-fichiers longues
 `Lea_FinalValidation_Test` reste un benchmark difficile pour le futur comparatif
 GLM-5.3-Flash / Qwen ; il n’a pas été relancé ici. Aucun commit n’est créé par
 ces scripts.
+
+## Fiabilité et maintenance — étape 13
+
+La surveillance n’a aucun outil de mutation. Le manager backend vérifie le run
+du résultat et le code de sortie du SDK, borne son attente, confirme l’arrêt
+du conteneur exact avant le snapshot final et ne rejoue jamais une action agent.
+Une reprise incertaine bloque une nouvelle activité ; rétablir Docker puis
+redémarrer Léa. Les checkpoints et les contrôles de conflit restent inchangés.
+
+Après succès validé et persistance, seul le conteneur arrêté identifié est
+supprimé sans force et sans volume. Une erreur de nettoyage conserve le conteneur
+et produit un avertissement, sans invalider un résultat prouvé. Les conteneurs
+d’échec restent arrêtés pour diagnostic. Aucun prune, arrêt de Docker Desktop
+ou suppression de ressource inconnue n’est effectué.
+
+Le 17 octobre 2026, un run réel a été accepté et un second interrompu après
+mutation : récupération `failed`, validation échouée, Accept refusé et Rollback
+exact dans Edge. Voir `docs/ETAPE_13_VALIDATION.md`. L’automatisation Edge par
+l’agent reste reportée et aucun terminal Windows hôte ne lui est exposé.

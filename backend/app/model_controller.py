@@ -147,19 +147,17 @@ class PowerShellModelController:
             return "general"
         if profile.id != "development" or profile.agent_engine != "OpenHands":
             raise ModelControllerError("Le profil demandé ne possède pas de cycle de vie local autorisé.")
-        idle_handle = None
         try:
             # Docker Desktop est exclusivement vérifié ici : ce contrôleur ne
             # le lance jamais, conformément au contrat de l’étape 10.
-            await self.openhands_runtime.require_docker()
+            await self.openhands_runtime.require_run_prerequisites()
             await self._general_script("stop-model")
             started = await self._development_script("start")
             if started.get("state") != "ready":
                 raise ModelControllerError("Le modèle Programmation n’est pas prêt.")
-            idle_handle = await self.openhands_runtime.start_agent_server()
-            # Health can precede the native tool registry by a brief interval,
-            # so the runtime returns only a bounded, verified readiness state.
-            readiness = await self.openhands_runtime.wait_until_ready()
+            # Activation loads the model only. The explicit run owns creation
+            # of its Agent Server and verification of the native tools.
+            readiness = await self.openhands_runtime.wait_until_ready(require_agent_server=False)
             if not readiness.profile_ready:
                 raise ModelControllerError(readiness.message)
             return "development"
@@ -167,8 +165,6 @@ class PowerShellModelController:
             # A failure after General stopped must never strand the user with no
             # model. Every cleanup target below is verified by its own owner.
             try:
-                if idle_handle is not None:
-                    await self.openhands_runtime.stop_agent_server(idle_handle)
                 await self._development_script("stop")
                 await self._general_script("start-model")
             except (ModelControllerError, OpenHandsRuntimeError) as rollback_error:

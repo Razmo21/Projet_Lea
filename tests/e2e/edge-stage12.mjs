@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import { writeFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const appUrl = 'http://127.0.0.1:5173'
 const cdpPort = Number(process.env.LEA_EDGE_CDP_PORT ?? '9232')
@@ -44,6 +46,25 @@ class BrowserSession {
     return result.result.value
   }
 
+  // Attend la nouvelle page, pas un sélecteur encore présent dans l'ancien DOM.
+  async navigate(url = null) {
+    let listener
+    let timer
+    const loaded = new Promise((resolve, reject) => {
+      listener = (event) => {
+        if (JSON.parse(String(event.data)).method === 'Page.loadEventFired') resolve()
+      }
+      this.socket.addEventListener('message', listener)
+      timer = setTimeout(() => reject(new Error('Chargement Edge non confirmé')), 20_000)
+    })
+    try {
+      await Promise.all([loaded, this.send(url ? 'Page.navigate' : 'Page.reload', url ? { url } : {})])
+    } finally {
+      clearTimeout(timer)
+      this.socket.removeEventListener('message', listener)
+    }
+  }
+
   // Attend un état observable plutôt qu'un délai supposé de rendu React.
   async wait(expression, timeout = 20_000) {
     const deadline = Date.now() + timeout
@@ -68,11 +89,14 @@ class BrowserSession {
     for (const type of ['mousePressed', 'mouseReleased']) {
       await this.send('Input.dispatchMouseEvent', { type, ...point, button: 'left', clickCount: 1 })
     }
+    // La navigation React rend le focus au titre au prochain frame. Attendre
+    // ce déplacement évite un clic calculé avant un défilement encore différé.
+    await this.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))')
   }
 }
 
 // Les essais n'utilisent que le serveur CDP loopback explicitement lancé pour cette étape.
-async function connect() {
+export async function connect() {
   const response = await fetch(`http://127.0.0.1:${cdpPort}/json/list`)
   const target = (await response.json()).find((item) => item.type === 'page')
   assert.ok(target)
@@ -84,19 +108,20 @@ async function connect() {
   const session = new BrowserSession(socket)
   await session.send('Runtime.enable')
   await session.send('Page.enable')
+  await session.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
   return session
 }
 
 // Vérifie la vraie persistance UI, sans FastAPI ni modèle pour cette phase.
-async function settings(session) {
-  await session.send('Page.navigate', { url: appUrl })
+export async function settings(session) {
+  await session.navigate(appUrl)
   await session.wait(`document.querySelector('#page-title') !== null`)
   await session.click('button', 'Paramètres')
   await session.wait(`document.querySelector('input[value="low"]')?.checked === true`)
   await session.click('input[value="high"]')
   await session.click('button', 'Valider')
   await session.wait(`document.querySelector('.settings [role="status"]')?.textContent.includes('enregistrés')`)
-  await session.send('Page.reload')
+  await session.navigate()
   await session.wait(`document.querySelector('#page-title') !== null`)
   await session.click('button', 'Paramètres')
   await session.wait(`document.querySelector('input[value="high"]')?.checked === true`)
@@ -109,7 +134,7 @@ async function settings(session) {
 }
 
 // Saisit par événements navigateur, pour conserver le vrai chemin React des formulaires.
-async function type(session, selector, text) {
+export async function type(session, selector, text) {
   await session.click(selector)
   await session.send('Input.insertText', { text })
 }
@@ -127,8 +152,8 @@ async function choose(session, level) {
 }
 
 // Exécute deux réponses réelles et vérifie le DOM public sans exposer de raisonnement brut.
-async function general(session) {
-  await session.send('Page.navigate', { url: appUrl })
+export async function general(session) {
+  await session.navigate(appUrl)
   await session.wait(`document.querySelector('#question')?.disabled === false`)
   await choose(session, 'low')
   const question = 'Un article coûte 80 euros avant une remise de 25 %. Quel est son prix final ? Réponds brièvement en français.'
@@ -155,8 +180,8 @@ async function general(session) {
 }
 
 // Se lance après un arrêt complet puis redémarrage des services sur la même base isolée.
-async function persistence(session) {
-  await session.send('Page.reload')
+export async function persistence(session) {
+  await session.navigate()
   await session.wait(`document.querySelector('#question')?.disabled === false`)
   await session.wait(`document.querySelector('.conversation-list')?.textContent.includes('AZUR12')`)
   await session.click('button', 'Paramètres')
@@ -272,7 +297,7 @@ async function native() {
 }
 
 // Vérifie les vrais refus HTTP du contrôleur local, sans commande ni écriture invalide.
-async function security() {
+export async function security() {
   const before = await (await fetch(`${appUrl}/api/preferences`)).json()
   for (const [body, headers, expected] of [
     ['{}', { Origin: 'https://remote.invalid' }, 403],
@@ -298,18 +323,21 @@ async function visual(session) {
   await session.wait(`document.querySelector('input[value="high"]')?.checked === true`)
   const capture = await session.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })
   await writeFile('.test-runtime/stage12-20261016/settings.png', Buffer.from(capture.data, 'base64'))
-  assert.equal(await session.evaluate(`document.querySelectorAll('.settings input').length`), 2)
+  assert.equal(await session.evaluate(`document.querySelectorAll('.settings input[type="radio"]').length`), 2)
   assert.equal(await session.evaluate(`document.activeElement.id`), 'settings-title')
   await session.click('button', 'Retour aux conversations')
   console.log('PASS capture et focus clavier de la page Paramètres.')
 }
 
-const session = await connect()
-try {
-  const phases = { settings, general, persistence, errors, programming, native, security, visual }
-  const phase = phases[process.argv[2] ?? 'settings']
-  assert.ok(phase, 'Phase inconnue')
-  await phase(session)
-} finally {
-  session.socket.close()
+// Réutilise le client CDP dans les essais suivants, sans exécuter une phase à l'import.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const session = await connect()
+  try {
+    const phases = { settings, general, persistence, errors, programming, native, security, visual }
+    const phase = phases[process.argv[2] ?? 'settings']
+    assert.ok(phase, 'Phase inconnue')
+    await phase(session)
+  } finally {
+    session.socket.close()
+  }
 }

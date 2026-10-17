@@ -19,6 +19,7 @@ from .memory import (
     parse_memory_command,
 )
 from .migrations import SCHEMA_VERSION, apply_migrations
+from .openhands_evidence import safe_failure_detail
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -771,6 +772,9 @@ class Database:
             "started_at": str(row["started_at"]) if row["started_at"] is not None else None,
             "finished_at": str(row["finished_at"]) if row["finished_at"] is not None else None,
             "result_summary": result_summary,
+            "failure_detail": (
+                safe_failure_detail(row["result_summary"]) if validation_status != "validated" else None
+            ),
             "validation_status": validation_status,
             "checkpoint_id": str(row["checkpoint_id"]) if row["checkpoint_id"] is not None else None,
             "created_at": str(row["created_at"]),

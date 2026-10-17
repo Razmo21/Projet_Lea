@@ -19,8 +19,9 @@ conservés. L’étape 11 a été validée manuellement par l’utilisateur avan
 l’autorisation de l’étape 12.
 
 L’étape 12 ajoute le centre de paramètres de Léa, utilisable sans modèle ni
-FastAPI chargés. Elle est techniquement terminée ; sa validation manuelle finale
-reste attendue. L’étape 13 n’est pas commencée.
+FastAPI chargés, et a été validée manuellement. L’étape 13 fiabilise les runs
+interrompus et ajoute une surveillance légère avec diagramme facultatif.
+Elle est techniquement terminée, en attente de validation manuelle finale.
 
 ## Philosophie
 
@@ -53,7 +54,8 @@ On ne commence jamais une nouvelle fonctionnalité tant que l'étape actuelle n'
 9. Mémoire générale explicite et persistante — terminée.
 10. Multi-modèles et profil Programmation — terminée.
 11. Architecture indépendante des modèles — terminée.
-12. Centre de paramètres de Léa — techniquement terminé.
+12. Centre de paramètres de Léa — terminé.
+13. Programmation avancée — techniquement terminée.
 
 ## Démarrage local
 
@@ -185,7 +187,10 @@ La configuration Programmation validée est strictement locale :
 
 Agent Canvas peut rester un outil administratif, mais il n’est pas requis pour
 un run. Docker Desktop doit actuellement être démarré manuellement : Léa ne le
-démarre pas elle-même et signale clairement son indisponibilité. Aucun modèle
+démarre pas elle-même et signale clairement son indisponibilité. Léa n’ouvre pas
+non plus l’interface OpenHands. Le conteneur Agent Server est créé uniquement
+au lancement explicite d’un run, jamais à l’activation du profil ni après sa fin.
+Aucun modèle
 cloud ni modèle local de secours n’est utilisé pour le profil Programmation.
 
 En profil Programmation, la liste des projets provient uniquement des
@@ -357,6 +362,8 @@ demande confirmation avant d’être abandonné ; une sauvegarde en cours bloque
 conserve `general_reasoning` et une révision. Le registre `config/models.json`
 reste exclusivement technique : modèles, capacités et profils. Les préférences
 n’appartiennent ni à Qwen, ni au navigateur, ni à un fichier JSON concurrent.
+La migration 9 ajoute `show_resource_chart`, booléen strict à `false` par défaut.
+Une sauvegarde partielle conserve les autres choix et vérifie la même révision.
 
 `npm run dev` suffit pour ouvrir, modifier et relire les paramètres lorsque
 FastAPI et les modèles sont arrêtés. Il faut néanmoins Vite, l’environnement
@@ -413,14 +420,83 @@ déjà actif ; `persistence` suit un arrêt/reprise complet sur la même base.
 capture dans le répertoire de test existant. Une panne réseau Edge est simulée ;
 les conflits HTTP, l’inférence et le run sont réels.
 
+## Programmation avancée — étape 13
+
+Le backend borne aussi le processus SDK (budget du registre + 60 secondes).
+Un résultat n’est accepté que pour le bon run, avec fin du processus réussie et
+preuves de validation existantes. Les erreurs publiques viennent d’une liste
+de diagnostics relus ; les textes bruts d’échec du modèle restent privés.
+
+Après crash, le backend retrouve le run persistant, vérifie puis arrête son
+conteneur exact avant de publier `failed` et de figer le diff. Il ne relance
+aucun outil. Si Docker est indisponible ou l’identité incertaine, le run reste
+non terminal et bloque une nouvelle activité modèle : rétablir Docker, puis
+redémarrer Léa. Une annulation explicite peut réessayer l’arrêt d’un run encore
+détenu par cette instance, jamais ses mutations. Rollback conserve ses contrôles
+de conflit ; Accept exige une validation réussie.
+
+Dans **Paramètres**, cocher **Afficher le diagramme des ressources** puis
+**Valider** affiche trois petites barres en bas de la page principale. Le défaut
+est masqué, la préférence persiste dans SQLite et fonctionne même IA arrêtée.
+Les alertes restent visibles sans diagramme, y compris dans les paramètres.
+
+- Une seule tâche dans FastAPI pour tout profil IA actif, dès le démarrage en
+  Général et pendant les commutations, sans base de télémétrie ni service
+  supplémentaire. Elle se ferme avec le backend ; l’interface ne sonde plus
+  les ressources lorsque Léa est arrêtée. L’API `/api/resources` ne lit qu’un cache.
+- RAM disponible Windows (cache récupérable inclus) et CPU entre deux relevés,
+  environ toutes les 10 s, via compteurs natifs sans PowerShell/WMI.
+- VRAM via `nvidia-smi` installé, environ toutes les 30 s. Modèle actif confirmé
+  par son adaptateur, endpoint et alias du registre, sans dépendance à son nom.
+  Docker n’est sondé que pour un profil OpenHands (ou son run en récupération),
+  avec cache de 30 s ; Agent Server seulement requis pendant un run.
+  Un endpoint muet est incertain, pas un PID déclaré mort.
+- RAM : WARNING sous 8 Gio, CRITICAL sous 6 Gio, deux relevés et marge de
+  remontée de 1 Gio, issus de la politique du profil actif sur ce PC de 32 Go.
+  Les politiques actuelles Général/Programmation partagent ces seuils ; un
+  autre profil utilise sa propre politique déclarée, sans modifier la collecte.
+- CPU : WARNING à partir de 90 % pendant trois intervalles ; retour sous 80 %
+  pendant deux. VRAM : WARNING sous 1 Gio sur deux nouveaux relevés, retour
+  à partir de 1,25 Gio. Un service indispensable indisponible pendant un run
+  produit CRITICAL. Aucun seuil n’arrête un run, un modèle ou Docker.
+- Une mesure absente/périmée est indiquée comme indisponible, jamais zéro.
+  NVIDIA absent ou multi-GPU : VRAM inconnue ; pas de fausse somme de mémoires.
+
+Lors d’une commutation, un ancien relevé ne peut pas réafficher les alertes de
+l’autre profil. Le cache GPU et les compteurs système restent partagés : pas
+de boucle supplémentaire. « Votre question » réutilise l’encadré de conversation
+existant, avec le même fond, bordure et espacement ; saisie et envoi inchangés.
+
+Lors de la validation initiale en Programmation, sans polling UI : 0,922 s CPU backend sur 35 s
+(environ 0,13 % des 20 processeurs logiques), mémoire résidente 61 → 59 Mio.
+Cela inclut les sondes de disponibilité ; ce n’est pas le coût total de Docker
+ou du modèle. Avec l’interface ouverte : 5,406 s CPU sur 35 s (0,77 % machine),
+environ 60 Mio. Les valeurs sont des mesures ponctuelles, pas une garantie.
+
+Le conteneur arrêté d’un run validé est supprimé sans `--force`, sans volume,
+après vérification complète d’identité. Les échecs conservent leurs conteneurs
+arrêtés et journaux. Aucun prune ni nettoyage global. Les données OpenHands,
+checkpoints et historiques sont conservés. Un PID recyclé du lanceur n’est
+jamais adopté ni tué ; un port occupé ou une identité illisible reste bloquant.
+
+L’automatisation Edge par l’agent est **reportée avec accord utilisateur** :
+les outils actuels ne démontrent pas le blocage de toutes les redirections,
+sous-ressources et destinations externes. Edge sert seulement aux tests locaux
+pilotés par le développeur, avec profil jetable ; ce n’est pas une isolation
+réseau garantie ni une nouvelle permission de l’agent. Aucun pont shell Windows
+n’a été ajouté. Docker Desktop reste manuel.
+
+Voir [le rapport de validation](docs/ETAPE_13_VALIDATION.md) pour les commandes,
+preuves réelles, simulations, limites et ménage. Le benchmark difficile est conservé.
+
 ## Roadmap
 
-L’étape 11 est terminée, l’étape 12 est techniquement terminée en attente de
-validation manuelle. Les étapes 13 à 25 ne sont pas implémentées :
+Les étapes 11 et 12 sont terminées ; l’étape 13 est techniquement terminée en
+attente de validation manuelle. Les étapes 14 à 25 ne sont pas implémentées :
 
 - Étape 11 — Architecture indépendante des modèles.
 - Étape 12 — Centre de paramètres de Léa.
-- Étape 13 — Programmation avancée (périmètre à rediscuter plus tard).
+- Étape 13 — Programmation avancée (validation manuelle finale attendue).
 - Étape 14 — Entrées multimodales.
 - Étape 15 — Veterinary.
 - Étape 16 — Auxiliaire.

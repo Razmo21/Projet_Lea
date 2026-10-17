@@ -1,5 +1,85 @@
 # Changelog — Projet Léa
 
+## [0.0.13] — Programmation avancée — 17 octobre 2026
+
+### Complément demandé avant clôture
+
+- Surveillance système RAM/CPU/VRAM disponible dès Général et pour chaque profil
+  actif via le registre/adaptateur existants. Même boucle, fréquences et alertes ;
+  politique du profil sélectionné, cache GPU partagé et rejet des snapshots tardifs.
+- Sondes Docker/OpenHands limitées aux profils qui les utilisent ou à un run
+  OpenHands en récupération. Aucune dépendance Docker pour les mesures Général.
+- Arrêt de la collecte avec FastAPI et des lectures UI lorsque Léa est arrêtée.
+  Préférence persistante false par défaut inchangée ; libellés harmonisés.
+- Formulaire complet « Votre question » dans l’encadré CSS `conversation`
+  existant, dimensions de saisie et comportement inchangés, sans nouveau style.
+- Complément validé : 237 tests backend, 25 frontend, build et diff ; Edge réel
+  à 1280/390 px, envoi Général et commutations Général/Programmation, aucune
+  lecture de ressources cœur arrêté. Session habituelle rétablie après accord,
+  base utilisateur inchangée, cache Edge et build de test nettoyés. Preuves et
+  commandes à la fin du rapport étape 13.
+
+### Fiabilité et reprise
+
+- Attente SDK bornée côté parent (budget + 60 s), refus d’un succès avec mauvais
+  run_id ou code de sortie non nul, diagnostics publics exacts sans texte privé.
+- Une erreur Docker n’est plus assimilée à une absence. Arrêt revérifié avant
+  état terminal ; reprise incertaine non terminale, nouvelle activité modèle
+  bloquée. Annulation explicitement renouvelée possible, aucun replay d’outils.
+- PID recyclé reconnu par sa date de création dans le lanceur, sans adopter
+  ni tuer le nouveau processus. Le cas réel était un `backgroundTaskHost` Windows.
+- Boucle de polling React corrigée : nouvel objet d’un même run ne redémarre
+  plus l’effet immédiat. Edge confirme 9 lectures en 12 s, état actif simulé.
+
+### Surveillance et paramètres
+
+- Version initiale : tâche FastAPI unique en lecture seule, dormante hors Programmation ;
+  étendue ensuite à tous les profils actifs par le complément ci-dessus. RAM
+  disponible/CPU Windows à 10 s, NVIDIA/Docker à 30 s ; aucun service supplémentaire.
+- États NORMAL/WARNING/CRITICAL avec persistance et marges de récupération,
+  aucune action d’arrêt automatique ; mesures inconnues explicitement indisponibles.
+- Migration SQLite additive 9 : `show_resource_chart`, false par défaut,
+  édition partielle révisionnée ; sauvegarde hors IA, Low/High préservé.
+- Trois barres RAM/CPU/VRAM en bas de page, alertes indépendantes du diagramme.
+  Coût réel sans UI : 0,922 s CPU backend / 35 s (~0,13 % des 20 processeurs
+  logiques), mémoire résidente 61 → 59 Mio ; avec UI 5,406 s / 35 s (~0,77 %).
+
+### Choix et maintenance
+
+- Docker Desktop et interface OpenHands manuels, selon décision utilisateur.
+  Agent Server créé seulement au lancement explicite du run ; plus d’idle
+  automatique à l’activation ou à la finalisation.
+- Suppression du conteneur arrêté/validé exact, sans force ni volume ; échecs
+  conservés pour diagnostic. Aucun prune, nettoyage global ou pont shell Windows.
+- Edge agentique reporté avec accord : isolation réseau complète non démontrée.
+  Les tests Edge développeur ne constituent pas cette capacité. Modèles, registre,
+  prompts, hooks et heuristiques du runner inchangés ; benchmark difficile non relancé.
+
+### Validation et clôture initiales (avant le complément)
+
+- 232 tests backend, 24 frontend, build React/TypeScript et diff propres ;
+  10 scripts PowerShell analysés, 6 cas d’identité du lanceur réussis.
+- Général réel Low/High, mémoire, historique après arrêt/reprise ; Paramètres
+  hors IA et persistance. Edge réel : diagramme, valeurs natives et alerte
+  critique simulée diagramme masqué, capture relue.
+- Run `81b43212-fd63-4572-a4d5-322aa18dda47` : lecture, correction source,
+  `python -B -m unittest -v` vert, `completed`/`validated`, diff et Accept UI.
+- Run `c0bb8bc2-be9f-48cb-b47b-aafa8dd120e1` : backend réellement interrompu
+  après mutation, redémarrage, `failed`/validation échouée visibles, Accept
+  refusé, Rollback UI exact des trois fichiers ; aucun double run.
+- SQLite test intègre, aucune violation de clé étrangère ni marqueur privé.
+  Base utilisateur inchangée : SHA-256
+  `E8FC0A8C542D2540730DBE0E4F0B1620128843E70663A3003027BA43B2F1D5D6`.
+- Checkpoints sans bytecode/cache Python. Le répertoire `.git` vide laissé par
+  le montage après crash figure honnêtement dans le diff récupéré, puis est
+  retiré par Rollback ; aucun effacement implicite d’un dossier non identifié.
+- Ménage : 380 fichiers du seul profil Edge de test et 3 fichiers `dist/`
+  régénérables retirés. Captures, base test, journaux, checkpoint accepté et
+  checkpoint restauré conservés. Aucun fichier source suivi supprimé.
+- Services Léa et Edge de test arrêtés ; Docker Desktop manuel et volumes
+  préservés. Aucun commit/push. Rapport détaillé : `docs/ETAPE_13_VALIDATION.md`.
+  Étape 13 techniquement complète ; validation manuelle attendue, étape 14 non commencée.
+
 ## [0.0.12] — Centre de paramètres de Léa
 
 ### Ajouté et adapté

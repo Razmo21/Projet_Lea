@@ -75,6 +75,9 @@ _STRICT_EVENT_KINDS = frozenset(
     {"ActionEvent", "ObservationEvent", "AgentErrorEvent", "HookExecutionEvent"}
 )
 _PUBLIC_FAILURES = {
+    "execution_error": (
+        "OpenHands ou le modèle a signalé une erreur d'exécution. Les changements ne sont pas validés."
+    ),
     "history_unavailable": (
         "OpenHands a terminé techniquement, mais ses preuves de session sont "
         "incomplètes. La tâche n'est pas présentée comme réussie."
@@ -117,6 +120,34 @@ _PUBLIC_FAILURES = {
         "avant exécution. La tâche n'est pas validée."
     ),
 }
+
+# Unvalidated historical prose stays private. Only these exact, backend-authored
+# diagnostics may accompany a failed or uncertain run in the interface.
+_PUBLIC_INFRASTRUCTURE_FAILURES = frozenset({
+    "Le checkpoint initial du projet a échoué.",
+    "Le checkpoint final du projet a échoué.",
+    "Le run OpenHands n'a pas pu démarrer.",
+    "Le run OpenHands ne peut pas être arrêté en sécurité.",
+    "Arrêt non confirmé. Vérifie Docker puis redémarre Léa pour récupérer ce run.",
+    "Le run OpenHands s'est arrêté sans résultat final exploitable.",
+    "Le délai maximal du run est dépassé ; le serveur a été arrêté.",
+    "Le run OpenHands a atteint sa limite et a été arrêté.",
+    "Le run OpenHands a été annulé après l'arrêt du serveur.",
+    "Le run OpenHands a été interrompu avant son checkpoint initial.",
+    "Le run OpenHands a été interrompu et son projet figé a changé.",
+    "Le run OpenHands a été interrompu par le redémarrage du backend.",
+    "Le run OpenHands a été interrompu et son checkpoint final a échoué.",
+})
+
+
+def safe_failure_detail(value: object) -> str | None:
+    """Expose a reviewed diagnostic, never arbitrary stored model prose."""
+
+    if isinstance(value, str) and (
+        value in _PUBLIC_INFRASTRUCTURE_FAILURES or value in _PUBLIC_FAILURES.values()
+    ):
+        return value
+    return None
 
 
 @dataclass(frozen=True)

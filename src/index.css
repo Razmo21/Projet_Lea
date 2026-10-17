@@ -422,3 +422,16 @@ button:disabled {
   outline: 3px solid #2563eb;
   outline-offset: 3px;
 }
+
+/* Les alertes restent visibles même lorsque les trois barres sont masquées. */
+.resources { grid-column: 1 / -1; font-size: 0.9rem; }
+.resources:empty { display: none; }
+.resource-chart { padding: 12px 20px; border: 1px solid #d8dee9; border-radius: 8px; }
+.resource-chart h2 { margin: 0 0 8px; font-size: 1rem; }
+.resource-row { display: grid; grid-template-columns: 50px 140px minmax(60px, 180px); gap: 8px; align-items: center; margin: 6px 0; }
+.resource-row progress { width: 100%; accent-color: #2563eb; }
+.resource-option { display: flex; align-items: center; gap: 8px; }
+.resource-option input { width: auto; margin: 0; }
+@media (max-width: 420px) {
+  .resource-row { grid-template-columns: 45px minmax(95px, 1fr) minmax(50px, 1fr); }
+}

@@ -65,6 +65,36 @@ class PreferencesTests(unittest.TestCase):
         self.assertEqual(PreferencesStore(reopened).read().general_reasoning, "high")
         self.assertEqual(self.store.save(self.change("low", 1)).revision, 2)
 
+    def test_chart_default_partial_updates_and_restart(self) -> None:
+        """The display choice persists without erasing General's preference."""
+
+        self.assertFalse(self.store.read().show_resource_chart)
+        self.store.save(self.change("high"))
+        saved = self.store.save(PreferenceChange(expected_revision=1, show_resource_chart=True))
+        self.assertTrue(saved.show_resource_chart)
+        self.assertEqual(saved.general_reasoning, "high")
+        reopened = Database(self.path)
+        reopened.initialize(recover_generations=False)
+        self.assertTrue(PreferencesStore(reopened).read().show_resource_chart)
+        self.store.save(self.change("low", 2))
+        self.assertTrue(self.store.read().show_resource_chart)
+        for value in (None, 1, "true"):
+            with self.assertRaises(ValidationError):
+                PreferenceChange(expected_revision=3, show_resource_chart=value)
+        with self.assertRaises(ValidationError):
+            PreferenceChange(expected_revision=3)
+
+    def test_stage12_migration_preserves_validated_preferences(self) -> None:
+        """Default only the new checkbox when migrating a previous preference."""
+
+        self.store.save(self.change("high"))
+        with self.database.connection() as connection:
+            connection.execute("ALTER TABLE user_preferences DROP COLUMN show_resource_chart")
+            connection.execute("DELETE FROM schema_migrations WHERE version = 9")
+        self.database.initialize(recover_generations=False)
+        current = self.store.read()
+        self.assertEqual((current.revision, current.general_reasoning, current.show_resource_chart), (1, "high", False))
+
     def test_invalid_values_types_and_extra_fields_are_refused(self) -> None:
         """Aucune valeur libre, conversion implicite, chemin ou commande n'est acceptée."""
 
@@ -189,7 +219,7 @@ class PreferencesTests(unittest.TestCase):
         before = self.database.get_conversation(conversation_id)
         with self.database.connection() as connection:
             connection.execute("DROP TABLE user_preferences")
-            connection.execute("DELETE FROM schema_migrations WHERE version = 8")
+            connection.execute("DELETE FROM schema_migrations WHERE version >= 8")
         self.database.initialize(recover_generations=False)
         self.assertEqual(self.database.get_conversation(conversation_id), before)
         self.assertEqual(self.store.read().general_reasoning, "low")

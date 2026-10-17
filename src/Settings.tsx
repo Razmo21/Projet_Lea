@@ -3,12 +3,13 @@ import type { FormEvent } from 'react'
 import { requestPreferences } from './preferences'
 import type { Preferences, ReasoningLevel } from './preferences'
 
-type SettingsProps = { onBack: () => void }
+type SettingsProps = { onBack: () => void; onSaved: (preferences: Preferences) => void }
 
 // Vue indépendante des conversations ; seul le choix confirmé vient de la persistance.
-export default function Settings({ onBack }: SettingsProps) {
+export default function Settings({ onBack, onSaved }: SettingsProps) {
   const [saved, setSaved] = useState<Preferences | null>(null)
   const [draft, setDraft] = useState<ReasoningLevel>('low')
+  const [chartDraft, setChartDraft] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -16,7 +17,7 @@ export default function Settings({ onBack }: SettingsProps) {
   const [reload, setReload] = useState(0)
   const savingLock = useRef(false)
   const title = useRef<HTMLHeadingElement>(null)
-  const dirty = saved !== null && draft !== saved.general_reasoning
+  const dirty = saved !== null && (draft !== saved.general_reasoning || chartDraft !== saved.show_resource_chart)
 
   // Place le clavier dans cette vue sans déplacer le focus à chaque changement de valeur.
   useEffect(() => { title.current?.focus() }, [])
@@ -32,6 +33,7 @@ export default function Settings({ onBack }: SettingsProps) {
       if (!current) return
       setSaved(value)
       setDraft(value.general_reasoning)
+      setChartDraft(value.show_resource_chart)
     }).catch((failure: unknown) => {
       if (current) setError(failure instanceof Error ? failure.message : 'Paramètres indisponibles.')
     }).finally(() => {
@@ -43,7 +45,7 @@ export default function Settings({ onBack }: SettingsProps) {
   // Le brouillon ne remplace la valeur enregistrée qu'après une confirmation cohérente.
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!saved?.general_reasoning_available || !dirty || savingLock.current || loading) return
+    if (!saved || !dirty || savingLock.current || loading) return
     savingLock.current = true
     setSaving(true)
     setError('')
@@ -51,11 +53,14 @@ export default function Settings({ onBack }: SettingsProps) {
     try {
       const confirmed = await requestPreferences({
         expected_revision: saved.revision,
-        general_reasoning: draft,
+        ...(draft !== saved.general_reasoning ? { general_reasoning: draft } : {}),
+        ...(chartDraft !== saved.show_resource_chart ? { show_resource_chart: chartDraft } : {}),
       })
       setSaved(confirmed)
       setDraft(confirmed.general_reasoning)
-      setConfirmation('Paramètres enregistrés. Le choix s’appliquera à la prochaine réponse Général, sans redémarrage.')
+      setChartDraft(confirmed.show_resource_chart)
+      onSaved(confirmed)
+      setConfirmation('Paramètres enregistrés. L’affichage s’applique immédiatement ; le raisonnement à la prochaine réponse Général.')
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'Enregistrement non confirmé.')
     } finally {
@@ -113,7 +118,19 @@ export default function Settings({ onBack }: SettingsProps) {
             <p>Enregistré : {saved.general_reasoning === 'low' ? 'Low' : 'High'}.</p>
             {dirty && <p className="status-warning">Modification non enregistrée.</p>}
           </fieldset>
-          <button type="submit" disabled={!dirty || loading || saving || !saved.general_reasoning_available}>
+          <fieldset disabled={loading || saving} className="settings-group">
+            <legend>Ressources</legend>
+            <label className="resource-option">
+              <input type="checkbox" checked={chartDraft} onChange={(event) => {
+                // Le choix reste provisoire jusqu'au commit confirmé.
+                setChartDraft(event.target.checked)
+                setConfirmation('')
+              }} />
+              Afficher le diagramme des ressources
+            </label>
+            <p>La surveillance reste active avec tout profil IA, même diagramme masqué. Les alertes ne coupent jamais une réponse ni un run.</p>
+          </fieldset>
+          <button type="submit" disabled={!dirty || loading || saving}>
             {saving ? 'Enregistrement…' : 'Valider'}
           </button>
         </form>

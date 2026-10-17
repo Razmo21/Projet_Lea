@@ -12,7 +12,7 @@ from .memory import (
 
 
 MigrationOperation = str | Callable[[sqlite3.Connection], None]
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def _backfill_memory_sources(connection: sqlite3.Connection) -> None:
@@ -407,6 +407,10 @@ MIGRATIONS: Mapping[int, Sequence[MigrationOperation]] = {
         )
         """,
         "INSERT INTO user_preferences(id) VALUES (1)",
+    ),
+    # v9 : seul l'affichage est persistant, jamais les mesures de ressources.
+    9: (
+        "ALTER TABLE user_preferences ADD COLUMN show_resource_chart INTEGER NOT NULL DEFAULT 0 CHECK(show_resource_chart IN (0, 1))",
     ),
 }
 

@@ -47,11 +47,11 @@ Après modification :
 
 ## Étape actuelle
 
-Les étapes 10 et 11 sont terminées ; l’autorisation de l’étape 12 confirmait
-la validation manuelle de l’étape 11. L’étape 12 — centre de paramètres de Léa —
-est techniquement complète. Sa validation manuelle finale reste attendue.
+Les étapes 10, 11 et 12 sont validées. L’étape 13 — Programmation avancée —
+est techniquement complète ; sa validation manuelle finale reste attendue.
+Voir `docs/ETAPE_13_VALIDATION.md` pour les preuves et limites.
 
-Ne commence pas l’étape 13 sans une nouvelle autorisation explicite de l’utilisateur.
+Ne commence pas l’étape 14 sans une nouvelle autorisation explicite de l’utilisateur.
 
 ## Interdictions actuelles
 
@@ -66,18 +66,29 @@ Ne crée PAS :
 - authentification ;
 - télémétrie ;
 - mémoire automatique ou sémantique ;
-- une fonctionnalité reportée à l’étape 13 ou aux étapes ultérieures.
+- une fonctionnalité reportée ou appartenant aux étapes ultérieures.
 
 `config/models.json` (schéma 3) est l’unique registre. Les profils portent leurs
 contrats et permissions ; `models` porte les paramètres des modèles et
 `profiles[].model_id` les associe. Ne réintroduis pas de dépendance au nom de
 Qwen dans le code métier ni de parseur concurrent dans les lanceurs.
 
-Les préférences fonctionnelles sont dans SQLite (`user_preferences`, migration 8),
+Les préférences fonctionnelles sont dans SQLite (`user_preferences`, migrations 8–9),
 pas dans le registre. Le contrôleur Vite peut les lire/sauver sans FastAPI ni
 modèle chargé, via le CLI ponctuel existant. Ne déclenche pas la récupération
 des générations en ouvrant les paramètres. Général Low/High prend effet à la
 requête suivante ; aucun contrôle de raisonnement fictif pour Programmation.
+
+Docker Desktop et l’interface OpenHands restent ouverts manuellement. Le seul
+lancement explicite d’un run crée son conteneur Agent Server : ni l’activation
+du profil ni sa finalisation ne doivent créer de serveur idle. L’automatisation
+Edge par l’agent est reportée : aucun accès Web ou pont Windows arbitraire.
+La surveillance reste en lecture seule, en RAM, sans arrêt automatique sur seuil.
+Elle est commune à tous les profils IA actifs et cesse avec le cœur ; seuls
+les contrôles Docker/OpenHands dépendent des besoins agentiques du profil.
+Le diagramme est masqué par défaut ; les alertes restent indépendantes du réglage.
+Un arrêt Docker incertain reste non terminal et interdit une nouvelle activité
+modèle jusqu’à récupération vérifiée. Ne compense pas les décisions de Qwen.
 
 ## Validation avant une étape suivante
 
@@ -89,7 +100,8 @@ Docker manuellement, choisir Programmation, sélectionner un projet strictement
 confiné à `L:\IA_WORKSPACE`, lancer un run OpenHands réel, consulter le diff,
 puis accepter ou restaurer les changements sans régression du profil Général ni
 de la mémoire. Elle doit également confirmer les conversations et les souvenirs
-après redémarrage. Le remplacement par configuration est documenté dans le
+après redémarrage, le diagramme facultatif RAM/CPU/VRAM et les erreurs lisibles.
+Le remplacement par configuration est documenté dans le
 README ; ne télécharge aucun nouveau modèle pour cette validation.
 
 Après cette validation, arrête-toi et attends une demande explicite avant toute

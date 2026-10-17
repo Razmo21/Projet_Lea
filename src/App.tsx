@@ -38,6 +38,9 @@ import {
 } from './agentRuns'
 import type { AgentRun, AgentRunChanges, PollingHealth } from './agentRuns'
 import Settings from './Settings'
+import ResourcePanel from './ResourcePanel'
+import { requestPreferences } from './preferences'
+import type { Preferences } from './preferences'
 
 type CoreState = 'stopped' | 'starting' | 'ready' | 'stopping' | 'error'
 
@@ -133,6 +136,20 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
 // Orchestre l'interface locale sans dupliquer l'état autoritaire du backend.
 function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [preferences, setPreferences] = useState<Preferences | null>(null)
+  const [preferencesError, setPreferencesError] = useState('')
+
+  // Relit le réglage persistant au retour ; aucune mesure n'est stockée côté navigateur.
+  useEffect(() => {
+    if (settingsOpen) return
+    let current = true
+    void requestPreferences().then((value) => {
+      if (current) { setPreferences(value); setPreferencesError('') }
+    }).catch(() => {
+      if (current) setPreferencesError('Préférence de ressources indisponible. Ouvre les paramètres pour la vérifier.')
+    })
+    return () => { current = false }
+  }, [settingsOpen])
   const settingsButton = useRef<HTMLButtonElement>(null)
 
   // Fermer les paramètres ne recharge ni la conversation ni son brouillon.
@@ -516,7 +533,9 @@ function App() {
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [agentRun, loadAgentChanges])
+    // Une nouvelle représentation du même run ne doit pas relancer la requête
+    // immédiate de cet effet : seuls son identité ou son état changent le suivi.
+  }, [agentRun?.run_id, agentRun?.state, loadAgentChanges])
 
   // Diffère légèrement la recherche pour ne pas interroger SQLite à chaque frappe.
   useEffect(() => {
@@ -1133,7 +1152,7 @@ function App() {
   const projectCapabilityActive = Boolean(activeProfile?.capabilities.includes('workspace_projects'))
   return (
     <main>
-      {settingsOpen && <Settings onBack={closeSettings} />}
+      {settingsOpen && <Settings onBack={closeSettings} onSaved={setPreferences} />}
       <section className="chat" aria-labelledby="page-title" hidden={settingsOpen}>
         <div className="page-header">
           <h1 id="page-title">Léa</h1>
@@ -1297,6 +1316,7 @@ function App() {
                   </p>
                 )}
                 {agentRun.result_summary && <p>{agentRun.result_summary}</p>}
+                {agentRun.failure_detail && <p role="status">{agentRun.failure_detail}</p>}
                 {agentRunActive && (
                   <button
                     type="button"
@@ -1616,7 +1636,8 @@ function App() {
             Le profil Programmation utilise la tâche OpenHands ci-dessus, pas la conversation directe.
           </p>
         ) : (
-          <form onSubmit={handleSubmit}>
+          // Même encadré que la conversation, sans changer les contrôles de saisie.
+          <form className="conversation" aria-label="Votre question" onSubmit={handleSubmit}>
             <label htmlFor="question">Votre question</label>
             <textarea
               ref={questionInput}
@@ -1646,6 +1667,12 @@ function App() {
           </form>
         )}
       </section>
+      {preferencesError && <p role="status">{preferencesError}</p>}
+      <ResourcePanel
+        enabled={coreStatus.state !== 'stopped' && coreStatus.state !== 'stopping' && Boolean(activeProfile || loadingProfile)}
+        profileId={(loadingProfile ?? activeProfile)?.id}
+        showChart={!settingsOpen && preferences?.show_resource_chart === true}
+      />
     </main>
   )
 }

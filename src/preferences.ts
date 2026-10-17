@@ -4,11 +4,13 @@ export type Preferences = {
   revision: number
   general_reasoning: ReasoningLevel
   general_reasoning_available: boolean
+  show_resource_chart: boolean
 }
 
 export type PreferenceChange = {
   expected_revision: number
-  general_reasoning: ReasoningLevel
+  general_reasoning?: ReasoningLevel
+  show_resource_chart?: boolean
 }
 
 // Une réponse HTTP réussie ne suffit pas : la valeur persistée doit être exploitable.
@@ -17,6 +19,7 @@ export function isPreferences(value: unknown): value is Preferences {
   const data = value as Record<string, unknown>
   return Number.isSafeInteger(data.revision) && Number(data.revision) >= 0 &&
     typeof data.general_reasoning_available === 'boolean' &&
+    typeof data.show_resource_chart === 'boolean' &&
     (data.general_reasoning === 'low' || data.general_reasoning === 'high')
 }
 
@@ -48,7 +51,11 @@ export async function requestPreferences(
     throw new Error(typeof detail === 'string' ? detail : 'Les paramètres n’ont pas pu être confirmés.')
   }
   if (!isPreferences(data)) throw new Error('Les paramètres reçus sont invalides.')
-  if (change && (!data.general_reasoning_available || data.general_reasoning !== change.general_reasoning || data.revision !== change.expected_revision + 1)) {
+  if (change && (
+    data.revision !== change.expected_revision + 1 ||
+    (change.general_reasoning !== undefined && (!data.general_reasoning_available || data.general_reasoning !== change.general_reasoning)) ||
+    (change.show_resource_chart !== undefined && data.show_resource_chart !== change.show_resource_chart)
+  )) {
     throw new Error('La confirmation ne correspond pas au choix envoyé. Rechargez les paramètres.')
   }
   return data

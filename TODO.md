@@ -83,7 +83,7 @@ commutation, deux petits runs OpenHands validés, rollback exact et Accept.
 Substitution/partage de modèle validés en configuration de test, sans nouveau
 GGUF. Aucun benchmark difficile relancé, aucun mécanisme de récupération ajouté.
 
-## ÉTAPE 12 — Centre de paramètres de Léa — techniquement terminée
+## ÉTAPE 12 — Centre de paramètres de Léa — terminée
 
 - [x] 12A — Audit du cycle de vie et de la persistance existants.
 - [x] 12B — Préférences SQLite indépendantes, migration additive et contrôle local hors IA.
@@ -95,18 +95,38 @@ GGUF. Aucun benchmark difficile relancé, aucun mécanisme de récupération ajo
 - [x] 12H — Edge, vrais modèles, run OpenHands validé, rollback et persistance après reprise.
 - [x] 12I — Relecture, commentaires, documentation et ménage ciblé.
 - [x] 12J — Non-régression complète et clôture technique sans commit/push.
-- [ ] Validation manuelle finale de l’utilisateur : Paramètres hors IA, Low/High,
-  reprise après redémarrage, navigation et Programmation sur projet autorisé.
+- [x] Validation manuelle confirmée par l’utilisateur dans l’autorisation de l’étape 13.
 
 Programmation : aucun mécanisme Low/High suffisamment fiable n’a été établi
 avec Qwen2.5-Coder. Pas de faux High par défaut ni de réduction des protections.
 Le choix d’une éventuelle stratégie agentique distincte est reporté, sans bloquer
-le centre de paramètres. Aucun travail de l’étape 13 n’est autorisé par cette clôture.
+le centre de paramètres.
+
+## ÉTAPE 13 — Programmation avancée — techniquement terminée
+
+- [x] 13A — Audit KEEP / IMPROVE / ADD / REMOVE et périmètre confirmé.
+- [x] 13B — Timeout parent, identité du résultat, erreurs publiques sûres, arrêt confirmé.
+- [x] 13C — Reprise fail-closed, slot bloqué si incertain, panne réelle puis Rollback exact.
+- [x] 13D — Surveillance native RAM/CPU, NVIDIA et disponibilité locale, coût mesuré.
+- [x] 13E — Hystérésis, alertes indépendantes, diagramme facultatif, préférence SQLite 9.
+- [x] Complément 13D/E — Surveillance commune à tous les profils actifs, sondes
+  Docker réservées à OpenHands ; encadré « Votre question » réutilisant le style existant.
+- [x] 13F — Choix utilisateur appliqué : applications manuelles, conteneur au seul lancement du run.
+- [x] 13G — Barrière examinée ; report de l’automatisation Edge approuvé, aucune capacité livrée.
+- [x] 13H — Audit : propriétaires existants suffisants, aucun pont Windows arbitraire.
+- [x] 13I — Suppression du seul conteneur arrêté/validé vérifié, sans volume ni prune.
+- [x] 13J — Général, mémoire, historique, OpenHands, Accept, panne/Rollback et UI réels.
+- [x] 13K — Relecture, commentaires, nettoyage ciblé et documentation.
+- [x] 13L — Suites complètes, clôture technique, aucun commit/push.
+- [ ] Validation manuelle finale : parcours habituel, Paramètres hors IA,
+  diagramme masqué/affiché, messages, run explicite et Accept/Rollback.
+
+Preuves et limites : `docs/ETAPE_13_VALIDATION.md`. Qwen et les politiques
+d’outils restent inchangés. Edge agentique non livré ; Docker Desktop manuel.
+L’étape 14 reste interdite sans nouvelle demande explicite.
 
 ## Roadmap validée — étapes suivantes non commencées
 
-- Étape 12 — Centre de paramètres de Léa (validation manuelle finale attendue).
-- Étape 13 — Programmation avancée (périmètre à rediscuter plus tard).
 - Étape 14 — Entrées multimodales.
 - Étape 15 — Veterinary.
 - Étape 16 — Auxiliaire.

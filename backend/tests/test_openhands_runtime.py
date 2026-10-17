@@ -4,6 +4,7 @@ import asyncio
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -45,10 +46,69 @@ class OpenHandsRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.registry = load_model_registry()
 
+    async def test_inspection_requires_confirmed_absence(self) -> None:
+        """Daemon errors and malformed inspection never authorize a terminal state."""
+
+        runtime = OpenHandsRuntime(self.registry)
+        for responses in (
+            [OpenHandsRuntimeError("offline"), OpenHandsRuntimeError("offline")],
+            [OpenHandsRuntimeError("inspect failed"), "abc123"],
+            ["[null]"],
+        ):
+            with patch.object(runtime, "_docker", new=AsyncMock(side_effect=responses)):
+                with self.assertRaises(OpenHandsRuntimeError):
+                    await runtime._inspect_container("lea-owned")
+        with patch.object(runtime, "_docker", new=AsyncMock(side_effect=[OpenHandsRuntimeError("absent"), ""])) as docker:
+            self.assertIsNone(await runtime._inspect_container("lea-owned"))
+            self.assertIn("name=^/lea\\-owned$", docker.call_args.args)
+
     def transport(self, handler):
         """Create a mock loopback transport for the small public endpoint contract."""
 
         return httpx.MockTransport(handler)
+
+    async def test_docker_observations_are_cached_but_mutations_require_a_fresh_probe(self) -> None:
+        """Status polling shares a bounded cache; a later daemon failure blocks a run."""
+
+        runtime = OpenHandsRuntime(self.registry)
+        with patch.object(runtime, "_docker_probe", new=AsyncMock(side_effect=[True, False])) as docker:
+            self.assertTrue(await runtime.docker_available())
+            self.assertTrue(await runtime.docker_available())
+            self.assertEqual(docker.await_count, 1)
+            with self.assertRaises(OpenHandsRuntimeError):
+                await runtime.require_docker()
+            self.assertEqual(docker.await_count, 2)
+
+    async def test_stopped_container_cleanup_never_targets_active_unknown_or_volumes(self) -> None:
+        """Cleanup is exact, repeatable, non-forced and preserves persistent state."""
+
+        runtime = OpenHandsRuntime(self.registry)
+        handle = AgentServerHandle("a" * 64, "owned", "run", Path("project"), "run")
+        for running, owned in ((True, True), (None, True), (False, False)):
+            with patch.object(runtime, "_inspect_container", new=AsyncMock(return_value={"Id": handle.container_id, "State": {"Running": running}})), patch.object(runtime, "_verify_container", return_value=owned), patch.object(runtime, "_docker", new=AsyncMock()) as docker:
+                with self.assertRaises(OpenHandsRuntimeError):
+                    await runtime.remove_stopped_agent_server(handle)
+                docker.assert_not_called()
+        with patch.object(runtime, "_inspect_container", new=AsyncMock(side_effect=[{"Id": handle.container_id, "State": {"Running": False}}, None])), patch.object(runtime, "_verify_container", return_value=True), patch.object(runtime, "_docker", new=AsyncMock()) as docker:
+            await runtime.remove_stopped_agent_server(handle)
+            await runtime.remove_stopped_agent_server(handle)
+            docker.assert_awaited_once_with("container", "rm", handle.container_id)
+        with patch.object(runtime, "_inspect_container", new=AsyncMock(side_effect=OpenHandsRuntimeError("offline"))):
+            with self.assertRaises(OpenHandsRuntimeError):
+                await runtime.remove_stopped_agent_server(handle)
+
+    async def test_stop_requires_final_state_confirmation(self) -> None:
+        """A returned stop command is not enough if subsequent inspection is uncertain."""
+
+        runtime = OpenHandsRuntime(self.registry)
+        handle = AgentServerHandle("a" * 64, "owned", "run", Path("project"), "run")
+        for final_state in (True, None, False):
+            with patch.object(runtime, "_inspect_container", new=AsyncMock(side_effect=[{"Id": handle.container_id, "State": {"Running": True}}, {"Id": handle.container_id, "State": {"Running": final_state}}])), patch.object(runtime, "_verify_container", return_value=True), patch.object(runtime, "_docker", new=AsyncMock()):
+                if final_state is False:
+                    await runtime.stop_agent_server(handle)
+                else:
+                    with self.assertRaises(OpenHandsRuntimeError):
+                        await runtime.stop_agent_server(handle)
 
     def expected_container_security(self) -> dict[str, object]:
         """Return the immutable image process identity required for container adoption."""
@@ -131,6 +191,10 @@ class OpenHandsRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.registry, docker_probe=docker_ready, transport=self.transport(qwen_only)
         )
         self.assertEqual((await agent_missing.status()).message, AGENT_SERVER_UNAVAILABLE_MESSAGE)
+        on_demand = await agent_missing.status(require_agent_server=False)
+        self.assertTrue(on_demand.profile_ready)
+        self.assertFalse(on_demand.agent_server_available)
+        self.assertIn("au lancement", on_demand.message)
 
         def agent_only(request: httpx.Request) -> httpx.Response:
             """Serve exactly the registered Agent Server health and tools responses."""

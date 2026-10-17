@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -237,8 +238,8 @@ class OpenHandsRunManager:
         if not normalized_task or "\x00" in normalized_task or len(normalized_task.encode("utf-8")) > 16_384:
             raise OpenHandsRunError("La tâche OpenHands est invalide.")
         async with self._lock:
-            if self._active is not None:
-                raise OpenHandsRunError("Un run OpenHands est déjà actif.")
+            if self._active is not None or self.database.list_incomplete_agent_runs():
+                raise OpenHandsRunError("Un run OpenHands est actif ou attend un arrêt vérifié.")
             run_id = str(uuid4())
             self.database.create_agent_run(run_id, frozen.project_id, profile.id, normalized_task)
             try:
@@ -323,7 +324,12 @@ class OpenHandsRunManager:
                 "failed",
                 "Le run OpenHands a été annulé après l'arrêt du serveur.",
             )
-        if result is None:
+        if requested_state == "limit_reached":
+            return (None, "limit_reached", "failed", "Le délai maximal du run est dépassé ; le serveur a été arrêté.")
+        if (
+            result is None or result.get("run_id") != active.run_id
+            or (result.get("state") == "completed" and active.process.returncode != 0)
+        ):
             return (
                 session_id if isinstance(session_id, str) else None,
                 "failed",
@@ -393,7 +399,15 @@ class OpenHandsRunManager:
         """Wait for the SDK child and always route terminal publication through verified server shutdown."""
 
         try:
-            await active.process.wait()
+            # The child also has a deadline, but cannot enforce it while stuck
+            # in SDK setup or a blocking call. The parent owns the final bound.
+            try:
+                await asyncio.wait_for(
+                    active.process.wait(), timeout=self._runner_timeout_seconds()
+                )
+            except TimeoutError:
+                active.desired_state = "limit_reached"
+                await self._terminate_process(active.process)
             await self._finalize(active)
         except asyncio.CancelledError:
             raise
@@ -401,6 +415,12 @@ class OpenHandsRunManager:
             # The run stays non-terminal when its Agent Server cannot be
             # verified and stopped. This is safer than claiming cancellation.
             active.finalization_error = "Le run OpenHands ne peut pas être arrêté en sécurité."
+            self.database.update_agent_run(active.run_id, result_summary=active.finalization_error)
+
+    def _runner_timeout_seconds(self) -> float:
+        """Allow bounded SDK setup in addition to the registry's agent execution budget."""
+
+        return self.registry.document.agent_policy.max_duration_seconds + 60
 
     async def _finalize(self, active: ActiveOpenHandsRun) -> None:
         """Stop the exact container before snapshotting and publishing any terminal SQLite state."""
@@ -440,14 +460,17 @@ class OpenHandsRunManager:
                 result_summary=summary,
             )
             active.finalized = True
-            try:
-                # Programming remains active after a normal run. Restore the
-                # no-project readiness server without ever mounting a project.
-                await self.runtime.start_agent_server()
-            except OpenHandsRuntimeError:
-                # A later profile activation will surface readiness honestly;
-                # a completed run is still truthful because its container stopped.
-                pass
+            if state == "completed":
+                try:
+                    # Evidence and checkpoints are durable; this stopped
+                    # container is now disposable. Failed containers retain logs.
+                    await self.runtime.remove_stopped_agent_server(active.handle)
+                except OpenHandsRuntimeError:
+                    logging.getLogger(__name__).warning(
+                        "Conteneur arrêté conservé : nettoyage non confirmé pour le run %s", active.run_id
+                    )
+            # No idle server is recreated: only an explicit new run may create
+            # a container. The model can remain ready without OpenHands running.
             async with self._lock:
                 if self._active is active:
                     self._active = None
@@ -492,6 +515,10 @@ class OpenHandsRunManager:
             raise OpenHandsRunError("Le run OpenHands n'est pas contrôlé par cette instance.")
         active.desired_state = "cancelled"
         await self._terminate_process(active.process)
+        # A second explicit cancellation can retry verified shutdown after
+        # Docker recovers. It never retries an agent action or creates a run.
+        if active.monitor_task is not None and active.monitor_task.done():
+            await self._finalize(active)
         try:
             await asyncio.wait_for(active.completion.wait(), timeout=90)
         except TimeoutError as error:
@@ -568,6 +595,10 @@ class OpenHandsRunManager:
             except (OpenHandsRuntimeError, OpenHandsRunError, WorkspacePathError, CheckpointError):
                 # Un conteneur non vérifiable reste volontairement non-terminal:
                 # le backend ne prétend pas avoir arrêté une mutation inconnue.
+                self.database.update_agent_run(
+                    record["run_id"],
+                    result_summary="Arrêt non confirmé. Vérifie Docker puis redémarre Léa pour récupérer ce run.",
+                )
                 continue
             try:
                 frozen = self.guard.freeze_project(

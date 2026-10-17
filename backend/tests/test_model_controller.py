@@ -38,6 +38,11 @@ class FakeOpenHandsRuntime:
         if self.fail_docker:
             raise OpenHandsRuntimeError("Docker Desktop absent.")
 
+    async def require_run_prerequisites(self) -> None:
+        """Model read-only prerequisites; no container may start during activation."""
+
+        await self.require_docker()
+
     async def start_agent_server(self):
         """Return a deterministic idle container handle for the successful path."""
 
@@ -65,10 +70,12 @@ class FakeOpenHandsRuntime:
             message="Le profil Programmation est prêt." if self.ready else "Agent absent.",
         )
 
-    async def wait_until_ready(self) -> DevelopmentReadiness:
+    async def wait_until_ready(self, *, require_agent_server: bool = True) -> DevelopmentReadiness:
         """Model the bounded production readiness retry without a real delay."""
 
         self.calls.append("wait_ready")
+        if require_agent_server:
+            raise AssertionError("Activation must not require an idle server")
         return await self.status()
 
 
@@ -104,7 +111,7 @@ class ModelControllerTests(unittest.IsolatedAsyncioTestCase):
         controller = RecordingController(runtime)
         self.assertEqual(await controller.activate("development"), "development")
         self.assertEqual(controller.calls, ["general:stop-model", "development:start"])
-        self.assertEqual(runtime.calls, ["require_docker", "start_idle", "wait_ready"])
+        self.assertEqual(runtime.calls, ["require_docker", "wait_ready"])
 
     async def test_development_failure_restores_general_after_owned_cleanup(self) -> None:
         """A missing Docker prerequisite leaves General restored rather than silently stopped."""
@@ -138,14 +145,14 @@ class ModelControllerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(runtime.calls, ["require_docker"])
 
-    async def test_agent_readiness_failure_stops_the_owned_container_and_rolls_back(self) -> None:
-        """La readiness SDK reste indispensable même si le modèle répond."""
+    async def test_readiness_failure_rolls_back_without_creating_a_container(self) -> None:
+        """A failed preflight cannot open an application or create an idle server."""
 
         runtime = FakeOpenHandsRuntime(ready=False)
         controller = RecordingController(runtime)
         with self.assertRaisesRegex(ModelControllerError, "Agent absent"):
             await controller.activate("development")
-        self.assertIn(f"stop:{runtime.handle.container_id}", runtime.calls)
+        self.assertNotIn("start_idle", runtime.calls)
         self.assertEqual(controller.calls[-2:], ["development:stop", "general:start-model"])
 
     async def test_lifecycle_children_receive_the_same_registry(self) -> None:

@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 
 BACKEND_DIRECTORY = Path(__file__).resolve().parents[1]
@@ -17,7 +18,8 @@ if str(BACKEND_DIRECTORY) not in sys.path:
 from app.checkpoints import CheckpointService  # noqa: E402
 from app.database import Database  # noqa: E402
 from app.model_registry import load_model_registry  # noqa: E402
-from app.openhands_runs import OpenHandsRunManager  # noqa: E402
+from app.openhands_runs import OpenHandsRunManager, OpenHandsRunError  # noqa: E402
+from app.openhands_runtime import OpenHandsRuntimeError  # noqa: E402
 from app.openhands_runtime import AGENT_SERVER_MODE_IDLE, AGENT_SERVER_MODE_RUN, AgentServerHandle  # noqa: E402
 from app.workspace import WorkspaceGuard  # noqa: E402
 
@@ -92,6 +94,12 @@ class FakeRuntime:
         """Record the exact run container stop before the manager writes terminal SQLite state."""
 
         self.stopped.append(handle.container_id)
+
+    async def remove_stopped_agent_server(self, handle: AgentServerHandle) -> None:
+        """Reject cleanup before the test's stop operation has completed."""
+
+        if handle.container_id not in self.stopped:
+            raise AssertionError("Active container cleanup")
 
     async def find_run_agent_server(
         self, _run_id: str, project_path: Path
@@ -219,6 +227,7 @@ class OpenHandsRunManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(final["validation_status"], "validated")
         self.assertEqual(final["project_id"], first["id"])
         self.assertEqual(runtime.started_paths[0], frozen.workspace_path.path)
+        self.assertEqual(runtime.started_paths, [frozen.workspace_path.path])
         self.assertIn("run-container", runtime.stopped)
         self.assertEqual(self.finished_calls, 1)
 
@@ -234,6 +243,73 @@ class OpenHandsRunManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cancelled["state"], "cancelled")
         self.assertIn("run-container", runtime.stopped)
         self.assertEqual(self.finished_calls, 1)
+
+    async def test_parent_deadline_stops_hung_child_before_publishing_failure(self) -> None:
+        """The parent's bound works even when the SDK never writes its final result."""
+
+        manager, runtime = self.manager(finished=False)
+        project = self.projects[0]
+        frozen = self.guard.freeze_project(project["id"], project["relative_path"])
+        with patch.object(manager, "_runner_timeout_seconds", return_value=0.01):
+            record = await manager.start("Test", self.registry.profile("development"), frozen, self.finished_callback)
+            final = await manager.wait_for_completion(record["run_id"])
+        self.assertEqual(final["state"], "limit_reached")
+        self.assertEqual(final["validation_status"], "failed")
+        self.assertIn("délai", final["failure_detail"])
+        self.assertIn("run-container", runtime.stopped)
+
+    async def test_disconnected_docker_keeps_run_nonterminal_until_explicit_cancel(self) -> None:
+        """No success or rollback is offered while a container might still mutate files."""
+
+        manager, runtime = self.manager(finished=True)
+        project = self.projects[0]
+        frozen = self.guard.freeze_project(project["id"], project["relative_path"])
+        with patch.object(runtime, "stop_agent_server", new=AsyncMock(side_effect=OpenHandsRuntimeError("offline"))):
+            record = await manager.start("Test", self.registry.profile("development"), frozen, self.finished_callback)
+            await manager._active.monitor_task
+            self.assertEqual((await manager.get(record["run_id"]))["state"], "running")
+            self.assertIn("sécurité", (await manager.get(record["run_id"]))["failure_detail"])
+            self.assertEqual(self.finished_calls, 0)
+        final = await manager.cancel(record["run_id"])
+        self.assertEqual(final["state"], "cancelled")
+
+    async def test_failed_recovery_blocks_new_run_and_exposes_only_safe_diagnostic(self) -> None:
+        """An unresolved persisted container prevents a second mount of a project."""
+
+        manager, runtime = self.manager(finished=False)
+        project = self.projects[0]
+        frozen = self.guard.freeze_project(project["id"], project["relative_path"])
+        run_id = "123e4567-e89b-42d3-a456-426614174000"
+        self.database.create_agent_run(run_id, frozen.project_id, "development", "Test", state="running")
+        self.checkpoints.create(run_id, frozen)
+        with patch.object(runtime, "find_run_agent_server", new=AsyncMock(side_effect=OpenHandsRuntimeError("private path"))):
+            await manager.recover()
+        record = await manager.get(run_id)
+        self.assertEqual(record["state"], "running")
+        self.assertIn("Arrêt non confirmé", record["failure_detail"])
+        with self.assertRaises(OpenHandsRunError):
+            await manager.start("Test", self.registry.profile("development"), frozen, self.finished_callback)
+        await manager.recover()
+        self.assertEqual((await manager.get(run_id))["state"], "failed")
+
+    async def test_completed_result_requires_matching_identity_and_successful_child(self) -> None:
+        """Stale result files and crashed children cannot claim validation."""
+
+        for wrong_id, returncode in ((True, 0), (False, 1)):
+            manager, _runtime = self.manager(finished=True)
+            project = self.projects[0]
+            frozen = self.guard.freeze_project(project["id"], project["relative_path"])
+            record = await manager.start("Test", self.registry.profile("development"), frozen, self.finished_callback)
+            active = manager._active
+            active.process.returncode = returncode
+            if wrong_id:
+                result_path = active.directory / "result.json"
+                result = json.loads(result_path.read_text(encoding="utf-8"))
+                result["run_id"] = "another run"
+                result_path.write_text(json.dumps(result), encoding="utf-8")
+            final = await manager.wait_for_completion(record["run_id"])
+            self.assertEqual(final["state"], "failed")
+            self.assertEqual(final["validation_status"], "failed")
 
     async def test_completed_runner_without_project_tool_evidence_is_failed(self) -> None:
         """A technical child stop without project evidence is an explicit failure."""
