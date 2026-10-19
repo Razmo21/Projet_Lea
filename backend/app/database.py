@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -160,6 +161,10 @@ class Database:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout = 5000")
         connection.execute("PRAGMA foreign_keys = ON")
+        # SQLite doit aussi écraser le contenu des cellules supprimées. Cette
+        # garantie complète les cascades logiques ; le checkpoint/VACUUM reste
+        # réservé aux maintenances effectuées lorsque Léa est arrêtée.
+        connection.execute("PRAGMA secure_delete = ON")
         connection.create_function(
             "LEA_CASEFOLD",
             1,
@@ -233,6 +238,7 @@ class Database:
             "idx_conversations_updated_at": "index",
             "idx_messages_conversation_position": "index",
             "idx_messages_conversation_status": "index",
+            "idx_messages_agent_role": "index",
             "idx_memories_normalized_content": "index",
             "idx_memory_sources_conversation_id": "index",
             "projects": "table",
@@ -270,6 +276,8 @@ class Database:
             raise RuntimeError("La classification des messages SQLite est incohérente.")
         if "model_id" not in message_columns or "profile_id" not in message_columns:
             raise RuntimeError("L’identité du modèle des messages SQLite est absente.")
+        if "agent_run_id" not in message_columns:
+            raise RuntimeError("Le lien des messages aux runs est absent.")
         memory_columns = {
             str(row[1]): row
             for row in connection.execute("PRAGMA table_info(memories)").fetchall()
@@ -437,6 +445,7 @@ class Database:
             return {
                 "foreign_keys": int(connection.execute("PRAGMA foreign_keys").fetchone()[0]),
                 "journal_mode": str(connection.execute("PRAGMA journal_mode").fetchone()[0]),
+                "secure_delete": int(connection.execute("PRAGMA secure_delete").fetchone()[0]),
                 "schema_version": int(
                     connection.execute(
                         "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
@@ -456,6 +465,8 @@ class Database:
                 WHERE status = 'pending'
                 UNION
                 SELECT id FROM conversations WHERE generation_active = 1
+                  AND NOT EXISTS (SELECT 1 FROM agent_runs WHERE conversation_id = conversations.id
+                                  AND state IN ('pending', 'running', 'waiting_for_tool'))
                 """
             ).fetchall()
             conversation_ids = [str(row[0]) for row in rows]
@@ -511,6 +522,7 @@ class Database:
             "created_at": str(row["created_at"]),
             "updated_at": str(row["updated_at"]),
             "kind": str(row["kind"]),
+            "agent_run_id": row["agent_run_id"],
             "model_id": str(row["model_id"]) if row["model_id"] is not None else None,
             "profile_id": str(row["profile_id"]) if row["profile_id"] is not None else None,
         }
@@ -873,6 +885,9 @@ class Database:
         openhands_session_id: str | None = None,
         state: str = "pending",
         validation_status: str | None = None,
+        record_conversation: bool = False,
+        expected_revision: int | None = None,
+        model_id: str | None = None,
     ) -> dict[str, Any]:
         """Crée un run dont le projet est immuable pour toute sa durée de vie."""
 
@@ -897,6 +912,47 @@ class Database:
         started_at = now if state in {"running", "waiting_for_tool"} else None
         finished_at = now if state in FINAL_AGENT_RUN_STATES else None
         with self.transaction() as connection:
+            if record_conversation:
+                # Le run et son tour sont atomiques : aucune question orpheline si le checkpoint échoue.
+                if canonical_conversation_id is None:
+                    if expected_revision is not None:
+                        raise ConversationOperationError("Une nouvelle conversation n’a pas de révision.")
+                    canonical_conversation_id = str(uuid.uuid4())
+                    connection.execute(
+                        "INSERT INTO conversations(id, title, title_origin, created_at, updated_at) VALUES (?, ?, 'automatic', ?, ?)",
+                        (canonical_conversation_id, automatic_title(normalized_task), now, now),
+                    )
+                else:
+                    self._assert_mutation_allowed(
+                        self._conversation_row(connection, canonical_conversation_id), expected_revision,
+                    )
+                    last = connection.execute(
+                        "SELECT role, status FROM messages WHERE conversation_id = ? "
+                        "ORDER BY position DESC LIMIT 1", (canonical_conversation_id,),
+                    ).fetchone()
+                    if last is not None and (last["role"] != "assistant" or last["status"] != "completed"):
+                        raise ConversationOperationError("La dernière question doit être résolue avant le run.")
+                position = connection.execute(
+                    "SELECT COALESCE(MAX(position), 0) + 1 FROM messages WHERE conversation_id = ?",
+                    (canonical_conversation_id,),
+                ).fetchone()[0]
+                turns = (
+                    (0, "user", normalized_task),
+                    (1, "assistant", "Run OpenHands en cours ; validation en attente."),
+                )
+                for offset, role, content in turns:
+                    connection.execute(
+                        "INSERT INTO messages(id, conversation_id, position, role, content, status, "
+                        "created_at, updated_at, profile_id, agent_run_id, model_id) "
+                        "VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?)",
+                        (str(uuid.uuid4()), canonical_conversation_id, position + offset, role,
+                         content, now, now, normalized_profile, canonical_run_id,
+                         model_id if role == "assistant" else None),
+                    )
+                connection.execute(
+                    "UPDATE conversations SET generation_active = 1, revision = revision + 1, "
+                    "updated_at = ? WHERE id = ?", (now, canonical_conversation_id),
+                )
             if canonical_conversation_id is not None:
                 conversation = connection.execute(
                     "SELECT id FROM conversations WHERE id = ?", (canonical_conversation_id,)
@@ -1064,6 +1120,24 @@ class Database:
             updated = connection.execute(
                 "SELECT * FROM agent_runs WHERE run_id = ?", (canonical_run_id,)
             ).fetchone()
+            if next_state in FINAL_AGENT_RUN_STATES and updated["conversation_id"] is not None:
+                # Le résumé évolue sur la même réponse, jamais par insertion répétée après récupération.
+                summary = str(updated["result_summary"] or "Aucun résumé fourni.")
+                if re.search(r"</?think", summary, re.I):
+                    summary = "Résumé non publiable ; consulte l’état et la validation du run."
+                content = (
+                    f"Run OpenHands : {next_state}. Validation : {next_validation}.\n{summary}\n"
+                    "Consulte le diff avant toute acceptation ou restauration."
+                )
+                changed = connection.execute(
+                    "UPDATE messages SET content = ?, updated_at = ? WHERE agent_run_id = ? AND role = 'assistant' AND content != ?",
+                    (content, now, canonical_run_id, content),
+                ).rowcount
+                if changed:
+                    connection.execute(
+                        "UPDATE conversations SET generation_active = 0, revision = revision + 1, "
+                        "updated_at = ? WHERE id = ?", (now, updated["conversation_id"]),
+                    )
         if updated is None:  # pragma: no cover - la transaction vient de vérifier la ligne.
             raise AgentRunNotFoundError("Run agent introuvable.")
         return self._agent_run_from_row(updated)
@@ -1663,6 +1737,7 @@ class Database:
                 if (
                     str(current["role"]) != "user"
                     or str(current["kind"]) != "conversation"
+                    or current["agent_run_id"] is not None
                 ):
                     raise ConversationOperationError(
                         "La génération doit partir d’un message utilisateur normal."
@@ -1671,7 +1746,7 @@ class Database:
                     """
                     SELECT role, content FROM messages
                     WHERE conversation_id = ? AND position < ?
-                      AND status = 'completed' AND kind = 'conversation'
+                      AND status = 'completed' AND kind = 'conversation' AND agent_run_id IS NULL
                     ORDER BY position ASC
                     """,
                     (conversation_id, int(current["position"])),
@@ -1704,6 +1779,7 @@ class Database:
                 if (
                     str(assistant["role"]) != "assistant"
                     or str(assistant["kind"]) != "conversation"
+                    or assistant["agent_run_id"] is not None
                 ):
                     raise ConversationOperationError(
                         "La régénération doit cibler une réponse normale de Léa."
@@ -1724,7 +1800,7 @@ class Database:
                     """
                     SELECT role, content FROM messages
                     WHERE conversation_id = ? AND position < ?
-                      AND status = 'completed' AND kind = 'conversation'
+                      AND status = 'completed' AND kind = 'conversation' AND agent_run_id IS NULL
                     ORDER BY position ASC
                     """,
                     (conversation_id, int(user["position"])),
@@ -1875,6 +1951,7 @@ class Database:
             message = self._message_row(connection, conversation_id, message_id)
             if (
                 str(message["kind"]) != "conversation"
+                or message["agent_run_id"] is not None
                 or str(message["role"]) != "user"
                 or str(message["status"]) != "failed"
             ):
@@ -1934,9 +2011,9 @@ class Database:
             conversation = self._conversation_row(connection, conversation_id)
             self._assert_mutation_allowed(conversation, expected_revision)
             message = self._message_row(connection, conversation_id, message_id)
-            if str(message["kind"]) != "conversation":
+            if str(message["kind"]) != "conversation" or message["agent_run_id"] is not None:
                 raise ConversationOperationError(
-                    "Un tour de gestion de la mémoire ne peut pas être modifié."
+                    "Un tour mémoire ou OpenHands ne peut pas être modifié par la conversation directe."
                 )
             if str(message["role"]) != "user":
                 raise ConversationOperationError(
@@ -1987,9 +2064,9 @@ class Database:
             conversation = self._conversation_row(connection, conversation_id)
             self._assert_mutation_allowed(conversation, expected_revision)
             assistant = self._message_row(connection, conversation_id, message_id)
-            if str(assistant["kind"]) != "conversation":
+            if str(assistant["kind"]) != "conversation" or assistant["agent_run_id"] is not None:
                 raise ConversationOperationError(
-                    "Un tour de gestion de la mémoire ne peut pas être régénéré."
+                    "Un tour mémoire ou OpenHands ne peut pas être régénéré par la conversation directe."
                 )
             if str(assistant["role"]) != "assistant":
                 raise ConversationOperationError(

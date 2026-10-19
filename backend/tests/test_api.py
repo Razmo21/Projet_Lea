@@ -114,6 +114,16 @@ class ApiTestCase(unittest.TestCase):
         self.assertEqual(response.headers["referrer-policy"], "no-referrer")
         self.assertIn("frame-ancestors 'none'", response.headers["content-security-policy"])
 
+    def test_voice_expected_profile_is_checked_before_persistence(self) -> None:
+        """A profile changed during recording must not receive the old vocal request."""
+        result = self.client.post('/api/conversations/messages', json={'message': 'Bonjour', 'expected_profile_id': 'development'})
+        self.assertEqual(result.status_code, 409)
+        self.assertEqual(self.gateway.calls, [])
+        self.assertEqual(self.application.state.database.list_conversations(), [])
+        result = self.client.post('/api/conversations/messages', json={'message': 'Bonjour', 'expected_profile_id': 'general'})
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(len(result.json()['messages']), 2)
+
     def test_first_message_creates_persistent_conversation_from_original_text(self) -> None:
         response = self.send("  Bonjour Léa  ")
 
@@ -135,6 +145,57 @@ class ApiTestCase(unittest.TestCase):
         self.assertNotIn("/no_think", persisted)
         self.assertNotIn("<think>", persisted.lower())
         self.assertNotIn("system", roles)
+
+    def test_frontend_delete_route_removes_successive_conversations_after_restart(self) -> None:
+        """La route DELETE retire chaque tour sans toucher à une autre conversation."""
+
+        first = self.send("LEA_HTTP_DELETE_ALPHA_7C8D9E").json()
+        first = self.send("Deuxième message alpha", first).json()
+        second = self.send("LEA_HTTP_DELETE_BETA_9E8D7C").json()
+        second = self.send("Deuxième message bêta", second).json()
+        survivor = self.send("LEA_HTTP_SURVIVOR_2A3B4C").json()
+
+        for conversation in (first, second):
+            response = self.client.request(
+                "DELETE",
+                f"/api/conversations/{conversation['id']}",
+                json={"expected_revision": conversation["revision"]},
+            )
+            self.assertEqual(response.status_code, 204)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            for conversation in (first, second):
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM conversations WHERE id = ?",
+                        (conversation["id"],),
+                    ).fetchone()[0],
+                    0,
+                )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
+                        (conversation["id"],),
+                    ).fetchone()[0],
+                    0,
+                )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM conversations WHERE id = ?",
+                    (survivor["id"],),
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+        restarted_application = create_app(
+            self.database_path,
+            FakeModelGateway(),
+            model_controller=FakeModelController(),
+        )
+        with TestClient(restarted_application) as restarted_client:
+            remaining = restarted_client.get("/api/conversations").json()["conversations"]
+        self.assertEqual([conversation["id"] for conversation in remaining], [survivor["id"]])
 
     def test_model_activation_is_atomic_and_attributes_following_responses(self) -> None:
         """L'API publie Programmation seulement après succès du contrôleur."""

@@ -11,6 +11,7 @@ export type ConversationMessage = {
   content: string
   status: MessageStatus
   kind: MessageKind
+  agent_run_id?: string | null
   model_id: string | null
   profile_id: string | null
   error: string | null
@@ -35,9 +36,9 @@ export type ConversationDetail = ConversationSummary & {
 
 // Réserve les actions destructives aux tours de conversation ordinaires.
 export function allowsDestructiveMessageAction(
-  message: Pick<ConversationMessage, 'kind'>,
+  message: Pick<ConversationMessage, 'kind' | 'agent_run_id'>,
 ): boolean {
-  return message.kind === 'conversation'
+  return message.kind === 'conversation' && !message.agent_run_id
 }
 
 // Le navigateur n'envoie jamais l'historique : SQLite et le backend restent autoritaires.

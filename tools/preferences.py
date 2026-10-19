@@ -21,6 +21,7 @@ from app.preferences import (  # noqa: E402
     PreferencesError,
     PreferencesStore,
 )
+from app.voice import voice_status  # noqa: E402
 
 
 def main() -> None:
@@ -43,6 +44,9 @@ def main() -> None:
         available = general.enabled and general.model.reasoning_control == "think_directives"
         if change is not None and change.general_reasoning is not None and not available:
             raise PreferencesError("Le modèle Général configuré ne propose pas ce réglage de raisonnement.")
+        if change is not None and change.voice_id is not None:
+            if change.voice_id not in {voice["id"] for voice in voice_status(registry)["voices"]}:
+                raise ValueError("La voix choisie n’est pas installée.")
         database = Database()
         database.initialize(recover_generations=False)
         store = PreferencesStore(database)

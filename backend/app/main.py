@@ -11,7 +11,7 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .inference import (
@@ -384,6 +384,7 @@ class SendMessageRequest(StrictRequest):
     conversation_id: str | None = None
     message: str
     expected_revision: int | None = Field(default=None, ge=0)
+    expected_profile_id: str | None = Field(default=None, max_length=128)
 
     @field_validator("message")
     @classmethod
@@ -435,6 +436,24 @@ class StartAgentRunRequest(StrictRequest):
     """Valide la tâche textuelle; le projet et le profil viennent de l'état serveur."""
 
     task: str = Field(min_length=1, max_length=16_384)
+    expected_profile_id: str | None = Field(default=None, max_length=128)
+    expected_project_id: str | None = Field(default=None, max_length=36)
+    record_conversation: bool = False
+    conversation_id: str | None = None
+    expected_revision: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_conversation(self) -> StartAgentRunRequest:
+        """Validate a recorded task before reserving a run or touching its checkpoint."""
+        if self.record_conversation:
+            self.task = normalize_received_user_message(self.task)
+            if (self.conversation_id is None) != (self.expected_revision is None):
+                raise ValueError("Conversation et révision doivent être fournies ensemble.")
+            if self.conversation_id is not None:
+                self.conversation_id = str(UUID(self.conversation_id))
+        elif self.conversation_id is not None or self.expected_revision is not None:
+            raise ValueError("L’enregistrement de conversation n’est pas demandé.")
+        return self
 
 
 class ConversationLockRegistry:
@@ -1118,16 +1137,27 @@ def create_app(
         project = _database(request).get_active_project()
         if project is None:
             raise HTTPException(status_code=409, detail="Sélectionne un projet actif avant le run.")
+        if (
+            body.expected_profile_id is not None and body.expected_profile_id != profile.id
+            or body.expected_project_id is not None and body.expected_project_id != project["id"]
+        ):
+            raise HTTPException(status_code=409, detail="Le profil ou le projet a changé. Recommence l’intervention.")
         frozen = request.app.state.workspace_guard.freeze_project(
             project["id"], project["relative_path"]
         )
         await runtime.begin_agent_run(profile.id)
         try:
+            conversation_options = {
+                "record_conversation": True,
+                "conversation_id": body.conversation_id,
+                "expected_revision": body.expected_revision,
+            } if body.record_conversation else {}
             record = await request.app.state.openhands_runs.start(
                 body.task,
                 profile,
                 frozen,
                 runtime.finish_agent_run,
+                **conversation_options,
             )
         except BaseException:
             await runtime.finish_agent_run()
@@ -1279,6 +1309,8 @@ def create_app(
         profile_id = await runtime.begin_generation()
         generation_handed_off = False
         try:
+            if body.expected_profile_id is not None and body.expected_profile_id != profile_id:
+                raise HTTPException(status_code=409, detail="Le profil a changé. Recommence l’intervention.")
             profile = request.app.state.model_registry.profile(profile_id)
             if profile.agent_engine == "OpenHands" and request.app.state.fixed_model_gateway is None:
                 # The Programming brain is reserved for the OpenHands SDK
@@ -1344,6 +1376,7 @@ def create_app(
                             for message in detail["messages"]
                             if message["status"] == "completed"
                             and message["kind"] == "conversation"
+                            and message.get("agent_run_id") is None
                         ]
                         try:
                             model_messages = build_model_messages(

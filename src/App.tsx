@@ -41,6 +41,8 @@ import Settings from './Settings'
 import ResourcePanel from './ResourcePanel'
 import { requestPreferences } from './preferences'
 import type { Preferences } from './preferences'
+import VoiceControls from './VoiceControls'
+import { appendDictation } from './voice'
 
 type CoreState = 'stopped' | 'starting' | 'ready' | 'stopping' | 'error'
 
@@ -136,6 +138,8 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
 // Orchestre l'interface locale sans dupliquer l'état autoritaire du backend.
 function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [voiceOpen, setVoiceOpen] = useState(false)
+  const voiceRunWaiter = useRef<{ id: string; resolve: (run: AgentRun) => void; reject: (error: Error) => void } | null>(null)
   const [preferences, setPreferences] = useState<Preferences | null>(null)
   const [preferencesError, setPreferencesError] = useState('')
 
@@ -237,17 +241,21 @@ function App() {
     try {
       const controllerResponse = await fetch('/api/core/status', { cache: 'no-store' })
       const status = await readCoreStatus(controllerResponse)
+      // A timed-out health probe is not a confirmed stop. Reuse the existing
+      // consecutive-failure policy before clearing the frozen vocal context.
+      // Explicit stopped/starting states and user stop actions remain immediate.
+      if (status.state === 'error') throw new Error(status.message)
       if (!modelTransitionLock.current) {
         const health = resetPollingHealth()
         corePollingHealthRef.current = health
         setCorePollingHealth(health)
         setCoreStatus(status)
       }
-    } catch {
+    } catch (failure) {
       if (!modelTransitionLock.current) {
         const health = recordPollingFailure(
           corePollingHealthRef.current,
-          'Le contrôleur local de Léa n’est pas disponible.',
+          failure instanceof Error ? failure.message : 'Le contrôleur local de Léa n’est pas disponible.',
         )
         corePollingHealthRef.current = health
         setCorePollingHealth(health)
@@ -515,6 +523,9 @@ function App() {
         setAgentPollingHealth(health)
         setAgentPollingError('')
         setAgentRun(run)
+        if (!isActiveAgentRun(run) && run.conversation_id === activeConversationRef.current?.id) {
+          void loadConversation(run.conversation_id, false)
+        }
         if (!isActiveAgentRun(run) && run.checkpoint_id) {
           await loadAgentChanges(run.run_id)
         }
@@ -839,6 +850,7 @@ function App() {
   async function runGeneration(
     operation: () => Promise<ConversationDetail>,
     pending = '',
+    clearDraft = true,
   ): Promise<GenerationResult> {
     if (
       generationLock.current ||
@@ -856,7 +868,7 @@ function App() {
     setConversationError('')
     try {
       await refreshAfterMutation(await operation(), navigationRequest)
-      if (conversationRequests.current.isCurrent(navigationRequest)) {
+      if (clearDraft && conversationRequests.current.isCurrent(navigationRequest)) {
         setQuestion('')
       }
       return 'completed'
@@ -1150,10 +1162,83 @@ function App() {
     agentRunActive,
   )
   const projectCapabilityActive = Boolean(activeProfile?.capabilities.includes('workspace_projects'))
+
+  // Reuse the existing run poller; voice introduces no second agent-status loop.
+  useEffect(() => {
+    const waiting = voiceRunWaiter.current
+    if (!waiting) return
+    if (agentRun?.run_id === waiting.id && !isActiveAgentRun(agentRun)) waiting.resolve(agentRun)
+    else if (agentPollingHealth.consecutive_failures >= 3) waiting.reject(new Error('Suivi OpenHands indisponible. Vérifie le run dans l’interface classique avant toute nouvelle demande.'))
+  }, [agentRun, agentPollingHealth])
+
+  // The captured callback belongs to the conversation visible at the first mic click.
+  function dictated(text: string) {
+    if (activeConversationRef.current?.id !== activeConversation?.id) throw new Error('La conversation a changé ; dictée non insérée.')
+    if (programmingActive) setAgentTask((draft) => appendDictation(draft, text))
+    else setQuestion((draft) => appendDictation(draft, text))
+  }
+
+  // Voice changes input/output only: existing endpoints own persistence and permissions.
+  async function sendVoice(text: string, signal: AbortSignal): Promise<{ text: string; review?: boolean; notice?: string }> {
+    if (signal.aborted || !activeProfile || coreStatus.state !== 'ready' || activeConversationRef.current?.id !== activeConversation?.id) throw new Error('Le contexte a changé. Recommence l’intervention.')
+    if (byteLength(text) > activeProfile.max_user_message_bytes) throw new Error('La transcription est trop longue pour le profil actif.')
+    if (activeProfile.capabilities.includes('agent_runs')) {
+      if (!projectCatalog?.active_project_id || isActiveAgentRun(agentRun)) throw new Error('Sélectionne un projet et termine le run actif dans l’interface classique.')
+      setIsAgentStarting(true); setAgentChanges(null)
+      let run: AgentRun
+      try {
+        run = requireAgentRun(await apiRequest('/api/agent-runs', {
+          method: 'POST', body: JSON.stringify({ task: text, record_conversation: true,
+            conversation_id: activeConversation?.id ?? null, expected_revision: activeConversation?.revision ?? null,
+            expected_profile_id: activeProfile.id, expected_project_id: projectCatalog.active_project_id }),
+        }))
+        setAgentRun(run)
+        if (run.conversation_id) await loadConversation(run.conversation_id, true)
+        await loadConversations(search)
+      } finally { setIsAgentStarting(false) }
+      // Closing audio does not silently cancel an already-authorized project mutation.
+      if (signal.aborted) throw new Error('Audio fermé. Le run reste consultable dans Programmation.')
+      const finished = await new Promise<AgentRun>((resolve, reject) => {
+        if (!isActiveAgentRun(run)) { resolve(run); return }
+        const cancel = () => reject(new Error('Audio fermé ; consulte le run dans Programmation.'))
+        signal.addEventListener('abort', cancel, { once: true })
+        voiceRunWaiter.current = {
+          id: run.run_id,
+          resolve: (value) => { signal.removeEventListener('abort', cancel); resolve(value) },
+          reject: (error) => { signal.removeEventListener('abort', cancel); reject(error) },
+        }
+        // A very short run may have ended while its conversation was loading.
+        // One snapshot closes that race; subsequent updates still use the existing poller.
+        void apiRequest<unknown>(`/api/agent-runs/${run.run_id}`, { signal }).then((payload) => {
+          const current = requireAgentRun(payload)
+          if (!isActiveAgentRun(current) && voiceRunWaiter.current?.id === run.run_id) voiceRunWaiter.current.resolve(current)
+        }).catch((failure: unknown) => {
+          if (voiceRunWaiter.current?.id === run.run_id) voiceRunWaiter.current.reject(failure instanceof Error ? failure : new Error('Suivi du run indisponible.'))
+        })
+      }).finally(() => { voiceRunWaiter.current = null })
+      const detail = finished.conversation_id ? await apiRequest<ConversationDetail>(`/api/conversations/${finished.conversation_id}`) : null
+      if (detail) await refreshAfterMutation(detail, conversationRequests.current.current())
+      const answer = detail?.messages.find((item) => item.agent_run_id === finished.run_id && item.role === 'assistant')?.content
+      return {
+        text: answer ?? `Run ${finished.state}, validation ${finished.validation_status}. Examine le résultat dans l’interface classique.`,
+        review: true,
+        notice: `Run OpenHands : ${finished.state}. Validation : ${finished.validation_status}.`,
+      }
+    }
+    let answer = ''
+    const result = await runGeneration(async () => {
+      const detail = await apiRequest<ConversationDetail>('/api/conversations/messages', { method: 'POST',
+        body: JSON.stringify({ ...buildSendMessagePayload(activeConversation, text), expected_profile_id: activeProfile.id }) })
+      answer = detail.messages.at(-1)?.role === 'assistant' ? detail.messages.at(-1)!.content : ''
+      return detail
+    }, text, false)
+    if (result !== 'completed' || !answer) throw new Error('La réponse n’a pas abouti. Consulte l’historique avant de réessayer ; aucune demande n’est renvoyée automatiquement.')
+    return { text: answer }
+  }
   return (
     <main>
       {settingsOpen && <Settings onBack={closeSettings} onSaved={setPreferences} />}
-      <section className="chat" aria-labelledby="page-title" hidden={settingsOpen}>
+      <section className="chat" aria-labelledby="page-title" hidden={settingsOpen || voiceOpen}>
         <div className="page-header">
           <h1 id="page-title">Léa</h1>
           <button type="button" className="secondary-button" ref={settingsButton} onClick={() => setSettingsOpen(true)}>
@@ -1649,8 +1734,7 @@ function App() {
               disabled={
                 isGenerating ||
                 isConversationLoading ||
-                isRenaming ||
-                coreStatus.state !== 'ready'
+                isRenaming
               }
             />
             <button
@@ -1667,11 +1751,15 @@ function App() {
           </form>
         )}
       </section>
+      <VoiceControls preferences={preferences} onMode={setVoiceOpen} onDictated={dictated} onSend={sendVoice}
+        hidden={settingsOpen} contextKey={`${coreStatus.state}:${selectedProfileId}:${projectCatalog?.active_project_id ?? ''}`}
+        ready={coreStatus.state === 'ready' && Boolean(activeProfile)}
+        blocked={isGenerating || isAgentStarting || agentRunActive || isModelTransition || isCoreTransition || isProjectTransition || isConversationLoading || isRenaming} />
       {preferencesError && <p role="status">{preferencesError}</p>}
       <ResourcePanel
         enabled={coreStatus.state !== 'stopped' && coreStatus.state !== 'stopping' && Boolean(activeProfile || loadingProfile)}
         profileId={(loadingProfile ?? activeProfile)?.id}
-        showChart={!settingsOpen && preferences?.show_resource_chart === true}
+        showChart={!settingsOpen && !voiceOpen && preferences?.show_resource_chart === true}
       />
     </main>
   )

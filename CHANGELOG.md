@@ -1,5 +1,116 @@
 # Changelog — Projet Léa
 
+## Étape 14 — Maintenance finale avant commit — 19 octobre 2026
+
+- Audit de 151 fichiers : aucun module de production obsolète démontré ; deux
+  imports inutilisés retirés des tests, scripts historiques et barrières conservés.
+- Suppression de conversation confirmée de bout en bout : route HTTP réelle,
+  transaction SQLite, cascades `messages`/`memory_sources`, conservation des
+  souvenirs explicitement globaux et des historiques techniques indépendants.
+- `PRAGMA secure_delete=ON` appliqué à chaque connexion. Base active sauvegardée
+  hors dépôt avant maintenance, mémoire de test autorisée supprimée, WAL
+  checkpointé, `VACUUM`, intégrité et clés étrangères vérifiés sans toucher à
+  l’unique conversation active, aux préférences, runs ou checkpoints.
+- `L:\IA_WORKSPACE`, déjà vidé par l’utilisateur pendant la phase B, contrôlé
+  présent, normal et vide ; aucun projet de test n’y a été recréé. Le catalogue
+  courant passe de 13 chemins absents à 0 sans purger runs ni checkpoints.
+- Audit Docker pré-commit : 156 conteneurs Léa arrêtés et démontrés jetables
+  supprimés sans force ni volume (155 runs terminaux liés à leurs checkpoints
+  présents, plus l’ancien idle). Neuf runs isolés absents de la base active et
+  trois serveurs SDK encore référencés sont conservés par prudence. Images,
+  volumes, historiques et checkpoints inchangés ; environ 575,3 Mo récupérés.
+- Validation : 256 tests backend, 41 frontend, build, 12 scripts PowerShell
+  analysés et 8 cas ciblés. Cycle Général réel sur base isolée, Low/High,
+  mémoire, suppression, redémarrage, ressources, Pocket TTS, Piper et Whisper
+  réels sur audio synthétique. Microphone physique non rejoué. Un Agent Server
+  OpenHands réel a démarré, répondu, été arrêté puis supprimé sur un dossier
+  temporaire vide ; aucun run agentique n’a été relancé faute de projet utilisateur.
+- Aucun commit/push, aucune étape 15 et aucun mécanisme de compensation de Qwen.
+
+## Étape 14 — Clôture manuelle et nettoyage — 18 octobre 2026
+
+- Validation manuelle confirmée : microphone, deux voix locales et paramètres
+  fonctionnels ; qualité de « Léa — Voix naturelle française » acceptée.
+- Installation permanente Pocket TTS revérifiée hors ligne par empreintes,
+  environnement actif et synthèse réelle avant suppression du banc d’essai.
+- Suppression strictement limitée à `L:\Lea_TTS_Estelle_Test_Temp`, après
+  inventaire de ses caches, scripts, rapports et WAV expérimentaux. Modèles
+  permanents, SIWIS, conversations, mémoire et checkpoints inchangés.
+- Étape 14 déclarée terminée après les suites finales, le build et les contrôles
+  Git ; aucun commit/push et aucune étape suivante commencée.
+
+## Étape 14 — Voix naturelle française — 18 octobre 2026
+
+- Pocket TTS 3.3.0, variante CPU `french`, intégré comme voix par défaut sous
+  le nom utilisateur « Léa — Voix naturelle française ». Modèle, tokenizer,
+  configuration hors ligne et état vocal officiel épinglés dans les dossiers
+  vocaux permanents ; aucune dépendance au banc d’essai temporaire.
+- Piper/SIWIS conservé comme « SIWIS — Voix classique ». Le registre décrit le
+  moteur par voix, sans repli silencieux. Volume commun ; vitesse réelle Piper
+  conservée, vitesse Pocket TTS fixe à 1× et limite explicitement affichée.
+- Migration SQLite 11 : `lea_voice` devient le choix des installations nouvelles
+  et existantes sans réinitialiser les autres préférences. Les changements de
+  voix restent validés, révisionnés et persistants après redémarrage.
+- Même worker ponctuel stdio et même job Windows : CPU uniquement, aucun serveur,
+  fichier audio temporaire, téléchargement au fonctionnement normal ou modèle
+  vocal résident. Les fragments internes ne sont pas diffusés au navigateur :
+  le gain mesuré ne justifie pas un nouveau protocole de streaming.
+- Pocket TTS reste techniquement associé à l’état officiel `estelle` pour la
+  compatibilité et l’attribution Kyutai ; ce nom n’est jamais présenté comme le
+  nom de la voix dans l’interface.
+
+## Étape 14 — Diagnostic du décodage microphone — 18 octobre 2026
+
+- Cause reproduite : le décodeur de VS Code 1.140.0 refuse le même WebM/Opus
+  synthétique qu’Edge décode ; WAV PCM fonctionne dans les deux. L’annonce de
+  prise en charge par MediaRecorder/canPlayType ne garantit pas ce décodage.
+- Message partagé dictée/conversation orientant vers Edge externe, diagnostics
+  limités aux métadonnées en console ; aucun audio privé conservé ni envoyé en
+  cas d’échec du décodage. Documentation du navigateur requis pour la voix.
+- Finalisation bornée : dernier dataavailable puis stop avant libération des
+  pistes et conversion ; annulation immédiate conservée. Ce durcissement ne
+  résout pas à lui seul l’absence du décodeur Opus dans VS Code.
+- Tests : 251 backend, 40 frontend, build ; vrais MediaRecorder WebM/Opus et
+  MP4/AAC, conversion PCM, Whisper, refus de données tronquées et deux modes UI.
+  Réponse conversationnelle simulée dans ce test ciblé ; microphone physique
+  toujours à valider manuellement dans Edge. Aucun nouveau moteur ou dépendance.
+
+## Étape 14 — Implémentation et validation — 17 octobre 2026
+
+- Autorisation et périmètre du prompt consignés : microphone, dictée locale et
+  conversation vocale tour par tour ; étape 13 confirmée validée manuellement.
+  Aucun changement de numérotation ultérieure, vision et mains libres exclus.
+- Audit initial de l’existant et des ressources ; comparaison documentaire
+  whisper.cpp/faster-whisper et Piper/Kokoro/voix Windows. Fichiers candidats,
+  tailles, licences, empreintes et enveloppe de 450 Mo décrits dans D-030.
+- Accord utilisateur obtenu ensuite pour les téléchargements nécessaires jusqu’à
+  10 Go. Installation CPU isolée : Whisper Small Q5_1, whisper.cpp b5130 et
+  Piper 1.8.0/SIWIS, environ 459 Mo sur disque ; Qwen et ses contextes inchangés.
+- Dictée deux clics dans le brouillon, sans écrasement ni envoi automatique,
+  utilisable cœur arrêté ; vue vocale séparée sans texte des échanges, traitement
+  tour par tour, lecture locale interruptible et libération des pistes audio.
+- Contrôleur borné dans Vite, workers temporaires stdio sous job Windows, aucun
+  nouveau serveur, audio en RAM uniquement, aucun téléchargement à l’utilisation.
+- Migration SQLite 10 : préférences vocales et lien des messages aux runs.
+  Historique atomique/idempotent, exclusion des tours agentiques du chat direct,
+  profil/projet figés, validation et décisions OpenHands inchangées.
+- Correction ciblée du lanceur : Docker fermé ne fait plus échouer l’inspection
+  du seul ancien conteneur idle par conversion de stderr en exception PowerShell.
+  Aucun assouplissement de l’arrêt vérifié des runs actifs.
+- Les erreurs de sonde de santé utilisent la tolérance consécutive existante :
+  incident isolé sans annulation intempestive, panne persistante visible.
+- Vérifications : 250 tests backend, 34 frontend, build, PowerShell 6+2,
+  dictée cœur arrêté, Général vocal, persistance/mémoire, ressources deux profils.
+  Programmation vocal : retour failed et Rollback ; un run écrit avec commande
+  explicite est validated puis accepté. Aucune règle de preuve élargie pour Qwen.
+- Rapport et limites de validation : `docs/ETAPE_14_VALIDATION.md`. Les essais
+  navigateur utilisent une voix synthétique, pas un microphone physique ;
+  l’écoute des haut-parleurs et la qualité subjective restent à valider manuellement.
+- Vérification finale du 18 octobre : navigateurs et services de test arrêtés,
+  caches/fixtures régénérables nettoyés, session habituelle Général rétablie ;
+  historique, souvenir, préférences et checkpoints inchangés après redémarrage.
+- Aucun commit/push, aucune étape suivante, aucune suppression de données ou checkpoints.
+
 ## [0.0.13] — Programmation avancée — 17 octobre 2026
 
 ### Complément demandé avant clôture

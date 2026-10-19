@@ -12,7 +12,7 @@ from .memory import (
 
 
 MigrationOperation = str | Callable[[sqlite3.Connection], None]
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 
 
 def _backfill_memory_sources(connection: sqlite3.Connection) -> None:
@@ -411,6 +411,21 @@ MIGRATIONS: Mapping[int, Sequence[MigrationOperation]] = {
     # v9 : seul l'affichage est persistant, jamais les mesures de ressources.
     9: (
         "ALTER TABLE user_preferences ADD COLUMN show_resource_chart INTEGER NOT NULL DEFAULT 0 CHECK(show_resource_chart IN (0, 1))",
+    ),
+    # v10 : réglages vocaux et lien aux tours OpenHands ; aucun son dans la base.
+    10: (
+        "ALTER TABLE user_preferences ADD COLUMN voice_microphone_id TEXT NOT NULL DEFAULT '' CHECK(length(voice_microphone_id) <= 256)",
+        "ALTER TABLE user_preferences ADD COLUMN voice_language TEXT NOT NULL DEFAULT 'fr' CHECK(voice_language IN ('fr', 'en'))",
+        "ALTER TABLE user_preferences ADD COLUMN voice_enabled INTEGER NOT NULL DEFAULT 1 CHECK(voice_enabled IN (0, 1))",
+        "ALTER TABLE user_preferences ADD COLUMN voice_id TEXT NOT NULL DEFAULT '' CHECK(length(voice_id) <= 128)",
+        "ALTER TABLE user_preferences ADD COLUMN voice_volume REAL NOT NULL DEFAULT 1 CHECK(voice_volume BETWEEN 0 AND 1)",
+        "ALTER TABLE user_preferences ADD COLUMN voice_rate REAL NOT NULL DEFAULT 1 CHECK(voice_rate BETWEEN 0.75 AND 1.5)",
+        "ALTER TABLE messages ADD COLUMN agent_run_id TEXT",
+        "CREATE UNIQUE INDEX idx_messages_agent_role ON messages(agent_run_id, role) WHERE agent_run_id IS NOT NULL",
+    ),
+    # v11 : la voix naturelle devient le choix explicite, sans toucher aux autres réglages.
+    11: (
+        "UPDATE user_preferences SET voice_id = 'lea_voice' WHERE id = 1",
     ),
 }
 

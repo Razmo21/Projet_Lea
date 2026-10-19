@@ -219,6 +219,8 @@ class PreferencesTests(unittest.TestCase):
         before = self.database.get_conversation(conversation_id)
         with self.database.connection() as connection:
             connection.execute("DROP TABLE user_preferences")
+            connection.execute("DROP INDEX idx_messages_agent_role")
+            connection.execute("ALTER TABLE messages DROP COLUMN agent_run_id")
             connection.execute("DELETE FROM schema_migrations WHERE version >= 8")
         self.database.initialize(recover_generations=False)
         self.assertEqual(self.database.get_conversation(conversation_id), before)

@@ -1,5 +1,36 @@
 {
   "schema_version": 3,
+  "voice": {
+    "stt": {
+      "engine": "whisper.cpp",
+      "executable": {"path": "runtime/voice/whisper.cpp/Release/whisper-cli.exe", "sha256": "19b976e037c02c0de712fa26096842d4ebafca03c976b12e8e6123215e7aab58"},
+      "model": {"path": "models/voice/ggml-small-q5_1.bin", "sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb"},
+      "threads": 4
+    },
+    "tts": {
+      "threads": 4,
+      "voices": [
+        {
+          "id": "lea_voice",
+          "label": "Léa — Voix naturelle française",
+          "engine": "pocket-tts",
+          "supports_rate": false,
+          "model": {"path": "models/voice/pocket-tts/french/model.safetensors", "sha256": "dd5fe98f5577ecfd56db9af8057cd05fe20cbc91560042aec8a56cfb01c34995"},
+          "config": {"path": "models/voice/pocket-tts/french/config.yaml", "sha256": "a6b3976608d7339532b2ee0098a42b49fd07bec36c9a4e704ad27071a0effa0a"},
+          "tokenizer": {"path": "models/voice/pocket-tts/french/tokenizer.json", "sha256": "6211acffe9cb95172f71f0051f18e26ea305b2b32ea00b331ee976551c70887f"},
+          "voice_state": {"path": "models/voice/pocket-tts/french/estelle.safetensors", "sha256": "f763800c6865a7c13e3368db7c24345d7ab22abd06c2ca40a3428d14c5357248"}
+        },
+        {
+          "id": "fr-siwis",
+          "label": "SIWIS — Voix classique",
+          "engine": "piper",
+          "supports_rate": true,
+          "model": {"path": "models/voice/fr_FR-siwis-medium.onnx", "sha256": "641d1ab097da2b81128c076810edb052b385decc8be3381814802a64a73baf99"},
+          "config": {"path": "models/voice/fr_FR-siwis-medium.onnx.json", "sha256": "39479916c2db192b5ac9764daddd0c744d83e023ad890c6976c0633ae4df8959"}
+        }
+      ]
+    }
+  },
   "default_profile_id": "general",
   "workspace_root": "L:\\IA_WORKSPACE",
   "runtime": {

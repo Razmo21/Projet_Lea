@@ -1162,8 +1162,17 @@ function Get-ManagedIdleAgentServer {
     # Inspect only the deterministic idle container and return it only when its
     # labels, image, loopback policy, and state-volume mount still prove ownership.
     $containerName = 'lea-openhands-development-idle'
-    $rawInspection = @(& docker.exe container inspect $containerName 2>$null)
-    $inspectExitCode = $LASTEXITCODE
+    # Windows PowerShell converts native stderr into an ErrorRecord under Stop.
+    # Read the exit code as intended when Docker is closed or this legacy idle
+    # container is absent; this does not classify any active run as terminated.
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $rawInspection = @(& docker.exe container inspect $containerName 2>$null)
+        $inspectExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     if ($inspectExitCode -ne 0) {
         return $null
     }

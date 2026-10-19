@@ -21,7 +21,11 @@ l’autorisation de l’étape 12.
 L’étape 12 ajoute le centre de paramètres de Léa, utilisable sans modèle ni
 FastAPI chargés, et a été validée manuellement. L’étape 13 fiabilise les runs
 interrompus et ajoute une surveillance légère avec diagramme facultatif.
-Elle est techniquement terminée, en attente de validation manuelle finale.
+Elle est validée manuellement et finalisée, confirmation apportée par le prompt 14.
+L’étape 14 ajoute le microphone, la dictée locale et la conversation vocale tour
+par tour. Elle est terminée et validée manuellement ; ses essais et limites sont
+consignés dans `docs/ETAPE_14_VALIDATION.md`. L’installation avait été autorisée
+explicitement dans la limite de 10 Go.
 
 ## Philosophie
 
@@ -55,7 +59,8 @@ On ne commence jamais une nouvelle fonctionnalité tant que l'étape actuelle n'
 10. Multi-modèles et profil Programmation — terminée.
 11. Architecture indépendante des modèles — terminée.
 12. Centre de paramètres de Léa — terminé.
-13. Programmation avancée — techniquement terminée.
+13. Programmation avancée — terminée.
+14. Microphone et conversation vocale — terminée.
 
 ## Démarrage local
 
@@ -88,6 +93,70 @@ Les mêmes opérations sont disponibles en ligne de commande :
 ```
 
 Les commandes existantes `start`, `status` et `stop` continuent de gérer la pile complète, y compris Vite lorsqu’il a été lancé par Léa.
+
+## Microphone et conversation vocale — étape 14
+
+Pour les deux modes vocaux, ouvre `http://127.0.0.1:5173` dans une **fenêtre
+Microsoft Edge externe**, pas dans le navigateur intégré de VS Code. Ce dernier
+peut enregistrer du WebM/Opus tout en échouant à le décoder (`Unable to decode
+audio data`), avant tout envoi à Whisper. Ce défaut a été reproduit avec VS Code
+1.140.0 sur des données synthétiques identiques décodées correctement dans Edge.
+Copier l’adresse dans la barre d’Edge évite l’ouverture intégrée des liens localhost.
+
+Deux commandes distinctes se trouvent sous la zone de question :
+
+- **Dicter au microphone** : premier clic pour enregistrer, second pour
+  transcrire localement. Le texte s’ajoute au brouillon sans effacer les
+  modifications ; relire puis cliquer soi-même sur Envoyer ou Lancer le run.
+  Cette dictée fonctionne avec Vite seul, même si l’IA est arrêtée.
+- **Conversation vocale** : vue dédiée masquant les échanges écrits. Cliquer
+  sur Parler à Léa, puis Terminer et envoyer ; Léa transcrit, traite la demande
+  avec le profil actif, conserve le texte et lit la réponse. Aucun microphone
+  ne se rallume automatiquement. Arrêter la lecture coupe le son, sans effacer
+  la réponse. Retour aux conversations ferme le microphone et l’audio.
+
+Le mode vocal exige un profil prêt, mais ne le démarre jamais implicitement.
+En Programmation, choisir d’abord un projet ; les demandes passent uniquement
+par OpenHands. Le résultat impose un retour explicite au diff pour accepter
+ou restaurer, jamais une décision automatique. Fermer l’audio ne signifie pas
+annuler un run déjà lancé : son bouton d’annulation reste dans l’interface classique.
+
+Paramètres conserve dans SQLite le microphone (ou défaut système), la langue
+français/anglais, la lecture activée, la voix installée, le volume (0–100 %)
+et la vitesse SIWIS (0,75–1,5×). La voix naturelle de Léa utilise honnêtement
+sa vitesse native fixe à 1× ; le curseur est désactivé pour cette voix sans
+effacer la valeur SIWIS mémorisée. « Autoriser et lister les microphones » demande
+l’autorisation puis libère immédiatement le périphérique. Aucun faux réglage
+de sensibilité. Un périphérique mémorisé mais absent est signalé.
+
+Capture limitée à 120 secondes : le dépassement annule, sans envoi. Les sons
+restent en RAM et ne sont pas conservés. Whisper Small Q5_1, Pocket TTS et
+Piper/SIWIS fonctionnent en CPU, dans un environnement séparé ; aucun changement des Qwen,
+de leur contexte ou du backend Python. Pas d’API distante, VAD, écoute permanente,
+vision ou téléchargement pendant l’utilisation normale. La lecture des blocs
+de code ou réponses très longues est annoncée comme partielle ; le texte
+complet reste dans l’historique.
+
+En cas d’erreur de capture, la console locale (`F12`) contient un diagnostic
+`[Lea microphone]` : MIME réel, tailles des morceaux, durée écoulée, finalisation,
+conteneur et étape de décodage/conversion. Aucun son, transcription ou identifiant
+de microphone n’y est journalisé ; ces diagnostics ne sont pas envoyés au serveur.
+
+Installation administrative explicite (Internet nécessaire uniquement ici) :
+
+```powershell
+.\tools\voice\install.ps1
+```
+
+Les versions CPU sont figées dans `tools/voice/requirements.txt`. Binaires dans
+`runtime/voice/`, poids dans `models/voice/`, paramètres techniques dans l’unique
+`config/models.json` ; ces gros fichiers sont ignorés par Git. Le sélecteur propose
+« Léa — Voix naturelle française » (Pocket TTS `french`, choix par défaut) et
+« SIWIS — Voix classique » (Piper). Whisper et Pocket TTS : MIT pour le code ;
+poids Pocket TTS : CC-BY 4.0 et conditions Kyutai ; Piper : GPL-3.0-or-later ;
+dépôt des voix Piper : MIT, corpus SIWIS : CC-BY 4.0.
+Provenance, attribution, mesures et procédure physique :
+[`docs/ETAPE_14_VALIDATION.md`](docs/ETAPE_14_VALIDATION.md).
 
 ## Conversations persistantes
 
@@ -168,6 +237,15 @@ Toutes ces données résident dans `data/lea.sqlite3` : les conversations dans
 `Retiens que...` dans `memories` et leur provenance facultative dans
 `memory_sources`. Une mémoire globale peut donc ne plus avoir de source après
 la suppression de sa conversation d’origine.
+
+La suppression d’une conversation est une suppression SQLite réelle et
+transactionnelle, jamais un masquage frontend. La clé étrangère efface ses
+messages et ses liens `memory_sources`; les `agent_runs` indépendants conservent
+leur audit avec un `conversation_id` mis à `NULL`, ainsi que leurs checkpoints.
+Chaque connexion active les clés étrangères et `secure_delete`. Ce dernier
+limite la conservation de contenu dans les cellules libérées, mais ne constitue
+pas une promesse d’effacement forensique du support, des sauvegardes ou des blocs SSD.
+Une maintenance hors service peut en plus effectuer un checkpoint WAL et `VACUUM`.
 
 ## Profils et projets de programmation
 
@@ -491,13 +569,14 @@ preuves réelles, simulations, limites et ménage. Le benchmark difficile est co
 
 ## Roadmap
 
-Les étapes 11 et 12 sont terminées ; l’étape 13 est techniquement terminée en
-attente de validation manuelle. Les étapes 14 à 25 ne sont pas implémentées :
+Les étapes 11 à 14 sont terminées. L’étape 14 reste limitée à la voix explicite,
+sans vision ni mains libres.
+Les étapes 15 à 25 ne sont pas encore implémentées :
 
 - Étape 11 — Architecture indépendante des modèles.
 - Étape 12 — Centre de paramètres de Léa.
-- Étape 13 — Programmation avancée (validation manuelle finale attendue).
-- Étape 14 — Entrées multimodales.
+- Étape 13 — Programmation avancée.
+- Étape 14 — Microphone et conversation vocale (terminée et validée manuellement).
 - Étape 15 — Veterinary.
 - Étape 16 — Auxiliaire.
 - Étape 17 — Génération d’images.
@@ -517,6 +596,10 @@ Projet :
 
 Workspace des projets de programmation :
 `L:\IA_WORKSPACE`
+
+Après la maintenance finale de l’étape 14, ce dossier existe et est vide. Le
+profil Programmation affiche alors un catalogue sans projet et attend une
+création/sélection explicite ; il ne crée aucun conteneur OpenHands au repos.
 
 Jeux :
 `L:\SteamLibrary`

@@ -229,6 +229,10 @@ class OpenHandsRunManager:
         profile: ModelProfile,
         frozen: FrozenProject,
         on_finished: FinishedCallback,
+        *,
+        record_conversation: bool = False,
+        conversation_id: str | None = None,
+        expected_revision: int | None = None,
     ) -> dict[str, Any]:
         """Create a persistent frozen run, checkpoint it, then hand the project to OpenHands once."""
 
@@ -241,7 +245,12 @@ class OpenHandsRunManager:
             if self._active is not None or self.database.list_incomplete_agent_runs():
                 raise OpenHandsRunError("Un run OpenHands est actif ou attend un arrêt vérifié.")
             run_id = str(uuid4())
-            self.database.create_agent_run(run_id, frozen.project_id, profile.id, normalized_task)
+            self.database.create_agent_run(
+                run_id, frozen.project_id, profile.id, normalized_task,
+                record_conversation=record_conversation, conversation_id=conversation_id,
+                expected_revision=expected_revision,
+                model_id=profile.runtime.alias,
+            )
             try:
                 checkpoint = self.checkpoints.create(run_id, frozen)
             except (CheckpointError, WorkspacePathError) as error:

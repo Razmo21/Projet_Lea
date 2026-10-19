@@ -210,6 +210,31 @@ class OpenHandsApiTests(unittest.TestCase):
                 asyncio.run(operation)
         self.assertEqual(database.get_agent_run(run_id)["state"], "running")
 
+    def test_voice_run_freezes_context_and_records_normal_history(self) -> None:
+        """Voice uses the real manager/checkpoint route and never chat or implicit Accept."""
+        origin = {'Origin': 'http://127.0.0.1:5173'}
+        self.client.post('/api/models/development/activate', headers=origin)
+        project = self.client.get('/api/projects').json()['projects'][0]['id']
+        self.client.post(f'/api/projects/{project}/activate', headers=origin)
+        body = {'task': 'Vérifie le projet', 'record_conversation': True,
+                'expected_profile_id': 'development', 'expected_project_id': project}
+        for invalid in ({'task': '<think>privé</think>'}, {'conversation_id': str(uuid4())},
+                        {'conversation_id': 'invalid', 'expected_revision': 0}):
+            self.assertEqual(self.client.post('/api/agent-runs', json={**body, **invalid}, headers=origin).status_code, 422)
+        for wrong in ({'expected_profile_id': 'general'}, {'expected_project_id': str(uuid4())}):
+            self.assertEqual(self.client.post('/api/agent-runs', json={**body, **wrong}, headers=origin).status_code, 409)
+        self.assertEqual(self.application.state.database.list_agent_runs(), [])
+        started = self.client.post('/api/agent-runs', json=body, headers=origin)
+        self.assertEqual(started.status_code, 202)
+        final = self.wait_for_final(started.json()['run_id'])
+        history = self.client.get(f"/api/conversations/{final['conversation_id']}").json()
+        self.assertEqual(len(history['messages']), 2)
+        self.assertEqual(history['messages'][0]['content'], body['task'])
+        self.assertIn('validated', history['messages'][1]['content'])
+        changes = self.client.get(f"/api/agent-runs/{final['run_id']}/changes").json()
+        self.assertEqual(changes['checkpoint']['state'], 'completed')
+        self.assertEqual(self.client.post(f"/api/conversations/{history['id']}/messages/{history['messages'][1]['id']}/regenerate", json={'expected_revision': history['revision']}, headers=origin).status_code, 400)
+
     def test_programming_run_is_persisted_and_can_be_rolled_back_through_the_api(self) -> None:
         """The UI contract starts one frozen run and exposes its post-run checkpoint without direct file tools."""
 

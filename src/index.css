@@ -426,6 +426,7 @@ button:disabled {
 /* Les alertes restent visibles même lorsque les trois barres sont masquées. */
 .resources { grid-column: 1 / -1; font-size: 0.9rem; }
 .resources:empty { display: none; }
+.voice-controls { grid-column: 1 / -1; }
 .resource-chart { padding: 12px 20px; border: 1px solid #d8dee9; border-radius: 8px; }
 .resource-chart h2 { margin: 0 0 8px; font-size: 1rem; }
 .resource-row { display: grid; grid-template-columns: 50px 140px minmax(60px, 180px); gap: 8px; align-items: center; margin: 6px 0; }

@@ -5,7 +5,7 @@ import re
 from hashlib import sha256
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -405,10 +405,90 @@ class ModelProfile(ProfileConfig):
         return self
 
 
+class VoiceFile(StrictRegistryModel):
+    """Pins a local vocal asset without accepting paths from HTTP clients."""
+
+    path: str
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("path")
+    @classmethod
+    def local_path(cls, value: str) -> str:
+        """Reject absolute, parent and drive-relative paths before any filesystem access."""
+        path = PureWindowsPath(value)
+        if not value or path.drive or path.root or ".." in path.parts or "\x00" in value:
+            raise ValueError("Chemin vocal relatif invalide.")
+        return value
+
+
+class VoiceSTT(StrictRegistryModel):
+    """The CPU adapter uses a configured executable and multilingual model."""
+
+    engine: Literal["whisper.cpp"]
+    executable: VoiceFile
+    model: VoiceFile
+    threads: int = Field(default=4, ge=1, le=8)
+
+
+class SelectableVoice(StrictRegistryModel):
+    """Common public identity for a locally installed voice."""
+
+    id: str = Field(pattern=r"^[a-z][a-z0-9_-]{1,63}$")
+    label: str = Field(min_length=1, max_length=120)
+
+
+class PiperInstalledVoice(SelectableVoice):
+    """Piper voice with its ONNX model and phonemization metadata."""
+
+    engine: Literal["piper"]
+    supports_rate: Literal[True]
+    model: VoiceFile
+    config: VoiceFile
+
+
+class PocketTTSInstalledVoice(SelectableVoice):
+    """Pocket TTS voice whose model, tokenizer and conditioning are all local."""
+
+    engine: Literal["pocket-tts"]
+    supports_rate: Literal[False]
+    model: VoiceFile
+    config: VoiceFile
+    tokenizer: VoiceFile
+    voice_state: VoiceFile
+
+
+InstalledVoice = Annotated[
+    PiperInstalledVoice | PocketTTSInstalledVoice,
+    Field(discriminator="engine"),
+]
+
+
+class VoiceTTS(StrictRegistryModel):
+    """Lists independently selectable local CPU voices without a global engine."""
+
+    threads: int = Field(default=4, ge=1, le=8)
+    voices: list[InstalledVoice] = Field(min_length=1, max_length=16)
+
+    @model_validator(mode="after")
+    def unique_voices(self) -> VoiceTTS:
+        """Avoid ambiguous preference identifiers."""
+        if len({voice.id for voice in self.voices}) != len(self.voices):
+            raise ValueError("Identifiants de voix dupliqués.")
+        return self
+
+
+class VoiceConfig(StrictRegistryModel):
+    """Separate vocal engines from chat profiles inside the one existing registry."""
+
+    stt: VoiceSTT
+    tts: VoiceTTS
+
+
 class RegistryDocument(StrictRegistryModel):
     """Valide les catalogues et toutes les références croisées du registre."""
 
     schema_version: Literal[3]
+    voice: VoiceConfig | None = None
     default_profile_id: str
     workspace_root: str
     runtime: RuntimeServerConfig

@@ -28,6 +28,12 @@ class Preferences(BaseModel):
     revision: int = Field(default=0, ge=0)
     general_reasoning: ReasoningLevel = "low"
     show_resource_chart: bool = False
+    voice_microphone_id: str = Field(default="", max_length=256, pattern=r"^[^\x00]*$")
+    voice_language: Literal["fr", "en"] = "fr"
+    voice_enabled: bool = True
+    voice_id: str = Field(default="lea_voice", max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
+    voice_volume: float = Field(default=1.0, ge=0, le=1)
+    voice_rate: float = Field(default=1.0, ge=0.75, le=1.5)
 
 
 class PreferenceChange(BaseModel):
@@ -37,6 +43,12 @@ class PreferenceChange(BaseModel):
     expected_revision: int = Field(ge=0)
     general_reasoning: ReasoningLevel | None = None
     show_resource_chart: bool | None = None
+    voice_microphone_id: str | None = Field(default=None, max_length=256, pattern=r"^[^\x00]*$")
+    voice_language: Literal["fr", "en"] | None = None
+    voice_enabled: bool | None = None
+    voice_id: str | None = Field(default=None, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
+    voice_volume: float | None = Field(default=None, ge=0, le=1)
+    voice_rate: float | None = Field(default=None, ge=0.75, le=1.5)
 
     @model_validator(mode="after")
     def require_changes(self) -> PreferenceChange:
@@ -61,15 +73,17 @@ class PreferencesStore:
         """Refuse une préférence persistée invalide au lieu de l'écraser par défaut."""
 
         row = connection.execute(
-            "SELECT revision, general_reasoning, show_resource_chart FROM user_preferences WHERE id = 1"
+            "SELECT revision, general_reasoning, show_resource_chart, voice_microphone_id, "
+            "voice_language, voice_enabled, voice_id, voice_volume, voice_rate FROM user_preferences WHERE id = 1"
         ).fetchone()
         if row is None:
             raise PreferencesError("Les préférences enregistrées sont absentes ou invalides.")
         try:
             values = dict(row)
-            if type(values["show_resource_chart"]) is not int or values["show_resource_chart"] not in (0, 1):
-                raise PreferencesError("Les préférences enregistrées sont invalides.")
-            values["show_resource_chart"] = bool(values["show_resource_chart"])
+            for key in ("show_resource_chart", "voice_enabled"):
+                if type(values[key]) is not int or values[key] not in (0, 1):
+                    raise PreferencesError("Les préférences enregistrées sont invalides.")
+                values[key] = bool(values[key])
             return Preferences.model_validate(values)
         except ValidationError as error:
             raise PreferencesError("Les préférences enregistrées sont invalides.") from error
@@ -93,12 +107,11 @@ class PreferencesStore:
                     raise PreferencesConflict(
                         "Les paramètres ont changé dans un autre onglet. Rechargez-les avant de valider."
                     )
+                # Les noms viennent exclusivement du schéma fermé Pydantic, jamais du SQL client.
+                changes = change.model_dump(exclude_unset=True, exclude={"expected_revision"})
                 connection.execute(
-                    "UPDATE user_preferences SET general_reasoning = ?, show_resource_chart = ?, revision = revision + 1 WHERE id = 1",
-                    (
-                        change.general_reasoning if change.general_reasoning is not None else current.general_reasoning,
-                        int(change.show_resource_chart if change.show_resource_chart is not None else current.show_resource_chart),
-                    ),
+                    "UPDATE user_preferences SET " + ", ".join(f"{key} = ?" for key in changes)
+                    + ", revision = revision + 1 WHERE id = 1", tuple(changes.values()),
                 )
                 saved = self._read(connection)
             # Le commit a réussi avant que l'appelant puisse annoncer l'enregistrement.

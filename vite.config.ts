@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { preferencesController } from './tools/preferences-controller'
+import { voiceController } from './tools/voice-controller'
 
 type CoreAction = 'start-core' | 'status-core' | 'stop-core'
 
@@ -257,7 +258,7 @@ export default defineConfig(async () => {
   const childProcess: { spawn: SpawnProcess } = await import(childProcessModule)
 
   return {
-    plugins: [react(), coreController(childProcess.spawn), preferencesController(childProcess.spawn)],
+    plugins: [react(), coreController(childProcess.spawn), preferencesController(childProcess.spawn), voiceController(childProcess.spawn)],
     server: {
       host: '127.0.0.1',
       port: 5173,

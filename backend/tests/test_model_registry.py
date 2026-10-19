@@ -396,6 +396,25 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertNotEqual(registry.system_prompt("general"), registry.system_prompt("development"))
         self.assertEqual(len(registry.document.models), 2)
 
+    def test_voice_engines_require_their_exact_assets_and_capabilities(self) -> None:
+        """A voice cannot masquerade as another engine or advertise a fake rate control."""
+
+        mutations = (
+            lambda data: data["voice"]["tts"]["voices"][0].__setitem__("engine", "remote-api"),
+            lambda data: data["voice"]["tts"]["voices"][0].__setitem__("supports_rate", True),
+            lambda data: data["voice"]["tts"]["voices"][0].pop("voice_state"),
+            lambda data: data["voice"]["tts"]["voices"][1].__setitem__("supports_rate", False),
+            lambda data: data["voice"]["tts"]["voices"].append(
+                copy.deepcopy(data["voice"]["tts"]["voices"][0])
+            ),
+        )
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                data = copy.deepcopy(self.document)
+                mutate(data)
+                with self.assertRaises(RegistryError):
+                    self.load(data)
+
     def test_model_configuration_cannot_remove_profile_requirements_or_grant_permissions(self) -> None:
         """Les capacités déclarées du cerveau ne sont jamais une autorisation d’outils."""
 

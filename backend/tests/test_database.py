@@ -58,6 +58,7 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
         pragmas = self.database.pragmas()
         self.assertEqual(pragmas["foreign_keys"], 1)
         self.assertEqual(pragmas["journal_mode"].lower(), "wal")
+        self.assertEqual(pragmas["secure_delete"], 1)
         self.assertEqual(pragmas["schema_version"], SCHEMA_VERSION)
 
         with self.database.connection() as connection:
@@ -147,7 +148,7 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
         finally:
             connection.close()
 
-        with self.assertRaisesRegex(RuntimeError, "incomplet"):
+        with self.assertRaisesRegex(RuntimeError, "incomplet|migration SQLite"):
             self.database.initialize()
 
     def test_stage_8_database_migrates_to_latest_schema_without_data_loss(self) -> None:
@@ -713,6 +714,61 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
                 ).fetchone()[0],
                 0,
             )
+
+    def test_successive_deletions_overwrite_markers_after_wal_checkpoint(self) -> None:
+        """Deux suppressions gardent l'autre conversation et nettoient les pages courantes."""
+
+        self.database.initialize()
+        deleted_markers = (
+            "LEA_DELETE_MARKER_ALPHA_6F5E4D3C2B1A",
+            "LEA_DELETE_MARKER_BETA_1A2B3C4D5E6F",
+        )
+        deleted_conversations: list[str] = []
+        for marker in deleted_markers:
+            conversation_id, user_id = self.database.create_pending_conversation(marker)
+            self.database.complete_generation(conversation_id, user_id, f"Réponse {marker}")
+            deleted_conversations.append(conversation_id)
+
+        survivor_marker = "LEA_SURVIVOR_MARKER_F0E1D2C3B4A5"
+        survivor_id, survivor_user_id = self.database.create_pending_conversation(
+            survivor_marker
+        )
+        self.database.complete_generation(survivor_id, survivor_user_id, "Réponse conservée")
+
+        for conversation_id in deleted_conversations:
+            revision = self.database.get_conversation(conversation_id)["revision"]
+            self.database.delete_conversation(conversation_id, revision)
+
+        with self.database.connection() as connection:
+            self.assertEqual(
+                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0],
+                0,
+            )
+            self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+            for conversation_id in deleted_conversations:
+                self.assertIsNone(
+                    connection.execute(
+                        "SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)
+                    ).fetchone()
+                )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
+                        (conversation_id,),
+                    ).fetchone()[0],
+                    0,
+                )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM conversations WHERE id = ?", (survivor_id,)
+                ).fetchone()[0],
+                1,
+            )
+
+        database_bytes = self.database_path.read_bytes()
+        for marker in deleted_markers:
+            self.assertNotIn(marker.encode("utf-8"), database_bytes)
+        self.assertIn(survivor_marker.encode("utf-8"), database_bytes)
 
     def test_assistant_response_records_its_nullable_model_identity(self) -> None:
         """Les nouveaux assistants sont attribués, les lignes legacy restent nullables."""

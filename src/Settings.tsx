@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { requestPreferences } from './preferences'
-import type { Preferences, ReasoningLevel } from './preferences'
+import { defaultVoicePreferences, requestPreferences } from './preferences'
+import type { Preferences, ReasoningLevel, VoicePreferences } from './preferences'
+import VoiceSettings from './VoiceSettings'
 
 type SettingsProps = { onBack: () => void; onSaved: (preferences: Preferences) => void }
 
@@ -10,6 +11,7 @@ export default function Settings({ onBack, onSaved }: SettingsProps) {
   const [saved, setSaved] = useState<Preferences | null>(null)
   const [draft, setDraft] = useState<ReasoningLevel>('low')
   const [chartDraft, setChartDraft] = useState(false)
+  const [voiceDraft, setVoiceDraft] = useState<VoicePreferences>(defaultVoicePreferences)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -17,7 +19,8 @@ export default function Settings({ onBack, onSaved }: SettingsProps) {
   const [reload, setReload] = useState(0)
   const savingLock = useRef(false)
   const title = useRef<HTMLHeadingElement>(null)
-  const dirty = saved !== null && (draft !== saved.general_reasoning || chartDraft !== saved.show_resource_chart)
+  const voiceFields = Object.keys(defaultVoicePreferences) as (keyof VoicePreferences)[]
+  const dirty = saved !== null && (draft !== saved.general_reasoning || chartDraft !== saved.show_resource_chart || voiceFields.some((key) => voiceDraft[key] !== saved[key]))
 
   // Place le clavier dans cette vue sans déplacer le focus à chaque changement de valeur.
   useEffect(() => { title.current?.focus() }, [])
@@ -34,6 +37,7 @@ export default function Settings({ onBack, onSaved }: SettingsProps) {
       setSaved(value)
       setDraft(value.general_reasoning)
       setChartDraft(value.show_resource_chart)
+      setVoiceDraft(Object.fromEntries(voiceFields.map((key) => [key, value[key]])) as VoicePreferences)
     }).catch((failure: unknown) => {
       if (current) setError(failure instanceof Error ? failure.message : 'Paramètres indisponibles.')
     }).finally(() => {
@@ -55,10 +59,12 @@ export default function Settings({ onBack, onSaved }: SettingsProps) {
         expected_revision: saved.revision,
         ...(draft !== saved.general_reasoning ? { general_reasoning: draft } : {}),
         ...(chartDraft !== saved.show_resource_chart ? { show_resource_chart: chartDraft } : {}),
+        ...Object.fromEntries(voiceFields.filter((key) => voiceDraft[key] !== saved[key]).map((key) => [key, voiceDraft[key]])),
       })
       setSaved(confirmed)
       setDraft(confirmed.general_reasoning)
       setChartDraft(confirmed.show_resource_chart)
+      setVoiceDraft(Object.fromEntries(voiceFields.map((key) => [key, confirmed[key]])) as VoicePreferences)
       onSaved(confirmed)
       setConfirmation('Paramètres enregistrés. L’affichage s’applique immédiatement ; le raisonnement à la prochaine réponse Général.')
     } catch (failure) {
@@ -130,6 +136,7 @@ export default function Settings({ onBack, onSaved }: SettingsProps) {
             </label>
             <p>La surveillance reste active avec tout profil IA, même diagramme masqué. Les alertes ne coupent jamais une réponse ni un run.</p>
           </fieldset>
+          <VoiceSettings value={voiceDraft} disabled={loading || saving} onChange={(value) => { setVoiceDraft(value); setConfirmation('') }} />
           <button type="submit" disabled={!dirty || loading || saving}>
             {saving ? 'Enregistrement…' : 'Valider'}
           </button>

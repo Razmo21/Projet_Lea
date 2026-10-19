@@ -47,11 +47,19 @@ Après modification :
 
 ## Étape actuelle
 
-Les étapes 10, 11 et 12 sont validées. L’étape 13 — Programmation avancée —
-est techniquement complète ; sa validation manuelle finale reste attendue.
-Voir `docs/ETAPE_13_VALIDATION.md` pour les preuves et limites.
+Les étapes 10 à 14 sont validées manuellement et terminées. L’étape 14 couvre
+uniquement le microphone, la dictée locale et la conversation vocale tour par
+tour, selon `prompts/PROMPT_ETAPE_14_CODEX.md`. Ses choix, mesures, essais et sa
+validation finale sont consignés dans `docs/ETAPE_14_VALIDATION.md`. Le banc
+d’essai Pocket TTS externe a été supprimé après vérification de l’installation
+permanente ; les deux moteurs vocaux CPU retenus restent installés dans Léa.
+La maintenance finale du 19 octobre 2026 a confirmé la suppression transactionnelle
+des conversations, activé `secure_delete` sur chaque connexion SQLite, vidé la
+mémoire de test autorisée et vérifié le workspace vide sans purger les runs ni
+les checkpoints historiques.
 
-Ne commence pas l’étape 14 sans une nouvelle autorisation explicite de l’utilisateur.
+Ne commence pas l’étape 15, la vision, le mains libres ou la détection automatique
+de fin de parole. Aucun commit ni push.
 
 ## Interdictions actuelles
 
@@ -68,12 +76,17 @@ Ne crée PAS :
 - mémoire automatique ou sémantique ;
 - une fonctionnalité reportée ou appartenant aux étapes ultérieures.
 
+L’exception d’installation des moteurs et poids STT/TTS locaux était strictement
+limitée à l’étape 14 et est désormais close. Aucun remplacement de Qwen,
+réduction de son contexte, téléchargement automatique au fonctionnement normal
+ou API vocale distante.
+
 `config/models.json` (schéma 3) est l’unique registre. Les profils portent leurs
 contrats et permissions ; `models` porte les paramètres des modèles et
 `profiles[].model_id` les associe. Ne réintroduis pas de dépendance au nom de
 Qwen dans le code métier ni de parseur concurrent dans les lanceurs.
 
-Les préférences fonctionnelles sont dans SQLite (`user_preferences`, migrations 8–9),
+Les préférences fonctionnelles sont dans SQLite (`user_preferences`, migrations 8–11),
 pas dans le registre. Le contrôleur Vite peut les lire/sauver sans FastAPI ni
 modèle chargé, via le CLI ponctuel existant. Ne déclenche pas la récupération
 des générations en ouvrant les paramètres. Général Low/High prend effet à la
@@ -90,9 +103,9 @@ Le diagramme est masqué par défaut ; les alertes restent indépendantes du ré
 Un arrêt Docker incertain reste non terminal et interdit une nouvelle activité
 modèle jusqu’à récupération vérifiée. Ne compense pas les décisions de Qwen.
 
-## Validation avant une étape suivante
+## Non-régression acquise à l’étape 14
 
-La validation manuelle doit confirmer Paramètres (ouverture, Low/High, Valider,
+La non-régression doit conserver Paramètres (ouverture, Low/High, Valider,
 erreurs lisibles, retour sans perte de brouillon), également avec l’IA arrêtée,
 puis la préférence conservée après redémarrage. Elle doit aussi confirmer le
 flux utilisateur principal : démarrer
@@ -104,5 +117,7 @@ après redémarrage, le diagramme facultatif RAM/CPU/VRAM et les erreurs lisible
 Le remplacement par configuration est documenté dans le
 README ; ne télécharge aucun nouveau modèle pour cette validation.
 
-Après cette validation, arrête-toi et attends une demande explicite avant toute
-nouvelle étape.
+La validation manuelle finale a confirmé le microphone, les deux voix et leurs
+paramètres. Conserver la distinction entre essais simulés et physiques, les
+mesures de ressources et toutes les barrières du prompt vocal. Ne commencer
+aucune étape suivante sans demande explicite.

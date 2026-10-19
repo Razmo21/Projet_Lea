@@ -120,14 +120,14 @@ export async function settings(session) {
   await session.wait(`document.querySelector('input[value="low"]')?.checked === true`)
   await session.click('input[value="high"]')
   await session.click('button', 'Valider')
-  await session.wait(`document.querySelector('.settings [role="status"]')?.textContent.includes('enregistrés')`)
+  await session.wait(`document.querySelector('.settings .status-ready')?.textContent.includes('enregistrés')`)
   await session.navigate()
   await session.wait(`document.querySelector('#page-title') !== null`)
   await session.click('button', 'Paramètres')
   await session.wait(`document.querySelector('input[value="high"]')?.checked === true`)
   await session.click('input[value="low"]')
   await session.click('button', 'Valider')
-  await session.wait(`document.querySelector('.settings [role="status"]')?.textContent.includes('enregistrés')`)
+  await session.wait(`document.querySelector('.settings .status-ready')?.textContent.includes('enregistrés')`)
   await session.click('button', 'Retour aux conversations')
   assert.equal(await session.evaluate(`document.querySelector('#settings-title') === null && !document.querySelector('.chat').hidden`), true)
   console.log('PASS Edge : ouverture, Low/High sauvegardés, rechargement, retour aux conversations.')
@@ -146,7 +146,7 @@ async function choose(session, level) {
   if (!await session.evaluate(`document.querySelector('input[value="${level}"]').checked`)) {
     await session.click(`input[value="${level}"]`)
     await session.click('button', 'Valider')
-    await session.wait(`document.querySelector('.settings [role="status"]')?.textContent.includes('enregistrés')`)
+    await session.wait(`document.querySelector('.settings .status-ready')?.textContent.includes('enregistrés')`)
   }
   await session.click('button', 'Retour aux conversations')
 }
@@ -225,7 +225,7 @@ async function errors(session) {
   await session.wait(`document.querySelector('input[value="low"]')?.checked === true`)
   await session.click('input[value="high"]')
   await session.click('button', 'Valider')
-  await session.wait(`document.querySelector('.settings [role="status"]')?.textContent.includes('enregistrés')`)
+  await session.wait(`document.querySelector('.settings .status-ready')?.textContent.includes('enregistrés')`)
   await session.click('button', 'Retour aux conversations')
   console.log('PASS Edge : conflit réel visible, relecture et nouvelle sauvegarde ; panne réseau simulée sans faux succès.')
 }

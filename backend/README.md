@@ -225,6 +225,33 @@ par token. Un ajout dépassant cette capacité est refusé atomiquement : aucun
 ancien souvenir n’est supprimé ou tronqué. Le bloc mémoire complet compte dans
 le budget de contexte avant la sélection des paires historiques.
 
+## Voix locale — étape 14
+
+La voix ne crée aucune route audio FastAPI ni second serveur. Le contrôleur Vite
+appelle `tools/voice/worker.py` à la demande ; ses adaptateurs dans `app/voice.py`
+ne connaissent ni microphone, ni SQLite, ni Internet. L’environnement vocal
+CPU sous `runtime/voice/.venv` est indépendant de celui du backend.
+
+La migration 10 conserve les préférences vocales dans `user_preferences` et
+ajoute `messages.agent_run_id` (unicité run/rôle). La migration 11 sélectionne
+`lea_voice` sur les bases existantes sans modifier les autres réglages ; les
+changements ultérieurs entre Pocket TTS et Piper restent révisionnés dans SQLite.
+La création d’un run vocal et
+de sa paire de messages est atomique ; son état terminal actualise cette même
+réponse. La récupération d’une génération ne débloque pas une conversation
+ayant un run non terminal. Les tours agentiques sont exclus du contexte chat
+et des opérations réessayer/modifier/régénérer. `expected_profile_id`,
+`expected_project_id` et la révision évitent un envoi après changement de contexte.
+
+Chaque entrée du registre vocal déclare son moteur et ses actifs épinglés.
+Pocket TTS utilise un YAML local sans URL, Piper conserve sa vitesse native et
+aucun échec d’un moteur ne provoque un repli silencieux vers l’autre.
+
+Aucun changement des permissions, preuves de validation, checkpoints ou décisions
+Accept/Rollback. Installation, limites et essais :
+[`docs/ETAPE_14_VALIDATION.md`](../docs/ETAPE_14_VALIDATION.md).
+Ne pas confondre les tests synthétiques avec l’écoute physique.
+
 ## Tests
 
 Depuis la racine :

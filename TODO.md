@@ -102,7 +102,7 @@ avec Qwen2.5-Coder. Pas de faux High par défaut ni de réduction des protection
 Le choix d’une éventuelle stratégie agentique distincte est reporté, sans bloquer
 le centre de paramètres.
 
-## ÉTAPE 13 — Programmation avancée — techniquement terminée
+## ÉTAPE 13 — Programmation avancée — terminée
 
 - [x] 13A — Audit KEEP / IMPROVE / ADD / REMOVE et périmètre confirmé.
 - [x] 13B — Timeout parent, identité du résultat, erreurs publiques sûres, arrêt confirmé.
@@ -118,16 +118,42 @@ le centre de paramètres.
 - [x] 13J — Général, mémoire, historique, OpenHands, Accept, panne/Rollback et UI réels.
 - [x] 13K — Relecture, commentaires, nettoyage ciblé et documentation.
 - [x] 13L — Suites complètes, clôture technique, aucun commit/push.
-- [ ] Validation manuelle finale : parcours habituel, Paramètres hors IA,
-  diagramme masqué/affiché, messages, run explicite et Accept/Rollback.
+- [x] Validation manuelle et finalisation confirmées par le prompt de l’étape 14.
 
 Preuves et limites : `docs/ETAPE_13_VALIDATION.md`. Qwen et les politiques
 d’outils restent inchangés. Edge agentique non livré ; Docker Desktop manuel.
-L’étape 14 reste interdite sans nouvelle demande explicite.
+La demande explicite de l’étape 14 autorise uniquement le périmètre vocal ci-dessous.
+
+## ÉTAPE 14 — Microphone et conversation vocale — terminée
+
+Le prompt 14 remplace le périmètre initial « Entrées multimodales » par la voix
+seule, sans renuméroter la suite. Accord de téléchargement obtenu (10 Go maximum),
+installation CPU isolée effectuée. Décisions D-030 à D-032 et preuves détaillées :
+`docs/ETAPE_14_VALIDATION.md`. Les essais synthétiques restent distingués de la
+validation physique finalement confirmée par l’utilisateur.
+
+- [x] 14A — Whisper Small Q5_1/Piper SIWIS CPU, accord et mesures.
+- [x] 14B — Capture explicite, bornée, annulable et nettoyée ; périphérique synthétique testé.
+- [x] 14C — Dictée dans le brouillon, sans écrasement/envoi, également cœur arrêté.
+- [x] 14D — Interface vocale dédiée sans contenu textuel des échanges.
+- [x] 14E — Échanges deux clics, sériels, sans écoute automatique ; Général et retour d’échec Programmation testés.
+- [x] 14F — TTS français local, lecture navigateur, interruption et écoute physique validées.
+- [x] 14G — Historique existant, aucun doublon ni conservation audio automatique.
+- [x] 14H — Retour vocal réel failed/Rollback ; run écrit validated/Accept ; règles inchangées.
+- [x] 14I — Préférences réelles validées, volume/High persistés après arrêt complet.
+- [x] 14J — Mesures moteurs RAM/VRAM/CPU/latence avec les deux profils, limites documentées.
+- [x] 14K — Suites et essais intégrés documentés, échecs Qwen distingués des tests réussis.
+- [x] Diagnostic du décodage : Opus refusé dans VS Code intégré, comparaison identique réussie dans Edge ; message explicite et tests de finalisation partagés.
+- [x] Pocket TTS `french` intégré comme « Léa — Voix naturelle française » par défaut ; Piper/SIWIS conservé et sélection persistante migrée.
+- [x] 14L — Bilan, nettoyage et validation physique/manuelle utilisateur terminés ; banc d’essai externe supprimé après contrôle.
+- [x] Maintenance finale — workspace vidé par l’utilisateur puis vérifié vide,
+  mémoire de test supprimée après sauvegarde, SQLite compacté et suppression
+  des conversations durcie par `secure_delete`.
+- [x] Audit final — 151 fichiers inventoriés, deux imports inutiles retirés,
+  suites complètes et cycle local réel isolé réussis sans commencer l’étape 15.
 
 ## Roadmap validée — étapes suivantes non commencées
 
-- Étape 14 — Entrées multimodales.
 - Étape 15 — Veterinary.
 - Étape 16 — Auxiliaire.
 - Étape 17 — Génération d’images.

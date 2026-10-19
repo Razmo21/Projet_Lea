@@ -362,3 +362,262 @@ endpoint de commandes, droit administrateur ou accès hôte supplémentaire à l
 Les protections existantes sont conservées ; aucune isolation noyau/réseau
 Docker absolue n’est revendiquée. Étape 14 inchangée, consacrée au multimodal,
 non commencée sans validation manuelle de 13 et nouvelle demande.
+
+## D-030 — Audit initial étape 14 : voix seule ; accord alors en attente
+
+Le prompt 14 fourni le 17 octobre 2026 confirme la validation manuelle et la
+finalisation de 13. Il remplace le périmètre initial « Entrées multimodales » par
+microphone, dictée et conversation vocale locale tour par tour. Vision, VAD de
+fin de tour, mains libres, écoute permanente et étape 15 restent hors périmètre.
+La numérotation des prochaines étapes ne change pas.
+
+### Audit initial effectué, sans installation
+
+Départ Git : `24fb63b`, étape 13 ; seul le prompt 14 utilisateur est non suivi.
+Le PC possède 33 995 571 200 octets de RAM (31,66 Gio), un i7-13700H à 20 threads
+logiques et une RTX A1000 Laptop de 6 Gio. Général, FastAPI et Vite sont déjà
+actifs ; aucun run ni génération en cours lors de la vérification. Python du
+backend : 3.12.10. Aucun moteur Whisper/Piper trouvé dans les runtimes du projet,
+les paquets du backend ou le PATH inspectés.
+
+SAPI expose David/Zira anglais ; OneCore comporte aussi Caroline, Claude et
+Nathalie en français canadien. Leur présence ne démontre pas encore leur
+disponibilité dans Edge ni leur qualité sur les réponses techniques de Léa.
+Aucun microphone n’a été activé et aucun haut-parleur n’a été testé.
+
+KEEP : React/Vite, contrôleur local, FastAPI unique, SQLite et ses révisions,
+registre central/adaptateurs, mémoire, propriétaire des processus, surveillance,
+OpenHands et checkpoints. Le refus backend du chat direct en Programmation reste
+obligatoire : une entrée vocale n’est jamais une autorisation de le contourner.
+
+Deux contraintes identifiées avant développement :
+
+- La dictée doit rester disponible lorsque le cœur est arrêté. Le contrôleur
+  Vite existant peut accueillir des opérations vocales fixes et bornées, avec
+  workers locaux à la demande, sans nouveau serveur ni chargement implicite de Qwen.
+- Les runs Programmation sont actuellement persistés séparément des messages.
+  L’intégration vocale devra les relier à l’historique existant avec corrélation
+  et absence de doublon, sans nouvelle base ni faux appel conversationnel.
+  Les contrôles du profil et du projet devront être revérifiés au serveur après
+  transcription ; Accept/Rollback resteront des décisions visuelles explicites.
+
+### Comparaison documentaire, pas un benchmark de ce PC
+
+| Option | Intérêt et coût à vérifier | Proposition |
+| --- | --- | --- |
+| whisper.cpp, Whisper Small Q5_1 multilingue | Windows/CPU, poids de 190,1 Mo, quantification, pas de pile PyTorch ; qualité française et latence locales à mesurer | Premier candidat STT |
+| whisper.cpp, Base Q5_1 multilingue | 59,7 Mo, candidat plus léger ; précision technique potentiellement moindre, à mesurer | Comparaison si Small est trop lent/lourd |
+| faster-whisper CPU int8 | CTranslate2/PyAV et dépendances supplémentaires ; performances publiées intéressantes mais obtenues sur un autre PC | Alternative non installée |
+| Piper, SIWIS medium | Voix française mono-locutrice de 63,2 Mo, ONNX CPU, package Windows disponible ; naturel et ponctuation à écouter | Premier candidat TTS, sous réserve des essais |
+| Kokoro-82M, ff_siwis | Voix française disponible ; chaîne Python officielle avec PyTorch/espeak et poids supplémentaires | Non prioritaire pour cette première intégration sobre |
+| Voix Windows OneCore françaises déjà présentes | Aucun poids à ajouter ; intégration réellement locale et qualité à vérifier | Alternative légère à évaluer, pas un fallback distant |
+
+Sources primaires consultées : [whisper.cpp](https://github.com/ggml-org/whisper.cpp),
+[faster-whisper et ses mesures CPU](https://github.com/SYSTRAN/faster-whisper),
+[Piper](https://github.com/OHF-Voice/piper1-gpl),
+[distribution Windows Piper](https://pypi.org/project/piper-tts/1.8.0/),
+[Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) et
+[ses voix](https://huggingface.co/hexgrad/Kokoro-82M/blob/main/VOICES.md).
+Les chiffres publiés par ces projets ne sont pas présentés comme des mesures Léa.
+La sélection définitive exige des essais STT français, TTS, qualité et ressources.
+
+### Fichiers proposés, aucun encore téléchargé
+
+| Ressource officielle | Taille de téléchargement | Licence déclarée |
+| --- | --- | --- |
+| whisper.cpp `b5130/whisper-bin-x64.zip` (build indiqué par la release 1.9.4) | 8 573 270 octets | MIT |
+| `ggerganov/whisper.cpp/ggml-small-q5_1.bin` | 190 085 487 octets | MIT |
+| `ggerganov/whisper.cpp/ggml-base-q5_1.bin`, seulement pour comparaison si nécessaire | 59 707 625 octets | MIT |
+| `piper_tts-1.8.0-cp39-abi3-win_amd64.whl` | 34 119 688 octets, plus dépendances CPU | GPL-3.0-or-later |
+| `rhasspy/piper-voices/fr/fr_FR/siwis/medium/fr_FR-siwis-medium.onnx` | 63 201 294 octets | Dépôt MIT ; carte de la voix : corpus CC-BY 4.0 |
+| Même chemin, `fr_FR-siwis-medium.onnx.json` et `MODEL_CARD` | 4 875 et 284 octets | Métadonnées et attribution conservées |
+
+Provenances : [archive CPU officielle](https://github.com/ggml-org/whisper.cpp/releases/tag/b5130),
+[poids Whisper](https://huggingface.co/ggerganov/whisper.cpp/tree/main),
+[voix SIWIS](https://huggingface.co/rhasspy/piper-voices/tree/main/fr/fr_FR/siwis/medium)
+et [sa carte](https://huggingface.co/rhasspy/piper-voices/blob/main/fr/fr_FR/siwis/medium/MODEL_CARD).
+Les seules lectures réseau de cet audit portent sur documentation et métadonnées,
+jamais sur des données utilisateur. Aucun accès réseau ajouté à Léa.
+
+Révisions HF relevées : Whisper `5359861c739e955e79d9a303bcbc70fb988958b1`,
+voix `c10ece1aade47bb51c153c893d14e5bf8e5b7117`. Empreintes SHA-256 publiées :
+
+- Archive CPU : `f9ec6c52a2e949b62ab51fa21d0d497958f9e41c3010c157c4e42932d5316f3c`.
+- Whisper Small : `ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb`.
+- Whisper Base : `422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898`.
+- Piper Windows : `5da9bfdb05dfe15da3536859d422e605483ffa6d2b3ec2c5b9593bae6b5aa6a4`.
+- Voix SIWIS : `641d1ab097da2b81128c076810edb052b385decc8be3381814802a64a73baf99`.
+
+Enveloppe proposée : au plus **450 Mo de téléchargements** pour ces candidats
+et les dépendances CPU requises (notamment ONNX Runtime, NumPy, pathvalidate et
+leurs dépendances résolues). Aucun extra entraînement, PyTorch, CUDA ou serveur
+Piper. Arrêt et nouvel accord si cette enveloppe ou la sélection doit changer.
+Prévoir environ 1 Gio de disque pour l’installation, à confirmer après résolution.
+Les licences des dépendances seront également consignées avant installation.
+
+Emplacements envisagés : `runtime/voice/whisper.cpp/`, environnement Python
+vocal isolé sous `runtime/voice/`, poids dans `models/voice/`. Les binaires et
+poids seront exclus de Git ; les préférences resteront dans SQLite et le
+registre technique unique sera étendu sans modifier les paramètres Qwen.
+Aucun téléchargement automatique au lancement, aucune réduction du contexte
+Programmation, aucun chargement GPU vocal prévu.
+
+### Suite après accord et validations encore nécessaires
+
+Fichiers à adapter : `src/App.tsx`, `src/Settings.tsx`, `src/preferences.ts`,
+capture/lecture et vue vocale dédiées ; `vite.config.ts` et contrôleur vocal
+local borné ; `backend/app/{model_registry,preferences,migrations,main,database}.py`,
+intégration des résultats OpenHands à l’historique, helpers STT/TTS, tests
+backend/frontend/Edge et documentation. Pas de framework de plugins ni refonte.
+
+Les mesures 14J (RAM au repos/pics STT/TTS, VRAM, CPU, chargement, transcription
+sur plusieurs durées, synthèse, début de lecture, échange complet avec les deux
+profils) restent **non réalisées**, faute de moteurs installés. Les tests de
+microphone physique, refus/déconnexion et haut-parleurs ne sont pas revendiqués.
+Une procédure manuelle complétera les essais automatisables, conformément au prompt.
+
+L’étape 14 n’est pas déclarée réussie. Le prochain point obligatoire est l’accord
+utilisateur pour cette installation ; aucun modèle vocal ne doit être téléchargé
+avant cet accord, malgré la demande générale d’exécution autonome.
+
+Base de non-régression vérifiée avant installation : 237 tests backend,
+25 frontend, build, 6 cas d’identité du lanceur et analyse AST des 11 scripts
+PowerShell réussis ; `git diff --check` passe. Commandes :
+
+```powershell
+.\backend\.venv\Scripts\python.exe -B -m unittest discover -s backend/tests -q
+npm run test:frontend
+npm run build
+.\tests\launcher-process-record.ps1
+git diff --check
+git status --short
+```
+
+Ces tests portent sur l’existant, pas sur une implémentation vocale. Le démarrage
+complet n’est pas rejoué : la session utilisateur est déjà active et l’API confirme
+Général `ready`. Aucun processus de test persistant ajouté. Les trois fichiers
+de build régénérables de cet audit sont nettoyés ; les données et checkpoints
+ne sont pas modifiés. Seuls AGENTS, README, TODO, CHANGELOG et cette décision
+sont modifiés ; le prompt utilisateur non suivi est conservé intact.
+
+## D-031 — Voix locale CPU autorisée et intégrée, sans nouveau serveur
+
+L’utilisateur a ensuite autorisé les téléchargements nécessaires jusqu’à 10 Go.
+L’état « en attente » de D-030 est historique : Whisper Small Q5_1 et
+Piper/SIWIS sont maintenant installés dans les emplacements annoncés, avec
+versions figées, empreintes vérifiées et dépendances vocales isolées. Aucun
+changement des modèles conversationnels, du contexte Programmation ou du
+runtime llama.cpp. Base/Kokoro/faster-whisper ne sont pas installés : les mesures
+du premier choix ne justifient pas ces dépendances supplémentaires.
+
+Les opérations fixes status/transcribe/speak réutilisent le serveur Vite local.
+Un worker ponctuel sous job Windows lit une seule requête stdio, puis se termine ;
+la fermeture du canal propriétaire annule ses enfants. Aucun moteur vocal ne
+réside au repos. Capture, WAV et synthèse restent en mémoire. Les versions CPU
+limitent la concurrence à quatre threads et n’ajoutent pas de charge GPU voulue.
+La surveillance générale de l’étape 13 reste unique et inchangée.
+
+La dictée ajoute au brouillon sans envoyer. La vue vocale masque les messages
+et déclenche le traitement au second clic, jamais par silence. Général emploie
+la conversation existante ; les profils agentiques passent par le gestionnaire
+OpenHands existant. La migration 10 relie une paire de messages au run dans la
+même transaction, puis actualise la réponse terminale sans doublon. Ces tours
+ne peuvent pas être rejoués par les actions du chat. Le serveur revérifie
+profil, projet et révision ; le résultat exige une transition vers le diff,
+sans Accept ni Rollback implicite. Une fermeture audio n’annule pas en secret
+un run déjà autorisé.
+
+Les préférences restent révisionnées dans SQLite : périphérique, français/anglais,
+lecture activée, voix réellement installée, volume et vitesse. Aucun gain fictif,
+API vocale distante, accès Web agentique, VAD ou écoute automatique ajouté.
+Les lectures privées ne sont pas journalisées. Les WAV synthétiques sont des
+fixtures de test explicitement produites, pas des enregistrements utilisateur.
+
+Mesures, licences, preuves réelles/simulées, limites de transcription et procédure
+microphone/haut-parleurs sont détaillées dans `ETAPE_14_VALIDATION.md`. La validation
+physique et l’accord final de l’utilisateur restent nécessaires avant toute suite.
+
+## D-032 — Pocket TTS français devient la voix de Léa, Piper reste indépendant
+
+Après essai isolé et écoute humaine du texte de présentation contenant « Stan »,
+l’utilisateur a retenu Pocket TTS 3.3.0, variante légère `french`, avec l’état
+vocal officiel techniquement nommé `estelle`. L’interface n’expose que
+« Léa — Voix naturelle française ». Le nom technique original reste uniquement
+dans le fichier requis par le moteur et dans les attributions ; il n’est ni
+renommé ni dissimulé dans les métadonnées de provenance.
+
+Les poids, le tokenizer et l’état vocal sont copiés comme fichiers réguliers sous
+`models/voice/pocket-tts/french/`, avec SHA-256 épinglés. Le YAML de production
+ne contient aucune URL ni chemin expérimental. L’environnement ponctuel existant
+`runtime/voice/.venv` reçoit les dépendances CPU ; aucun service, API distante,
+CUDA ou worker résident n’est ajouté. L’exécution force le mode Hugging Face
+hors ligne et conserve audio et fragments en mémoire jusqu’à la réponse WAV.
+
+Le registre décrit désormais chaque voix par son propre moteur. Piper/SIWIS
+reste disponible sous « SIWIS — Voix classique » et continue d’appliquer la
+vitesse 0,75–1,5×. Pocket TTS ne fournit pas ce contrôle : sa vitesse reste à
+1×, le curseur est désactivé et une requête directe incompatible est refusée.
+Le volume Web Audio s’applique aux deux. Aucun moteur ne sert de repli silencieux
+à l’autre. La migration SQLite 11 choisit `lea_voice` une fois sur les bases
+existantes sans changer le microphone, la langue, le volume, la vitesse, Low/High
+ou le diagramme ; un choix ultérieur de SIWIS persiste normalement.
+
+Pocket TTS produit des fragments progressivement en interne, mais le protocole
+Vite/stdio et Web Audio conserve un WAV complet. Diffuser ces fragments jusqu’au
+navigateur imposerait un nouveau protocole et un cycle d’annulation plus complexe ;
+le chargement et la synthèse mesurés étant déjà courts, cette complexité n’est
+pas retenue. Fermer ou interrompre continue de tuer le worker ponctuel via le job
+Windows et de libérer le modèle. Les protections de dictée, historique, mémoire,
+profils et OpenHands restent inchangées.
+
+Provenance : code Pocket TTS sous MIT ; poids `kyutai/pocket-tts` sous CC-BY 4.0
+et conditions d’utilisation acceptées par l’utilisateur ; état vocal officiel
+issu des ressources Kyutai, dont la source Estelle est indiquée CC0 dans leur
+catalogue. Les révisions, empreintes et validations sont consignées dans
+`ETAPE_14_VALIDATION.md`. Après validation physique par l’utilisateur, l’absence
+de dépendance a été revérifiée et le dossier expérimental a été supprimé ; les
+ressources permanentes et leurs attributions restent inchangées.
+
+## D-033 — Suppression réelle des conversations et nettoyage SQLite borné
+
+La suppression frontend reste la route `DELETE` existante avec révision
+optimiste. Le backend exécute le `DELETE FROM conversations` dans une transaction
+`BEGIN IMMEDIATE`; `messages` et `memory_sources` suivent par leurs clés
+étrangères `ON DELETE CASCADE`, activées sur chaque connexion. Les souvenirs
+explicitement créés par `Retiens que` restent globaux et ne sont effacés que par
+`Oublie que` ou par une maintenance expressément autorisée. Il n’existe ni FTS,
+résumé dérivé, pièce jointe ni table de suppression logique. Les runs techniques
+restent indépendants : leur lien conversation devient `NULL`, leurs tâches,
+preuves et checkpoints ne sont pas purgés avec l’historique utilisateur.
+
+Le contenu observé après une ancienne suppression ne provenait d’aucune ligne
+orpheline : l’audit de la base active comptait zéro violation logique et zéro
+violation de clé étrangère. La cause sous contrôle était la politique physique
+SQLite : `secure_delete` valait 0, donc une ligne supprimée pouvait rester dans
+une page libérée jusqu’à réécriture ou compaction. Chaque connexion fixe désormais
+`PRAGMA secure_delete=ON`. Un test HTTP supprime deux conversations successives,
+conserve une troisième et vérifie l’absence après redémarrage ; un test SQLite
+contrôle les tables, les relations et les marqueurs bruts après checkpoint WAL.
+
+Avant la maintenance active, le mécanisme officiel `sqlite3_backup` a produit
+`L:\Lea_Backups\lea-before-final-cleanup-20261019.sqlite3`, vérifié lisible et
+intègre. Léa étant arrêtée, l’unique mémoire de test autorisée a été effacée,
+le WAL checkpointé, puis la base reconstruite par `VACUUM`. L’unique conversation
+active et ses deux messages, les préférences, 159 runs, 159 checkpoints et leurs
+2 687 entrées sont inchangés. Le catalogue courant a supprimé ses 13 entrées de
+projets désormais absents du workspace, sans modifier leurs audits historiques.
+La base passe de 1 683 456 à 1 581 056 octets,
+`integrity_check=ok`, zéro violation étrangère et aucun WAL/SHM restant après
+fermeture. Cela nettoie la base active, pas les blocs SSD ni la sauvegarde externe,
+qui peut encore contenir les données antérieures et doit rester hors Git.
+
+`L:\IA_WORKSPACE` avait déjà été vidé par l’utilisateur pendant la phase B. La
+maintenance l’a seulement vérifié présent, ordinaire et vide, sans recréer de
+fixture. Le catalogue Programmation vide est accepté par les tests et le cycle
+réel Général. Un audit Docker pré-commit distinct a ensuite relié 155 conteneurs
+arrêtés à des runs terminaux de la base active et à leurs checkpoints présents ;
+ils ont été supprimés avec l’ancien serveur idle, sans force, volume, image ni
+prune. Neuf conteneurs de runs isolés absents de la base active et trois anciens
+serveurs SDK encore référencés par leurs états de bootstrap restent arrêtés, car
+leur utilité est ambiguë. Aucun conteneur Léa actif, serveur OpenHands, worker
+vocal ou processus modèle ne subsiste à la fin.

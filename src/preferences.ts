@@ -5,13 +5,27 @@ export type Preferences = {
   general_reasoning: ReasoningLevel
   general_reasoning_available: boolean
   show_resource_chart: boolean
+} & VoicePreferences
+
+export type VoicePreferences = {
+  voice_microphone_id: string
+  voice_language: 'fr' | 'en'
+  voice_enabled: boolean
+  voice_id: string
+  voice_volume: number
+  voice_rate: number
+}
+
+export const defaultVoicePreferences: VoicePreferences = {
+  voice_microphone_id: '', voice_language: 'fr', voice_enabled: true,
+  voice_id: 'lea_voice', voice_volume: 1, voice_rate: 1,
 }
 
 export type PreferenceChange = {
   expected_revision: number
   general_reasoning?: ReasoningLevel
   show_resource_chart?: boolean
-}
+} & Partial<VoicePreferences>
 
 // Une réponse HTTP réussie ne suffit pas : la valeur persistée doit être exploitable.
 export function isPreferences(value: unknown): value is Preferences {
@@ -20,6 +34,11 @@ export function isPreferences(value: unknown): value is Preferences {
   return Number.isSafeInteger(data.revision) && Number(data.revision) >= 0 &&
     typeof data.general_reasoning_available === 'boolean' &&
     typeof data.show_resource_chart === 'boolean' &&
+    typeof data.voice_microphone_id === 'string' && data.voice_microphone_id.length <= 256 &&
+    (data.voice_language === 'fr' || data.voice_language === 'en') &&
+    typeof data.voice_enabled === 'boolean' && typeof data.voice_id === 'string' && /^[a-zA-Z0-9_-]+$/.test(data.voice_id) &&
+    typeof data.voice_volume === 'number' && data.voice_volume >= 0 && data.voice_volume <= 1 &&
+    typeof data.voice_rate === 'number' && data.voice_rate >= 0.75 && data.voice_rate <= 1.5 &&
     (data.general_reasoning === 'low' || data.general_reasoning === 'high')
 }
 
@@ -54,7 +73,11 @@ export async function requestPreferences(
   if (change && (
     data.revision !== change.expected_revision + 1 ||
     (change.general_reasoning !== undefined && (!data.general_reasoning_available || data.general_reasoning !== change.general_reasoning)) ||
-    (change.show_resource_chart !== undefined && data.show_resource_chart !== change.show_resource_chart)
+    (change.show_resource_chart !== undefined && data.show_resource_chart !== change.show_resource_chart) ||
+    Object.keys(defaultVoicePreferences).some((key) => {
+      const field = key as keyof VoicePreferences
+      return change[field] !== undefined && data[field] !== change[field]
+    })
   )) {
     throw new Error('La confirmation ne correspond pas au choix envoyé. Rechargez les paramètres.')
   }
