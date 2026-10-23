@@ -140,11 +140,12 @@ class OpenHandsConfig(StrictRegistryModel):
 
 
 class GenerationConfig(StrictRegistryModel):
-    """Centralise les budgets de sortie et de gabarit d’un profil."""
+    """Centralise les budgets et la durée maximale d’une génération."""
 
     max_tokens: int = Field(gt=0, le=8192)
     system_template_reserve_tokens: int = Field(gt=0, le=8192)
     max_user_message_bytes: int = Field(gt=0, le=131072)
+    timeout_seconds: int = Field(ge=30, le=600)
 
 
 class ProfileRuntimeConfig(StrictRegistryModel):
@@ -272,7 +273,7 @@ class ModelDefinition(StrictRegistryModel):
     capabilities: list[Literal["chat", "tool_calling"]]
     append_no_think: bool
     # Capacité déclarée après essai réel, jamais inférée du nom commercial du GGUF.
-    reasoning_control: Literal["none", "think_directives"] = "none"
+    reasoning_control: Literal["none", "think_directives", "chat_template_kwargs"] = "none"
     chat_template_path: str | None = None
     expected_chat_template_sha256: str | None = Field(
         default=None, pattern=r"^[0-9a-f]{64}$"
@@ -301,6 +302,10 @@ class ModelDefinition(StrictRegistryModel):
             raise ValueError("Le modèle doit interdire à --fit de réduire son contexte.")
         if not self.runtime.fit and self.runtime.fit_context_min_tokens != 0:
             raise ValueError("fit_context_min_tokens exige --fit.")
+        if self.reasoning_control == "chat_template_kwargs" and not self.runtime.jinja:
+            raise ValueError("Le contrôle de raisonnement par template exige Jinja.")
+        if self.reasoning_control == "chat_template_kwargs" and self.append_no_think:
+            raise ValueError("append_no_think est réservé aux directives textuelles.")
         return self
 
 
@@ -322,6 +327,7 @@ class ProfileConfig(StrictRegistryModel):
     tools: list[str]
     workspace_permission: str
     resource_policy: str
+    reasoning_preference: Literal["general_reasoning", "veterinary_reasoning"] | None
 
     @field_validator(
         "display_name", "model_id", "role", "agent_engine", "orchestrator",
@@ -509,7 +515,7 @@ class RegistryDocument(StrictRegistryModel):
         profile_ids = [profile.id for profile in self.profiles]
         if len(profile_ids) != len(set(profile_ids)):
             raise ValueError("Les identifiants de profils doivent être uniques.")
-        required_profile_ids = {"general", "development"}
+        required_profile_ids = {"general", "development", "veterinary"}
         missing_profile_ids = required_profile_ids - set(profile_ids)
         if missing_profile_ids:
             raise ValueError(
@@ -562,6 +568,10 @@ class RegistryDocument(StrictRegistryModel):
                 raise ValueError(f"Permission workspace inconnue pour {profile.id}.")
             if profile.resource_policy not in self.resource_policies:
                 raise ValueError(f"Politique de ressources inconnue pour {profile.id}.")
+            if (profile.model.reasoning_control == "none") != (profile.reasoning_preference is None):
+                raise ValueError(
+                    f"Le réglage de raisonnement du profil {profile.id} diverge de son modèle."
+                )
             resource_policy = self.resource_policies[profile.resource_policy]
             if profile.runtime.threads > resource_policy.max_threads:
                 raise ValueError(
@@ -583,8 +593,19 @@ class RegistryDocument(StrictRegistryModel):
                     )
         development = next(profile for profile in self.profiles if profile.id == "development")
         general = next(profile for profile in self.profiles if profile.id == "general")
+        veterinary = next(profile for profile in self.profiles if profile.id == "veterinary")
+        if general.reasoning_preference not in (None, "general_reasoning"):
+            raise ValueError("Général doit conserver sa préférence de raisonnement dédiée.")
+        if veterinary.reasoning_preference not in (None, "veterinary_reasoning"):
+            raise ValueError("Vétérinaire doit conserver sa préférence de raisonnement dédiée.")
         if general.agent_engine != "direct" or general.tools or general.workspace_permission != "none":
             raise ValueError("Le profil Général reste conversationnel et sans outils workspace.")
+        if (
+            veterinary.agent_engine != "direct"
+            or veterinary.tools
+            or veterinary.workspace_permission != "none"
+        ):
+            raise ValueError("Le profil Vétérinaire reste conversationnel et sans outils workspace.")
         if any(self.workspace_permissions["none"].model_dump().values()):
             raise ValueError("La permission none ne peut pas accorder un accès workspace.")
         if development.workspace_permission != "ia_workspace_project":

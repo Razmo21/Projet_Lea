@@ -1,5 +1,35 @@
 # Changelog — Projet Léa
 
+## Étape 15 — Profil Vétérinaire et contrats — 22 octobre 2026
+
+- Troisième profil local `veterinary` sur Qwen3.5-9B Q4_K_M : empreinte et
+  taille contrôlées, contexte 16 384, un slot, KV Q8_0, budgets et politique de
+  ressources dédiés, sans outil, workspace, Web, vision ou RAG.
+- Cycle de vie généralisé aux profils directs : commutation atomique
+  Général/Vétérinaire, transitions OpenHands et restauration du profil précédent
+  vérifié. Docker et l'interface OpenHands restent manuels ; aucun serveur idle.
+- Migration SQLite 12 et Paramètres : Low/High Vétérinaire indépendant de
+  Général, High initial, effet à la requête suivante par le mécanisme natif
+  `chat_template_kwargs.enable_thinking`. Programmation reste sans faux réglage.
+- Historique, suppression de conversations, mémoire explicite, surveillance et
+  voix partagés avec les chemins existants ; aucun audio privé ni mémoire de
+  benchmark persisté dans la base personnelle.
+- Contrat commun audité puis restauré intégralement lorsque sa simplification a
+  supprimé des formulations de sécurité protégées ; Général, mémoire et
+  Vétérinaire clarifiés. Scénarios reproductibles et corrigé vétérinaire
+  indépendant consignés dans `docs/ETAPE_15_VALIDATION.md`.
+- Tentative de simplification du contrat Programmation annulée : deux régressions
+  `file_editor` réelles contre une réussite de référence. Détection de boucle,
+  validation, checkpoint et rollback fonctionnent sans heuristique spécifique.
+- Qwen2.5-Coder-14B ignoré et non référencé supprimé sur demande, soit
+  10 508 873 152 octets ; Qwen2.5-Coder-7B et tous les modèles permanents utiles
+  conservés hors Git.
+- Clôture : 261 tests backend et 41 tests frontend réussis, build Vite vert,
+  registre complet et 15 scripts PowerShell validés. Les caches, le build et le
+  workspace isolé ont été retirés ; les runs et checkpoints restent conservés.
+- Étape 16 Web non commencée, vision suspendue, Auxiliaire supprimé de la roadmap.
+- Aucun commit ni push ; validation manuelle de l'étape 15 encore requise.
+
 ## Étape 14 — Maintenance finale avant commit — 19 octobre 2026
 
 - Audit de 151 fichiers : aucun module de production obsolète démontré ; deux

@@ -22,11 +22,12 @@ class PreferencesConflict(PreferencesError):
 
 
 class Preferences(BaseModel):
-    """Snapshot validé ; le choix absent à la création est toujours Low."""
+    """Snapshot validé avec les valeurs initiales propres à chaque profil."""
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
     revision: int = Field(default=0, ge=0)
     general_reasoning: ReasoningLevel = "low"
+    veterinary_reasoning: ReasoningLevel = "high"
     show_resource_chart: bool = False
     voice_microphone_id: str = Field(default="", max_length=256, pattern=r"^[^\x00]*$")
     voice_language: Literal["fr", "en"] = "fr"
@@ -42,6 +43,7 @@ class PreferenceChange(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     expected_revision: int = Field(ge=0)
     general_reasoning: ReasoningLevel | None = None
+    veterinary_reasoning: ReasoningLevel | None = None
     show_resource_chart: bool | None = None
     voice_microphone_id: str | None = Field(default=None, max_length=256, pattern=r"^[^\x00]*$")
     voice_language: Literal["fr", "en"] | None = None
@@ -73,7 +75,7 @@ class PreferencesStore:
         """Refuse une préférence persistée invalide au lieu de l'écraser par défaut."""
 
         row = connection.execute(
-            "SELECT revision, general_reasoning, show_resource_chart, voice_microphone_id, "
+            "SELECT revision, general_reasoning, veterinary_reasoning, show_resource_chart, voice_microphone_id, "
             "voice_language, voice_enabled, voice_id, voice_volume, voice_rate FROM user_preferences WHERE id = 1"
         ).fetchone()
         if row is None:

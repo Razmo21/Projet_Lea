@@ -164,9 +164,10 @@ class LlamaCppAdapter:
         self,
         messages: list[dict[str, str]],
         *,
+        high_reasoning: bool = False,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> str:
-        """Échange au format OpenAI local ; la publication et son filtrage restent à Léa."""
+        """Échange au format OpenAI local avec le contrôle déclaré par le modèle."""
 
         payload: dict[str, Any] = {
             "model": self.profile.runtime.alias,
@@ -176,8 +177,15 @@ class LlamaCppAdapter:
         }
         if self.profile.model.stop_sequences:
             payload["stop"] = list(self.profile.model.stop_sequences)
+        if self.profile.model.reasoning_control == "chat_template_kwargs":
+            # Qwen3.5 pilote réellement ce mode dans son template GGUF ; les
+            # directives textuelles Qwen3 ne sont pas compatibles avec ce contrat.
+            payload["chat_template_kwargs"] = {"enable_thinking": high_reasoning}
         try:
-            async with httpx.AsyncClient(timeout=120.0, transport=transport) as client:
+            async with httpx.AsyncClient(
+                timeout=float(self.profile.generation.timeout_seconds),
+                transport=transport,
+            ) as client:
                 response = await client.post(self.chat_url, json=payload)
                 response.raise_for_status()
         except httpx.RequestError as error:

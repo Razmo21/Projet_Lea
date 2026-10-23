@@ -364,16 +364,20 @@ class HttpModelGateway:
         self,
         registry: LoadedModelRegistry = MODEL_REGISTRY,
         profile_id: str = DEFAULT_PROFILE_ID,
+        reasoning_level: ReasoningLevel = "low",
     ) -> None:
         """Fige l’adaptateur du profil actif sans charger de modèle supplémentaire."""
 
         self.adapter = inference_adapter(registry, profile_id)
+        self.high_reasoning = reasoning_level == "high"
         self.url = self.adapter.chat_url
 
     async def generate(self, messages: list[dict[str, str]]) -> str:
         """Filtre toute réponse avant qu’elle puisse atteindre SQLite ou l’interface."""
 
-        return filter_final_answer(await self.adapter.generate(messages))
+        return filter_final_answer(
+            await self.adapter.generate(messages, high_reasoning=self.high_reasoning)
+        )
 
 
 class StrictRequest(BaseModel):
@@ -592,21 +596,32 @@ def _database(request: Request) -> Database:
 def _reasoning_level(request: Request, profile: ModelProfile) -> ReasoningLevel:
     """Fige le choix avant génération ; une sauvegarde ultérieure ne modifie pas la requête."""
 
-    if profile.id != "general" or profile.model.reasoning_control == "none":
+    if profile.reasoning_preference is None or profile.model.reasoning_control == "none":
         return "low"
     try:
-        return request.app.state.preferences.read().general_reasoning
+        return getattr(
+            request.app.state.preferences.read(),
+            profile.reasoning_preference,
+        )
     except PreferencesError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
 
-def _gateway(request: Request, profile_id: str) -> ModelGateway:
+def _gateway(
+    request: Request,
+    profile_id: str,
+    reasoning_level: ReasoningLevel = "low",
+) -> ModelGateway:
     """Retourne le faux gateway de test ou un client lié au profil figé."""
 
     fixed_gateway = request.app.state.fixed_model_gateway
     if fixed_gateway is not None:
         return fixed_gateway
-    return HttpModelGateway(request.app.state.model_registry, profile_id)
+    return HttpModelGateway(
+        request.app.state.model_registry,
+        profile_id,
+        reasoning_level,
+    )
 
 
 def _locks(request: Request) -> ConversationLockRegistry:
@@ -1027,7 +1042,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="Ce profil de modèle est désactivé.")
 
         runtime = _runtime(request)
-        await runtime.begin_switch(profile_id)
+        previous_profile_id = await runtime.begin_switch(profile_id)
         monitor = request.app.state.resource_monitor
         if request.app.state.fixed_model_gateway is None:
             monitor.set_active(
@@ -1037,7 +1052,10 @@ def create_app(
         succeeded = False
         rolled_back = False
         try:
-            active_profile_id = await request.app.state.model_controller.activate(profile_id)
+            active_profile_id = await request.app.state.model_controller.activate(
+                profile_id,
+                previous_profile_id,
+            )
             succeeded = active_profile_id == profile_id
             rolled_back = not succeeded
         except ModelControllerError as error:
@@ -1337,7 +1355,8 @@ def create_app(
                     )
                 return database_instance.get_conversation(conversation_id)
 
-            gateway = _gateway(request, profile_id)
+            reasoning_level = _reasoning_level(request, profile)
+            gateway = _gateway(request, profile_id, reasoning_level)
             if body.conversation_id is None:
                 async with _memory_lock(request):
                     memory_contents = [
@@ -1351,7 +1370,7 @@ def create_app(
                             memory_contents,
                             profile,
                             request.app.state.model_registry,
-                            _reasoning_level(request, profile),
+                            reasoning_level,
                         )
                     except (MemoryCapacityError, ValueError) as error:
                         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -1385,7 +1404,7 @@ def create_app(
                                 memory_contents,
                                 profile,
                                 request.app.state.model_registry,
-                                _reasoning_level(request, profile),
+                                reasoning_level,
                             )
                         except (MemoryCapacityError, ValueError) as error:
                             raise HTTPException(status_code=422, detail=str(error)) from error
@@ -1469,6 +1488,7 @@ def create_app(
         profile = request.app.state.model_registry.profile(profile_id)
         lock: asyncio.Lock | None = None
         try:
+            reasoning_level = _reasoning_level(request, profile)
             lock = _acquire_generation_lock(lock_registry, conversation_key)
             await lock.acquire()
             async with _memory_lock(request):
@@ -1484,7 +1504,7 @@ def create_app(
                         memory_contents,
                         profile,
                         request.app.state.model_registry,
-                        _reasoning_level(request, profile),
+                        reasoning_level,
                     )
                 except (MemoryCapacityError, ValueError) as error:
                     raise HTTPException(status_code=422, detail=str(error)) from error
@@ -1498,7 +1518,7 @@ def create_app(
             raise
         return await _generate_response(
             _database(request),
-            _gateway(request, profile_id),
+            _gateway(request, profile_id, reasoning_level),
             lock_registry,
             conversation_key,
             user_message_id,
@@ -1527,6 +1547,7 @@ def create_app(
         lock: asyncio.Lock | None = None
         try:
             profile = request.app.state.model_registry.profile(profile_id)
+            reasoning_level = _reasoning_level(request, profile)
             try:
                 content = normalize_user_message(body.content, profile)
                 edited_memory_command = parse_memory_command(content)
@@ -1554,7 +1575,7 @@ def create_app(
                         memory_contents,
                         profile,
                         request.app.state.model_registry,
-                        _reasoning_level(request, profile),
+                        reasoning_level,
                     )
                 except (MemoryCapacityError, ValueError) as error:
                     raise HTTPException(status_code=422, detail=str(error)) from error
@@ -1571,7 +1592,7 @@ def create_app(
             raise
         return await _generate_response(
             _database(request),
-            _gateway(request, profile_id),
+            _gateway(request, profile_id, reasoning_level),
             lock_registry,
             conversation_key,
             user_message_id,
@@ -1600,6 +1621,7 @@ def create_app(
         profile = request.app.state.model_registry.profile(profile_id)
         lock: asyncio.Lock | None = None
         try:
+            reasoning_level = _reasoning_level(request, profile)
             lock = _acquire_generation_lock(lock_registry, conversation_key)
             await lock.acquire()
             async with _memory_lock(request):
@@ -1615,7 +1637,7 @@ def create_app(
                         memory_contents,
                         profile,
                         request.app.state.model_registry,
-                        _reasoning_level(request, profile),
+                        reasoning_level,
                     )
                 except (MemoryCapacityError, ValueError) as error:
                     raise HTTPException(status_code=422, detail=str(error)) from error
@@ -1629,7 +1651,7 @@ def create_app(
             raise
         return await _generate_response(
             _database(request),
-            _gateway(request, profile_id),
+            _gateway(request, profile_id, reasoning_level),
             lock_registry,
             conversation_key,
             user_message_id,

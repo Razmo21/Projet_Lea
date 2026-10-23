@@ -26,6 +26,10 @@ L’étape 14 ajoute le microphone, la dictée locale et la conversation vocale 
 par tour. Elle est terminée et validée manuellement ; ses essais et limites sont
 consignés dans `docs/ETAPE_14_VALIDATION.md`. L’installation avait été autorisée
 explicitement dans la limite de 10 Go.
+L’étape 15 ajoute le profil Vétérinaire local et compare les contrats de réponse
+avant de conserver leurs optimisations. L'intégration technique est prête ; ses
+limites scientifiques et la procédure de validation manuelle sont consignées
+dans `docs/ETAPE_15_VALIDATION.md`.
 
 ## Philosophie
 
@@ -61,6 +65,7 @@ On ne commence jamais une nouvelle fonctionnalité tant que l'étape actuelle n'
 12. Centre de paramètres de Léa — terminé.
 13. Programmation avancée — terminée.
 14. Microphone et conversation vocale — terminée.
+15. Profil Vétérinaire et optimisation des contrats — validation manuelle requise.
 
 ## Démarrage local
 
@@ -213,7 +218,7 @@ RAG ou embeddings à cette étape. Pour oublier un fait, il faut employer
 `Oublie que ...` avec le même fait après normalisation déterministe.
 
 Le profil Général utilise une fenêtre `-c 8192` avec un seul slot. Le backend réserve
-1 024 tokens pour la génération (réflexion éventuelle comprise) et 512 pour les instructions et le
+1 024 tokens pour la génération (réflexion éventuelle comprise) et 1 024 pour les instructions et le
 template, puis applique une borne conservatrice d’un octet UTF-8 par token.
 La directive `/no_think` (Low) ou `/think` (High) existe uniquement dans la copie interne envoyée au
 modèle : ni elle, ni les balises de pensée, ni une pensée interne ne sont
@@ -247,14 +252,14 @@ limite la conservation de contenu dans les cellules libérées, mais ne constitu
 pas une promesse d’effacement forensique du support, des sauvegardes ou des blocs SSD.
 Une maintenance hors service peut en plus effectuer un checkpoint WAL et `VACUUM`.
 
-## Profils et projets de programmation
+## Profils locaux et projets de programmation
 
-Le registre `config/models.json` décrit les profils Général et Programmation,
+Le registre `config/models.json` décrit Général, Programmation et Vétérinaire,
 leurs modèles, prompts, capacités, moteurs et limites : il est la source de
 vérité de cette configuration. Général reste toujours le profil du prochain
-démarrage complet. L'interface peut charger Programmation, revenir à Général et
-poursuivre la même conversation ; chaque réponse assistant garde le profil et
-l'alias du modèle qui l'a produite.
+démarrage complet. L'interface peut changer de profil et poursuivre la même
+conversation ; chaque réponse assistant garde le profil et l'alias du modèle
+qui l'a produite. Un seul modèle est chargé à la fois.
 
 La configuration Programmation validée est strictement locale :
 
@@ -305,6 +310,31 @@ Limitation connue du modèle actuel :
 un futur GLM-5.3-Flash avec Qwen ; sa réussite complète avec Qwen n'est pas un
 critère de validation de cette étape.
 
+### Profil Vétérinaire — étape 15
+
+Le profil Vétérinaire utilise localement `Qwen3.5-9B Q4_K_M`, servi par la même
+installation llama.cpp que Général. Le fichier est
+`models/veterinary/Qwen3.5-9B-Q4_K_M.gguf`; le registre en vérifie la taille et
+le SHA-256 avant tout lancement. Sa fenêtre Léa est de 16 384 tokens, avec un
+seul slot, KV Q8_0 et une sortie maximale de 4 096 tokens. Il n'a ni outil, ni
+workspace, ni Web, ni vision et ne démarre jamais Docker.
+
+Ses deux vocations sont de même importance : apprentissage vétérinaire et
+raisonnement clinique théorique. Le contrat demande l'espèce, distingue données,
+hypothèses et informations manquantes, signale les urgences et refuse d'inventer
+une source, une maladie ou une posologie. Il ne remplace pas un vétérinaire ni
+une référence scientifique actualisée. Les erreurs importantes observées lors
+des essais — ambiguïté de « abattue », surinterprétation d'une kaliémie,
+confusion entre classes d'opioïdes et catégorie inventée pour un nom fictif —
+sont détaillées dans le rapport de validation plutôt que masquées par le prompt.
+
+Dans Paramètres, Vétérinaire commence en **High** et peut être réglé sur **Low**.
+Le choix est indépendant de Général et s'applique à la requête suivante. Il
+pilote réellement `enable_thinking` dans le template natif Qwen3.5 ; la pensée
+interne n'est ni affichée ni persistée. Les deux voix locales, la dictée,
+l'historique, la mémoire explicite et le diagramme de ressources utilisent les
+mêmes chemins génériques que les autres profils.
+
 ## Architecture indépendante des modèles
 
 Léa reste l’application et l’orchestrateur. Les conversations, la mémoire,
@@ -319,9 +349,11 @@ les permissions et les checkpoints n’appartiennent jamais au modèle.
 | Cycle de vie | Processus identifiés, arrêt sûr, commutation et retour après échec | Contrôleurs et lanceurs existants |
 
 Les associations livrées sont `general` → `qwen-general`
-(`Huihui-Qwen3-4B-abliterated-v2 Q4_K_M`, 8 192 tokens) et `development` →
-`qwen-coder` (`Qwen2.5-Coder-7B-Instruct Q6_K`, 22 000 tokens). Le seul moteur
-implémenté est `llama.cpp`, avec l’installation b10516 existante.
+(`Huihui-Qwen3-4B-abliterated-v2 Q4_K_M`, 8 192 tokens), `development` →
+`qwen-coder` (`Qwen2.5-Coder-7B-Instruct Q6_K`, 22 000 tokens) et `veterinary` →
+`qwen-veterinary` (`Qwen3.5-9B Q4_K_M`, 16 384 tokens). Le seul moteur de
+modèle implémenté est `llama.cpp`, avec l’installation b10516 existante ;
+OpenHands orchestre uniquement le profil Programmation.
 
 Le chargeur `backend/app/model_registry.py` valide la même configuration pour
 FastAPI, OpenHands et les lanceurs. `tools/model_config.py` transmet aux scripts
@@ -350,14 +382,14 @@ contrats de profil et le filtrage des réponses restent indépendants de lui.
    `fit_context_min_tokens` doit égaler le contexte lorsque `fit` est actif.
    Définir `append_no_think` et les séquences d’arrêt selon le modèle. Laisser
    `reasoning_control` à `none` (défaut) sauf preuve réelle de compatibilité avec
-   `think_directives`. Cette capacité active le contrôle Général, pas une permission.
+   `think_directives` ou `chat_template_kwargs`. Cette capacité autorise un
+   réglage déclaré du profil, pas une permission.
    Un template
    personnalisé doit rester sous `tools/openhands/templates/`, avec son hash ;
    sans template explicite, le moteur utilise celui du GGUF.
-5. Pour Général, modifier uniquement `profiles[id=general].model_id` vers
-   l’identifiant choisi. Pour Programmation, modifier
-   `profiles[id=development].model_id`. Général exige `chat`, Programmation
-   exige aussi `tool_calling` natif, Jinja et le parsing des outils activé.
+5. Modifier uniquement le `model_id` du profil concerné. Général et Vétérinaire
+   exigent `chat`; Programmation exige aussi `tool_calling` natif, Jinja et le
+   parsing des outils activé.
    L’association doit respecter les budgets du profil et le plancher du
    condenser SDK 1.43.1 (16 384 tokens d’entrée, plus la réponse réservée).
    Ne pas changer les permissions ou les contrats pour rendre un modèle compatible.
@@ -371,12 +403,13 @@ contrats de profil et le filtrage des réponses restent indépendants de lui.
    La première commande valide le registre, les fichiers requis et les templates,
    mais ne charge pas les poids. Taille et hash complets du GGUF sont contrôlés
    avant son activation. Une erreur n’entraîne aucun fallback silencieux.
-7. Tester une conversation et la mémoire en Général ; pour Programmation,
+7. Tester une conversation, la mémoire et le réglage de raisonnement de chaque
+   profil direct concerné ; pour Programmation,
    démarrer Docker manuellement, activer le profil et vérifier un petit run réel,
    son test vert et Accept/Rollback sur un projet de test autorisé. Une capacité
    déclarée dans le JSON n’est pas une preuve de tool calling opérationnel.
 
-Deux profils peuvent référencer une même définition compatible sans partager
+Plusieurs profils peuvent référencer une même définition compatible sans partager
 leurs permissions. Cela n’autorise ni deux modèles simultanés ni la suppression
 des barrières de commutation. La substitution de configuration et le partage
 ont été testés avec des fixtures ; aucune inférence avec un troisième GGUF
@@ -433,11 +466,15 @@ demande confirmation avant d’être abandonné ; une sauvegarde en cours bloque
   Qwen2.5-Coder, le moteur servi et le chemin OpenHands actuel ne fournissent pas
   de mécanisme de raisonnement réglable validé. Les outils, tests et checkpoints
   restent identiques ; une stratégie d’agent serait un autre réglage, non implémenté.
+- Vétérinaire commence en **High** et utilise le booléen natif
+  `chat_template_kwargs.enable_thinking` du template Qwen3.5. Low et High ont été
+  distingués sur le vrai moteur ; ce choix est indépendant de Général.
 
 ### Persistance et fonctionnement IA arrêtée
 
 `user_preferences`, ajoutée par la migration SQLite 8 dans `data/lea.sqlite3`,
-conserve `general_reasoning` et une révision. Le registre `config/models.json`
+conserve les choix et une révision. La migration 12 ajoute
+`veterinary_reasoning` sans modifier `general_reasoning`. Le registre `config/models.json`
 reste exclusivement technique : modèles, capacités et profils. Les préférences
 n’appartiennent ni à Qwen, ni au navigateur, ni à un fichier JSON concurrent.
 La migration 9 ajoute `show_resource_chart`, booléen strict à `false` par défaut.
@@ -569,18 +606,16 @@ preuves réelles, simulations, limites et ménage. Le benchmark difficile est co
 
 ## Roadmap
 
-Les étapes 11 à 14 sont terminées. L’étape 14 reste limitée à la voix explicite,
-sans vision ni mains libres.
-Les étapes 15 à 25 ne sont pas encore implémentées :
+Les étapes 11 à 14 sont terminées. L’étape 15 est techniquement prête et attend
+la validation manuelle ; elle n'ajoute ni Web ni vision.
 
 - Étape 11 — Architecture indépendante des modèles.
 - Étape 12 — Centre de paramètres de Léa.
 - Étape 13 — Programmation avancée.
 - Étape 14 — Microphone et conversation vocale (terminée et validée manuellement).
-- Étape 15 — Veterinary.
-- Étape 16 — Auxiliaire.
+- Étape 15 — Vétérinaire et optimisation des contrats (validation manuelle requise).
+- Étape 16 — Accès Web (non commencée).
 - Étape 17 — Génération d’images.
-- Étape 18 — Web Gateway.
 - Étape 19 — Speech-to-Speech.
 - Étape 20 — Refonte visuelle.
 - Étape 21 — Mémoire avancée.
@@ -588,6 +623,9 @@ Les étapes 15 à 25 ne sont pas encore implémentées :
 - Étape 23 — Sécurité finale.
 - Étape 24 — Tests finaux.
 - Étape 25 — Logiciel desktop final.
+
+La vision en entrée est suspendue et reportée. Le profil Auxiliaire est supprimé
+définitivement de la roadmap.
 
 ## Stockage actuel
 

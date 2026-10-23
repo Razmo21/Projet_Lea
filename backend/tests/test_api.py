@@ -63,7 +63,7 @@ class FakeModelController:
         self.calls: list[str] = []
         self.failure: ModelControllerError | None = None
 
-    async def activate(self, profile_id: str) -> str:
+    async def activate(self, profile_id: str, previous_profile_id: str) -> str:
         """Enregistre la cible ou reproduit un échec avec rollback supposé."""
 
         self.calls.append(profile_id)
@@ -518,6 +518,22 @@ class ApiTestCase(unittest.TestCase):
                 self.assertEqual(response.status_code, 422)
 
         self.assertEqual(self.gateway.calls, [])
+        self.assertEqual(self.application.state.database.list_conversations(), [])
+
+    def test_veterinary_conversation_can_be_created_and_deleted(self) -> None:
+        """Le troisième profil utilise le cycle de conversation et de suppression commun."""
+
+        activated = self.client.post("/api/models/veterinary/activate")
+        self.assertEqual(activated.status_code, 200)
+        self.assertEqual(activated.json()["active_profile_id"], "veterinary")
+        conversation = self.send("Question vétérinaire théorique").json()
+        self.assertEqual(conversation["messages"][-1]["profile_id"], "veterinary")
+        deleted = self.client.request(
+            "DELETE",
+            f"/api/conversations/{conversation['id']}",
+            json={"expected_revision": conversation["revision"]},
+        )
+        self.assertEqual(deleted.status_code, 204)
         self.assertEqual(self.application.state.database.list_conversations(), [])
         self.assertEqual(self.application.state.database.list_memories(), [])
 

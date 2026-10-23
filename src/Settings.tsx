@@ -10,6 +10,7 @@ type SettingsProps = { onBack: () => void; onSaved: (preferences: Preferences) =
 export default function Settings({ onBack, onSaved }: SettingsProps) {
   const [saved, setSaved] = useState<Preferences | null>(null)
   const [draft, setDraft] = useState<ReasoningLevel>('low')
+  const [veterinaryDraft, setVeterinaryDraft] = useState<ReasoningLevel>('high')
   const [chartDraft, setChartDraft] = useState(false)
   const [voiceDraft, setVoiceDraft] = useState<VoicePreferences>(defaultVoicePreferences)
   const [loading, setLoading] = useState(true)
@@ -20,7 +21,12 @@ export default function Settings({ onBack, onSaved }: SettingsProps) {
   const savingLock = useRef(false)
   const title = useRef<HTMLHeadingElement>(null)
   const voiceFields = Object.keys(defaultVoicePreferences) as (keyof VoicePreferences)[]
-  const dirty = saved !== null && (draft !== saved.general_reasoning || chartDraft !== saved.show_resource_chart || voiceFields.some((key) => voiceDraft[key] !== saved[key]))
+  const dirty = saved !== null && (
+    draft !== saved.general_reasoning ||
+    veterinaryDraft !== saved.veterinary_reasoning ||
+    chartDraft !== saved.show_resource_chart ||
+    voiceFields.some((key) => voiceDraft[key] !== saved[key])
+  )
 
   // Place le clavier dans cette vue sans déplacer le focus à chaque changement de valeur.
   useEffect(() => { title.current?.focus() }, [])
@@ -36,6 +42,7 @@ export default function Settings({ onBack, onSaved }: SettingsProps) {
       if (!current) return
       setSaved(value)
       setDraft(value.general_reasoning)
+      setVeterinaryDraft(value.veterinary_reasoning)
       setChartDraft(value.show_resource_chart)
       setVoiceDraft(Object.fromEntries(voiceFields.map((key) => [key, value[key]])) as VoicePreferences)
     }).catch((failure: unknown) => {
@@ -58,15 +65,19 @@ export default function Settings({ onBack, onSaved }: SettingsProps) {
       const confirmed = await requestPreferences({
         expected_revision: saved.revision,
         ...(draft !== saved.general_reasoning ? { general_reasoning: draft } : {}),
+        ...(veterinaryDraft !== saved.veterinary_reasoning
+          ? { veterinary_reasoning: veterinaryDraft }
+          : {}),
         ...(chartDraft !== saved.show_resource_chart ? { show_resource_chart: chartDraft } : {}),
         ...Object.fromEntries(voiceFields.filter((key) => voiceDraft[key] !== saved[key]).map((key) => [key, voiceDraft[key]])),
       })
       setSaved(confirmed)
       setDraft(confirmed.general_reasoning)
+      setVeterinaryDraft(confirmed.veterinary_reasoning)
       setChartDraft(confirmed.show_resource_chart)
       setVoiceDraft(Object.fromEntries(voiceFields.map((key) => [key, confirmed[key]])) as VoicePreferences)
       onSaved(confirmed)
-      setConfirmation('Paramètres enregistrés. L’affichage s’applique immédiatement ; le raisonnement à la prochaine réponse Général.')
+      setConfirmation('Paramètres enregistrés. L’affichage s’applique immédiatement ; le raisonnement à la prochaine réponse du profil concerné.')
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'Enregistrement non confirmé.')
     } finally {
@@ -88,6 +99,12 @@ export default function Settings({ onBack, onSaved }: SettingsProps) {
     setConfirmation('')
   }
 
+  // Le réglage Vétérinaire reste indépendant de Général jusqu'à validation.
+  function selectVeterinary(level: ReasoningLevel) {
+    setVeterinaryDraft(level)
+    setConfirmation('')
+  }
+
   return (
     <section className="chat settings" aria-labelledby="settings-title" aria-busy={loading || saving}>
       <div className="page-header">
@@ -105,6 +122,7 @@ export default function Settings({ onBack, onSaved }: SettingsProps) {
         <form onSubmit={(event) => void save(event)}>
           <fieldset disabled={loading || saving || !saved.general_reasoning_available} className="settings-group">
             <legend>Général — Raisonnement</legend>
+            <p>Modèle : {saved.profile_settings.find((profile) => profile.id === 'general')?.model_name ?? 'indisponible'}.</p>
             <p id="reasoning-help">Low donne une réponse directe. High active la réflexion interne, sans l’afficher.</p>
             {!saved.general_reasoning_available && (
               <p role="status">
@@ -123,6 +141,29 @@ export default function Settings({ onBack, onSaved }: SettingsProps) {
             </div>
             <p>Enregistré : {saved.general_reasoning === 'low' ? 'Low' : 'High'}.</p>
             {dirty && <p className="status-warning">Modification non enregistrée.</p>}
+          </fieldset>
+          <fieldset disabled={loading || saving || !saved.veterinary_reasoning_available} className="settings-group">
+            <legend>Vétérinaire — Raisonnement</legend>
+            <p>Modèle : {saved.profile_settings.find((profile) => profile.id === 'veterinary')?.model_name ?? 'indisponible'}.</p>
+            <p id="veterinary-reasoning-help">
+              Low demande une réponse directe. High active la réflexion native Qwen3.5, sans l’afficher.
+            </p>
+            {!saved.veterinary_reasoning_available && (
+              <p role="status">
+                Indisponible avec le modèle Vétérinaire configuré. Le choix mémorisé reste conservé, mais n’est pas appliqué.
+              </p>
+            )}
+            <div className="reasoning-options" aria-describedby="veterinary-reasoning-help">
+              <label>
+                <input type="radio" name="veterinary-reasoning" value="low" checked={veterinaryDraft === 'low'} onChange={() => selectVeterinary('low')} />
+                Low — Direct
+              </label>
+              <label>
+                <input type="radio" name="veterinary-reasoning" value="high" checked={veterinaryDraft === 'high'} onChange={() => selectVeterinary('high')} />
+                High — Réflexion
+              </label>
+            </div>
+            <p>Enregistré : {saved.veterinary_reasoning === 'low' ? 'Low' : 'High'}.</p>
           </fieldset>
           <fieldset disabled={loading || saving} className="settings-group">
             <legend>Ressources</legend>
@@ -145,6 +186,7 @@ export default function Settings({ onBack, onSaved }: SettingsProps) {
       {confirmation && <p className="status-ready" role="status">{confirmation}</p>}
       <section className="settings-group" aria-labelledby="programming-settings-title">
         <h2 id="programming-settings-title">Programmation</h2>
+        <p>Modèle : {saved?.profile_settings.find((profile) => profile.id === 'development')?.model_name ?? 'indisponible'}.</p>
         <p>Aucun réglage Low / High n’est proposé : aucun mécanisme compatible suffisamment fiable n’a été validé pour ce profil.</p>
         <p>Le traitement OpenHands reste inchangé, avec ses contrôles de sécurité, ses tests et ses checkpoints. Le choix Général ne modifie pas un run.</p>
       </section>

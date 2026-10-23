@@ -28,7 +28,7 @@ from app.openhands_runtime import AGENT_SERVER_MODE_IDLE, AGENT_SERVER_MODE_RUN,
 class FakeModelController:
     """Confirm profile switches without starting any real model during API contract tests."""
 
-    async def activate(self, profile_id: str) -> str:
+    async def activate(self, profile_id: str, previous_profile_id: str) -> str:
         """Return the requested known profile exactly as a successful local controller would."""
 
         return profile_id

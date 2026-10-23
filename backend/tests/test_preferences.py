@@ -56,14 +56,35 @@ class PreferencesTests(unittest.TestCase):
         return json.loads(result.stdout)
 
     def test_defaults_save_and_restart(self) -> None:
-        """Une nouvelle base commence en Low et le prochain composant retrouve High."""
+        """Les valeurs initiales et les choix indépendants survivent au redémarrage."""
 
         self.assertEqual(self.store.read().general_reasoning, "low")
+        self.assertEqual(self.store.read().veterinary_reasoning, "high")
         self.assertEqual(self.store.save(self.change("high")).revision, 1)
+        self.assertEqual(
+            self.store.save(
+                PreferenceChange(expected_revision=1, veterinary_reasoning="low")
+            ).revision,
+            2,
+        )
         reopened = Database(self.path)
         reopened.initialize(recover_generations=False)
         self.assertEqual(PreferencesStore(reopened).read().general_reasoning, "high")
-        self.assertEqual(self.store.save(self.change("low", 1)).revision, 2)
+        self.assertEqual(PreferencesStore(reopened).read().veterinary_reasoning, "low")
+        self.assertEqual(self.store.save(self.change("low", 2)).revision, 3)
+
+    def test_stage15_migration_preserves_existing_preferences(self) -> None:
+        """La nouvelle colonne Vétérinaire n'altère aucun choix déjà validé."""
+
+        self.store.save(self.change("high"))
+        with self.database.connection() as connection:
+            connection.execute("ALTER TABLE user_preferences DROP COLUMN veterinary_reasoning")
+            connection.execute("DELETE FROM schema_migrations WHERE version = 12")
+        self.database.initialize(recover_generations=False)
+        current = self.store.read()
+        self.assertEqual(current.revision, 1)
+        self.assertEqual(current.general_reasoning, "high")
+        self.assertEqual(current.veterinary_reasoning, "high")
 
     def test_chart_default_partial_updates_and_restart(self) -> None:
         """The display choice persists without erasing General's preference."""
@@ -192,6 +213,9 @@ class PreferencesTests(unittest.TestCase):
         registry = json.loads((ROOT / "config/models.json").read_text(encoding="utf-8"))
         general_id = next(profile["model_id"] for profile in registry["profiles"] if profile["id"] == "general")
         next(model for model in registry["models"] if model["id"] == general_id)["reasoning_control"] = "none"
+        next(profile for profile in registry["profiles"] if profile["id"] == "general")[
+            "reasoning_preference"
+        ] = None
         path = Path(self.temporary.name) / "models.json"
         path.write_text(json.dumps(registry), encoding="utf-8")
         environment = {"LEA_MODEL_REGISTRY": str(path)}

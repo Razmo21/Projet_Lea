@@ -1960,24 +1960,26 @@ function Stop-Core {
     Write-Host 'Le cœur de Léa est arrêté.'
 }
 
-# Charge seulement le profil Général pour une transition contrôlée du backend.
-function Start-GeneralModelOnly {
-    # Restaure seulement le modèle Général dans un cœur déjà lancé ; le
-    # contrôleur OpenHands l'utilise après avoir arrêté le modèle vérifié.
+# Charge un profil direct déclaré pour une transition contrôlée du backend.
+function Start-DirectModelOnly {
+    # Le contrôleur l'utilise lorsque le profil précédent était servi par
+    # OpenHands et qu'aucun modèle direct n'est encore enregistré.
+    param([string]$TargetProfileId = $DefaultProfileId)
+
     $state = Read-LeaState
     if ($null -eq $state) {
-        throw 'Le cœur de Léa doit être démarré avant de restaurer le modèle Général.'
+        throw 'Le cœur de Léa doit être démarré avant de restaurer un modèle direct.'
     }
-    $general = Get-RegistryProfile -Registry $ModelRegistry -ProfileId $DefaultProfileId
-    if ([string]$general.agent_engine -ne 'direct') {
-        throw 'Le profil Général doit rester servi par le lanceur llama.cpp local.'
+    $profile = Get-RegistryProfile -Registry $ModelRegistry -ProfileId $TargetProfileId
+    if ([string]$profile.agent_engine -ne 'direct') {
+        throw "Le profil $TargetProfileId doit être servi par le lanceur llama.cpp local."
     }
-    Start-LeaComponents -ComponentNames @('model') -ModelProfileId $DefaultProfileId -ReadyMessage 'Le modèle Général est prêt.' -AlreadyStartedMessage 'Le modèle Général est déjà prêt.'
+    Start-LeaComponents -ComponentNames @('model') -ModelProfileId $TargetProfileId -ReadyMessage "Le modèle $([string]$profile.display_name) est prêt." -AlreadyStartedMessage "Le modèle $([string]$profile.display_name) est déjà prêt."
 }
 
-# Décharge seulement le modèle Général dont le record est vérifié.
-function Stop-GeneralModelOnly {
-    # Arrête uniquement le PID Général dont l'état signé est encore vérifiable,
+# Décharge seulement le modèle direct dont le record est vérifié.
+function Stop-DirectModelOnly {
+    # Arrête uniquement le PID llama.cpp dont l'état signé est encore vérifiable,
     # sans toucher FastAPI ni Vite pendant une commutation de profil.
     $state = Read-LeaState
     if ($null -eq $state) {
@@ -2171,11 +2173,12 @@ try {
             return
         }
         'start-model' {
-            Start-GeneralModelOnly
+            $target = if ([string]::IsNullOrWhiteSpace($ProfileId)) { $DefaultProfileId } else { $ProfileId }
+            Start-DirectModelOnly -TargetProfileId $target
             return
         }
         'stop-model' {
-            Stop-GeneralModelOnly
+            Stop-DirectModelOnly
             return
         }
         'switch-model' {

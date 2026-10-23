@@ -45,7 +45,8 @@ class ContextBudgetTests(unittest.TestCase):
             - FINAL_RESPONSE_TOKEN_LIMIT
             - SYSTEM_AND_TEMPLATE_TOKEN_RESERVE,
         )
-        self.assertEqual(CONTEXT_INPUT_TOKEN_BUDGET, 6656)
+        self.assertEqual(SYSTEM_AND_TEMPLATE_TOKEN_RESERVE, 1024)
+        self.assertEqual(CONTEXT_INPUT_TOKEN_BUDGET, 6144)
 
     def test_short_history_is_preserved_in_chronological_complete_pairs(self) -> None:
         history = pair(1, 20) + pair(2, 20)

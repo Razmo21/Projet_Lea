@@ -38,12 +38,22 @@ def main() -> None:
             if len(payload) > 1024:
                 raise ValueError("Requête trop grande.")
             change = PreferenceChange.model_validate_json(payload)
-        # La capacité appartient au registre ; le choix utilisateur reste dans SQLite.
+        # La capacité appartient au registre ; les choix utilisateur restent dans SQLite.
         registry = load_model_registry(os.environ.get("LEA_MODEL_REGISTRY") or None)
-        general = registry.profile("general")
-        available = general.enabled and general.model.reasoning_control == "think_directives"
-        if change is not None and change.general_reasoning is not None and not available:
-            raise PreferencesError("Le modèle Général configuré ne propose pas ce réglage de raisonnement.")
+        profiles = registry.resolved_profiles()
+        available_preferences = {
+            profile.reasoning_preference
+            for profile in profiles
+            if profile.enabled
+            and profile.reasoning_preference is not None
+            and profile.model.reasoning_control != "none"
+        }
+        if change is not None:
+            for field in ("general_reasoning", "veterinary_reasoning"):
+                if getattr(change, field) is not None and field not in available_preferences:
+                    raise PreferencesError(
+                        "Le modèle configuré ne propose pas ce réglage de raisonnement."
+                    )
         if change is not None and change.voice_id is not None:
             if change.voice_id not in {voice["id"] for voice in voice_status(registry)["voices"]}:
                 raise ValueError("La voix choisie n’est pas installée.")
@@ -52,7 +62,18 @@ def main() -> None:
         store = PreferencesStore(database)
         preferences = store.save(change) if change is not None else store.read()
         body = preferences.model_dump()
-        body["general_reasoning_available"] = available
+        body["general_reasoning_available"] = "general_reasoning" in available_preferences
+        body["veterinary_reasoning_available"] = "veterinary_reasoning" in available_preferences
+        body["profile_settings"] = [
+            {
+                "id": profile.id,
+                "display_name": profile.display_name,
+                "model_name": profile.model_name,
+                "reasoning_available": profile.reasoning_preference in available_preferences,
+            }
+            for profile in profiles
+            if profile.enabled
+        ]
     except RegistryError:
         status, body = 503, {"detail": "La configuration locale des modèles est invalide. Paramètres non confirmés."}
     except (ValidationError, ValueError):

@@ -152,12 +152,24 @@ validation physique finalement confirmée par l’utilisateur.
 - [x] Audit final — 151 fichiers inventoriés, deux imports inutiles retirés,
   suites complètes et cycle local réel isolé réussis sans commencer l’étape 15.
 
-## Roadmap validée — étapes suivantes non commencées
+## ÉTAPE 15 — Vétérinaire et optimisation des contrats — validation manuelle requise
 
-- Étape 15 — Veterinary.
-- Étape 16 — Auxiliaire.
+- [x] Modèle local `Qwen3.5-9B-Q4_K_M`, empreinte et compatibilité llama.cpp vérifiés.
+- [x] Troisième profil direct sans Web, vision, outil ni accès workspace.
+- [x] Contexte 16 384, un slot, ressources mesurées et commutations sûres entre les trois profils.
+- [x] Low/High Vétérinaire natif, indépendant de Général ; migration SQLite 12 et paramètres persistants.
+- [x] Conversations, suppression, historique, mémoire explicite, surveillance et voix réutilisés.
+- [x] Scénarios vétérinaires comparés avec corrigé indépendant et erreurs scientifiques documentées.
+- [x] Contrat commun audité puis conservé intact après échec des tests de sécurité ; Général, mémoire et Vétérinaire clarifiés.
+- [x] Tentative de raccourcissement Programmation annulée après régression réelle `file_editor`.
+- [x] Runs OpenHands isolés : succès de référence, échecs détectés et rollbacks exacts, aucune heuristique Qwen ajoutée.
+- [x] Rapport technique : `docs/ETAPE_15_VALIDATION.md`.
+- [ ] Validation manuelle dans Microsoft Edge autonome.
+
+## Roadmap validée — après la validation manuelle de l’étape 15
+
+- Étape 16 — Accès Web.
 - Étape 17 — Génération d’images.
-- Étape 18 — Web Gateway.
 - Étape 19 — Speech-to-Speech.
 - Étape 20 — Refonte visuelle.
 - Étape 21 — Mémoire avancée.
@@ -165,3 +177,6 @@ validation physique finalement confirmée par l’utilisateur.
 - Étape 23 — Sécurité finale.
 - Étape 24 — Tests finaux.
 - Étape 25 — Logiciel desktop final.
+
+La vision en entrée est suspendue et reportée. Le profil Auxiliaire est supprimé
+définitivement. Aucune de ces étapes suivantes n'est commencée.

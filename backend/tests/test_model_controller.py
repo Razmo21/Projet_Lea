@@ -89,16 +89,30 @@ class RecordingController(PowerShellModelController):
         self.calls: list[str] = []
         self.development_ready = development_ready
 
-    async def _general_script(self, action: str) -> None:
-        """Record the fixed PowerShell action instead of launching a process in a unit test."""
+    async def _direct_script(
+        self,
+        action: str,
+        *,
+        profile_id: str | None = None,
+        capture_output: bool = False,
+    ) -> dict[str, object] | None:
+        """Record one fixed PowerShell transition without launching a process."""
 
-        self.calls.append(f"general:{action}")
+        self.calls.append(f"direct:{action}:{profile_id or '-'}")
+        if capture_output:
+            return {"state": "ready", "active_profile_id": profile_id}
+        return None
 
     async def _development_script(self, action: str) -> dict[str, object]:
         """Record the fixed Qwen lifecycle action and expose a configurable readiness state."""
 
         self.calls.append(f"development:{action}")
         return {"state": "ready" if action != "start" or self.development_ready else "error"}
+
+    async def _direct_ready(self, profile_id: str) -> bool:
+        """Treat the recorded direct transition as ready without opening a socket."""
+
+        return True
 
 
 class ModelControllerTests(unittest.IsolatedAsyncioTestCase):
@@ -109,8 +123,8 @@ class ModelControllerTests(unittest.IsolatedAsyncioTestCase):
 
         runtime = FakeOpenHandsRuntime()
         controller = RecordingController(runtime)
-        self.assertEqual(await controller.activate("development"), "development")
-        self.assertEqual(controller.calls, ["general:stop-model", "development:start"])
+        self.assertEqual(await controller.activate("development", "general"), "development")
+        self.assertEqual(controller.calls, ["direct:stop-model:-", "development:start"])
         self.assertEqual(runtime.calls, ["require_docker", "wait_ready"])
 
     async def test_development_failure_restores_general_after_owned_cleanup(self) -> None:
@@ -119,8 +133,8 @@ class ModelControllerTests(unittest.IsolatedAsyncioTestCase):
         runtime = FakeOpenHandsRuntime(fail_docker=True)
         controller = RecordingController(runtime)
         with self.assertRaisesRegex(ModelControllerError, "Docker Desktop"):
-            await controller.activate("development")
-        self.assertEqual(controller.calls, ["development:stop", "general:start-model"])
+            await controller.activate("development", "general")
+        self.assertEqual(controller.calls, ["development:stop", "direct:start-model:general"])
         self.assertEqual(runtime.calls, ["require_docker"])
 
     async def test_return_to_general_stops_programming_owners_before_general_start(self) -> None:
@@ -128,9 +142,18 @@ class ModelControllerTests(unittest.IsolatedAsyncioTestCase):
 
         runtime = FakeOpenHandsRuntime()
         controller = RecordingController(runtime)
-        self.assertEqual(await controller.activate("general"), "general")
+        self.assertEqual(await controller.activate("general", "development"), "general")
         self.assertEqual(runtime.calls, ["stop_idle"])
-        self.assertEqual(controller.calls, ["development:stop", "general:start-model"])
+        self.assertEqual(controller.calls, ["development:stop", "direct:start-model:general"])
+
+    async def test_direct_profiles_use_the_atomic_powershell_switch(self) -> None:
+        """General and Veterinary share the direct owner and its exact rollback path."""
+
+        runtime = FakeOpenHandsRuntime()
+        controller = RecordingController(runtime)
+        self.assertEqual(await controller.activate("veterinary", "general"), "veterinary")
+        self.assertEqual(controller.calls, ["direct:switch-model:veterinary"])
+        self.assertEqual(runtime.calls, [])
 
     async def test_failed_model_readiness_restores_general_without_starting_agent_server(self) -> None:
         """Une absence de readiness du modèle déclenche le rollback existant."""
@@ -138,10 +161,10 @@ class ModelControllerTests(unittest.IsolatedAsyncioTestCase):
         runtime = FakeOpenHandsRuntime()
         controller = RecordingController(runtime, development_ready=False)
         with self.assertRaisesRegex(ModelControllerError, "n’est pas prêt"):
-            await controller.activate("development")
+            await controller.activate("development", "general")
         self.assertEqual(
             controller.calls,
-            ["general:stop-model", "development:start", "development:stop", "general:start-model"],
+            ["direct:stop-model:-", "development:start", "development:stop", "direct:start-model:general"],
         )
         self.assertEqual(runtime.calls, ["require_docker"])
 
@@ -151,17 +174,19 @@ class ModelControllerTests(unittest.IsolatedAsyncioTestCase):
         runtime = FakeOpenHandsRuntime(ready=False)
         controller = RecordingController(runtime)
         with self.assertRaisesRegex(ModelControllerError, "Agent absent"):
-            await controller.activate("development")
+            await controller.activate("development", "general")
         self.assertNotIn("start_idle", runtime.calls)
-        self.assertEqual(controller.calls[-2:], ["development:stop", "general:start-model"])
+        self.assertEqual(controller.calls[-2:], ["development:stop", "direct:start-model:general"])
 
     async def test_lifecycle_children_receive_the_same_registry(self) -> None:
         """Aucun sous-processus ne retombe sur un registre officiel différent de FastAPI."""
 
         controller = PowerShellModelController(registry=load_model_registry())
         with patch.object(controller, "_run", new=AsyncMock(return_value='{"state":"ready"}')) as run:
-            await controller._general_script("start-model")
-            self.assertEqual(run.call_args.args[-2:], ("-RegistryPath", str(controller.registry.registry_path)))
+            await controller._direct_script("start-model", profile_id="veterinary")
+            args = run.call_args.args
+            self.assertEqual(args[args.index("-RegistryPath") + 1], str(controller.registry.registry_path))
+            self.assertEqual(args[args.index("-ProfileId") + 1], "veterinary")
             await controller._development_script("start")
             args = run.call_args.args
             self.assertEqual(args[args.index("--registry") + 1], str(controller.registry.registry_path))

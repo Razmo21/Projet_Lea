@@ -621,3 +621,50 @@ prune. Neuf conteneurs de runs isolés absents de la base active et trois ancien
 serveurs SDK encore référencés par leurs états de bootstrap restent arrêtés, car
 leur utilité est ambiguë. Aucun conteneur Léa actif, serveur OpenHands, worker
 vocal ou processus modèle ne subsiste à la fin.
+
+## D-034 — Profil Vétérinaire direct et optimisation mesurée des contrats
+
+L'étape 15 ajoute `veterinary` comme troisième profil de l'unique registre, sans
+nouveau serveur, moteur, outil ni permission. Le modèle fourni par l'utilisateur,
+`Qwen3.5-9B-Q4_K_M.gguf`, reste sous `models/veterinary/` et hors Git. Son
+identité est figée par une taille de 5 680 522 464 octets et le SHA-256
+`03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8`.
+llama.cpp b10516 charge réellement ce GGUF en contexte 16 384, un slot, KV Q8_0
+et `--fit` sans réduction sous ce plancher.
+
+Vétérinaire reste un profil direct, conversationnel et sans workspace. Sa
+double vocation — pédagogie et raisonnement clinique théorique — appartient à
+son contrat, pas au code métier. L'historique, la mémoire explicite, la
+surveillance et la voix empruntent les chemins communs. Aucune consultation Web,
+vision, source automatique ou décision clinique réelle n'est ajoutée. Les
+essais ont révélé des erreurs crédibles mais importantes ; le rapport
+`ETAPE_15_VALIDATION.md` les conserve avec un corrigé indépendant. Ce profil
+assiste l'apprentissage et la structuration, il ne certifie pas un diagnostic.
+
+La préférence Vétérinaire est ajoutée par la migration SQLite 12, initialisée à
+High et indépendante de Général. Contrairement aux directives textuelles de
+Qwen3, le GGUF Qwen3.5 expose un contrôle natif testé :
+`chat_template_kwargs.enable_thinking`. Le registre déclare ce mécanisme ; le
+backend en fige la valeur au début d'une requête, l'adaptateur l'envoie et le
+filtre de réponse continue d'interdire la pensée visible. Programmation ne
+reçoit toujours aucun réglage fictif.
+
+Le contrôleur de modèles raisonne désormais sur deux topologies génériques :
+profil direct ou OpenHands. Une commutation directe utilise le propriétaire
+PowerShell atomique et confirme l'alias servi. Une transition OpenHands restaure
+exactement le profil direct précédent en cas d'échec. Docker demeure manuel et
+la création d'un Agent Server reste réservée au lancement explicite d'un run.
+
+L'optimisation des contrats est conditionnée par une comparaison avant/après.
+Le contrat commun a été restauré intégralement lorsque sa simplification a
+supprimé des formulations de sécurité protégées par les tests. Général, mémoire
+et Vétérinaire ont reçu des clarifications ciblées. La version raccourcie du
+contrat Programmation a en revanche échoué deux fois
+sur un petit run `file_editor`, alors que le contrat précédent avait réussi ;
+elle a donc été entièrement rétablie. Les barrières techniques et la détection
+de boucle restent inchangées, sans récupération spécialisée pour Qwen.
+
+Le Qwen2.5-Coder-14B ignoré, non référencé et devenu inutile a été supprimé sur
+demande explicite. Le Qwen2.5-Coder-7B validé reste le seul modèle Programmation.
+La prochaine étape autorisée après validation manuelle est l'étape 16 — Web.
+La vision reste suspendue et le profil Auxiliaire est retiré définitivement.

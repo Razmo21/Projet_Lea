@@ -12,7 +12,7 @@ from .memory import (
 
 
 MigrationOperation = str | Callable[[sqlite3.Connection], None]
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 def _backfill_memory_sources(connection: sqlite3.Connection) -> None:
@@ -426,6 +426,11 @@ MIGRATIONS: Mapping[int, Sequence[MigrationOperation]] = {
     # v11 : la voix naturelle devient le choix explicite, sans toucher aux autres réglages.
     11: (
         "UPDATE user_preferences SET voice_id = 'lea_voice' WHERE id = 1",
+    ),
+    # v12 : raisonnement Vétérinaire indépendant, sans modifier le choix Général.
+    12: (
+        "ALTER TABLE user_preferences ADD COLUMN veterinary_reasoning TEXT NOT NULL DEFAULT 'high' "
+        "CHECK(veterinary_reasoning IN ('low', 'high'))",
     ),
 }
 

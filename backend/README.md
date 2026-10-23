@@ -95,7 +95,7 @@ Server. Les snapshots de fichiers résident dans le stockage local de
 checkpoints et l’historique détaillé des sessions reste dans le volume d’état
 de l’Agent Server.
 
-## Préférences fonctionnelles — étape 12
+## Préférences fonctionnelles — étapes 12 et 15
 
 La migration 8 ajoute `user_preferences` (une ligne, `revision`,
 `general_reasoning` limité à `low`/`high`, défaut `low`). `PreferencesStore`
@@ -103,9 +103,11 @@ partage la base existante, sans cache global ni table de souvenirs supplémentai
 Les sauvegardes transactionnelles vérifient `expected_revision`, modifient
 uniquement la colonne concernée et relisent avant de confirmer le commit.
 La migration 9 ajoute `show_resource_chart` (booléen strict, défaut false).
-Le POST accepte un ou les deux réglages ; champs omis préservés, `null`, types
-coercibles et modifications vides refusés. Seule une modification du raisonnement
-exige la capacité du modèle Général ; le diagramme en est indépendant.
+La migration 12 ajoute `veterinary_reasoning` (Low/High, défaut High) sans
+modifier Général. Le POST accepte une mise à jour partielle ; champs omis
+préservés, `null`, types coercibles et modifications vides refusés. Chaque
+modification de raisonnement exige la capacité déclarée du profil concerné ; le
+diagramme en est indépendant.
 
 `GET /api/preferences` et `POST /api/preferences` sont servis par **Vite sur
 5173**, pas par FastAPI. Le pont ponctuel `tools/preferences.py read|save`
@@ -118,14 +120,30 @@ Le POST exige l’origine locale, le bon Host et du JSON borné à 1 024 octets.
 Champs supplémentaires, chemins, commandes, valeurs et types inconnus sont refusés.
 Les réponses ne sont pas cachées ; conflits 409, entrées invalides 422,
 indisponibilité 503. Le navigateur vérifie également le choix et la nouvelle révision.
-`general_reasoning_available` est une capacité dérivée du registre, non une
-préférence persistée. Aucun modèle ni serveur n’est lancé par ces routes.
+`general_reasoning_available`, `veterinary_reasoning_available` et la liste
+publique des modèles configurés sont dérivés du registre, non persistés. Aucun
+modèle ni serveur n’est lancé par ces routes.
 
-Avant chaque génération Général, FastAPI fige le choix dans les messages
-internes. Le modèle doit déclarer `reasoning_control: think_directives` dans
-le registre ; `none` est le défaut pour un autre modèle. Une préférence invalide
-refuse la génération avant mutation de conversation ; aucun Low de secours caché.
-Le paramètre Général n’est pas consulté par le runner OpenHands.
+Avant chaque génération directe, FastAPI fige la préférence déclarée par le
+profil. Général utilise `reasoning_control: think_directives`; Vétérinaire
+utilise `chat_template_kwargs.enable_thinking` du template natif Qwen3.5.
+`none` reste le défaut. Une préférence invalide refuse la génération avant
+mutation de conversation ; aucun Low de secours caché. Le runner OpenHands ne
+consulte aucun de ces réglages.
+
+## Profil Vétérinaire direct
+
+`veterinary` associe Qwen3.5-9B Q4_K_M à un contrat conversationnel sans outil,
+Web, vision ni workspace. Le contexte est de 16 384 tokens, avec un slot, caches
+KV Q8_0, sortie maximale 4 096 tokens et délai HTTP de 300 s pour les longues
+réponses High. Le registre valide l'identité du GGUF et interdit à `--fit` de
+réduire le contexte sous ce plancher.
+
+Général et Vétérinaire partagent le propriétaire de processus direct, jamais le
+modèle chargé simultanément. Leur commutation atomique confirme l'alias servi.
+Depuis Programmation, le contrôleur arrête d'abord le runtime agentique vérifié ;
+si le démarrage direct échoue, il tente de restaurer Programmation. Le chemin
+inverse restaure exactement le profil direct précédent en cas d'échec.
 
 ## Profil Programmation et OpenHands
 
@@ -136,8 +154,8 @@ est le moteur agentique local ; Agent Canvas ne fait pas partie du chemin de
 fonctionnement.
 
 Docker Desktop doit être démarré manuellement. Le backend vérifie sa
-disponibilité, mais ne démarre pas Docker. À l’activation, le profil Général est
-arrêté avant Programmation ; en cas d’échec, le contrôleur restaure le profil
+disponibilité, mais ne démarre pas Docker. À l’activation, le profil direct actif
+est arrêté avant Programmation ; en cas d’échec, le contrôleur restaure ce profil
 précédent. Un seul run OpenHands peut posséder le runtime à la fois.
 L’activation vérifie les prérequis locaux sans créer d’Agent Server. Son conteneur
 n’est créé que par `POST /api/agent-runs` ; aucun serveur idle après finalisation.
@@ -165,7 +183,7 @@ Elle démarre avec le profil par défaut et réutilise la même tâche lors des
 commutations. Les seuils suivent la politique du profil sélectionné ; un
 snapshot porte son `profile_id` et une sonde tardive de l’ancien profil est ignorée.
 Docker/OpenHands ne sont consultés que pour un profil agentique OpenHands ou
-un run OpenHands en récupération ; Général n’en dépend pas. La disponibilité
+un run OpenHands en récupération ; les profils directs n’en dépendent pas. La disponibilité
 du modèle passe par l’adaptateur générique du profil, pas par celui de Programmation.
 Les mutations Docker imposent une sonde fraîche. Les seuils RAM/VRAM viennent
 du registre ; persistance des franchissements, marges et états NORMAL/WARNING/
@@ -206,7 +224,7 @@ conserve le fait global jusqu’à une commande exacte `Oublie que`.
 
 ## Fenêtre de contexte et pensée interne
 
-Pour le profil Général (`-c 8192`), le backend réserve 1 024 tokens pour la génération (réflexion comprise) et 512
+Pour le profil Général (`-c 8192`), le backend réserve 1 024 tokens pour la génération (réflexion comprise) et 1 024
 pour les instructions et le template. Les autres budgets proviennent de `config/models.json`. Il estime prudemment un token par octet
 UTF-8, garde toujours la question courante et sélectionne les paires complètes
 les plus récentes dans la limite restante, sans supprimer les anciens messages

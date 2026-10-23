@@ -47,19 +47,15 @@ Après modification :
 
 ## Étape actuelle
 
-Les étapes 10 à 14 sont validées manuellement et terminées. L’étape 14 couvre
-uniquement le microphone, la dictée locale et la conversation vocale tour par
-tour, selon `prompts/PROMPT_ETAPE_14_CODEX.md`. Ses choix, mesures, essais et sa
-validation finale sont consignés dans `docs/ETAPE_14_VALIDATION.md`. Le banc
-d’essai Pocket TTS externe a été supprimé après vérification de l’installation
-permanente ; les deux moteurs vocaux CPU retenus restent installés dans Léa.
-La maintenance finale du 19 octobre 2026 a confirmé la suppression transactionnelle
-des conversations, activé `secure_delete` sur chaque connexion SQLite, vidé la
-mémoire de test autorisée et vérifié le workspace vide sans purger les runs ni
-les checkpoints historiques.
+Les étapes 10 à 14 sont validées manuellement et terminées. L’étape 15 intègre
+le profil Vétérinaire local Qwen3.5-9B Q4_K_M et optimise les contrats seulement
+lorsque la comparaison ne révèle pas de régression. Son implémentation technique,
+ses mesures, ses erreurs scientifiques connues et ses essais sont consignés dans
+`docs/ETAPE_15_VALIDATION.md`; la validation manuelle dans Edge reste requise.
 
-Ne commence pas l’étape 15, la vision, le mains libres ou la détection automatique
-de fin de parole. Aucun commit ni push.
+Ne commence pas l’étape 16 — Web. La vision reste suspendue et reportée ; le
+profil Auxiliaire est supprimé définitivement de la roadmap. Ne réintroduis ni
+l’un ni l’autre. Aucun commit ni push sans demande explicite.
 
 ## Interdictions actuelles
 
@@ -77,16 +73,17 @@ Ne crée PAS :
 - une fonctionnalité reportée ou appartenant aux étapes ultérieures.
 
 L’exception d’installation des moteurs et poids STT/TTS locaux était strictement
-limitée à l’étape 14 et est désormais close. Aucun remplacement de Qwen,
-réduction de son contexte, téléchargement automatique au fonctionnement normal
-ou API vocale distante.
+limitée à l’étape 14 et est désormais close. Le modèle vétérinaire déjà fourni
+par l’utilisateur est le seul poids ajouté à l’étape 15. Aucun remplacement de
+Qwen, réduction de contexte, téléchargement automatique au fonctionnement normal
+ou API distante.
 
 `config/models.json` (schéma 3) est l’unique registre. Les profils portent leurs
 contrats et permissions ; `models` porte les paramètres des modèles et
 `profiles[].model_id` les associe. Ne réintroduis pas de dépendance au nom de
 Qwen dans le code métier ni de parseur concurrent dans les lanceurs.
 
-Les préférences fonctionnelles sont dans SQLite (`user_preferences`, migrations 8–11),
+Les préférences fonctionnelles sont dans SQLite (`user_preferences`, migrations 8–12),
 pas dans le registre. Le contrôleur Vite peut les lire/sauver sans FastAPI ni
 modèle chargé, via le CLI ponctuel existant. Ne déclenche pas la récupération
 des générations en ouvrant les paramètres. Général Low/High prend effet à la
@@ -103,7 +100,7 @@ Le diagramme est masqué par défaut ; les alertes restent indépendantes du ré
 Un arrêt Docker incertain reste non terminal et interdit une nouvelle activité
 modèle jusqu’à récupération vérifiée. Ne compense pas les décisions de Qwen.
 
-## Non-régression acquise à l’étape 14
+## Non-régression acquise aux étapes 14 et 15
 
 La non-régression doit conserver Paramètres (ouverture, Low/High, Valider,
 erreurs lisibles, retour sans perte de brouillon), également avec l’IA arrêtée,
@@ -117,7 +114,10 @@ après redémarrage, le diagramme facultatif RAM/CPU/VRAM et les erreurs lisible
 Le remplacement par configuration est documenté dans le
 README ; ne télécharge aucun nouveau modèle pour cette validation.
 
-La validation manuelle finale a confirmé le microphone, les deux voix et leurs
-paramètres. Conserver la distinction entre essais simulés et physiques, les
-mesures de ressources et toutes les barrières du prompt vocal. Ne commencer
-aucune étape suivante sans demande explicite.
+La validation manuelle de l’étape 14 a confirmé le microphone, les deux voix et
+leurs paramètres. Le profil Vétérinaire réutilise ces chemins sans audio privé
+persistant et sans nouvelle capacité. Conserver la distinction entre essais
+simulés et physiques, les mesures de ressources et toutes les barrières vocales.
+Low/High Vétérinaire utilise uniquement le paramètre natif Qwen3.5 validé et
+reste indépendant de Général ; Programmation ne reçoit aucun faux contrôle.
+Ne commencer aucune étape suivante sans demande explicite.

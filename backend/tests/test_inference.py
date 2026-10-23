@@ -30,9 +30,9 @@ class InferenceTests(unittest.IsolatedAsyncioTestCase):
         self.registry = load_model_registry()
 
     def test_commands_preserve_model_parameters_and_quote_paths(self) -> None:
-        """Les deux propriétaires reçoivent le contexte, les caches et le slot configurés."""
+        """Les propriétaires reçoivent le contexte, les caches et le slot configurés."""
 
-        for profile_id in ("general", "development"):
+        for profile_id in ("general", "development", "veterinary"):
             with self.subTest(profile=profile_id):
                 adapter = inference_adapter(self.registry, profile_id)
                 profile = self.registry.profile(profile_id)
@@ -53,6 +53,8 @@ class InferenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(development.index("--jinja"), development.index("--chat-template-file"))
         general = inference_adapter(self.registry, "general").launch_command()["arguments"]
         self.assertNotIn("--chat-template-file", general)
+        veterinary = inference_adapter(self.registry, "veterinary").launch_command()["arguments"]
+        self.assertNotIn("--chat-template-file", veterinary)
 
     def test_configuration_flags_are_not_silently_ignored(self) -> None:
         """Les options fausses se traduisent aussi explicitement pour éviter les défauts moteur."""
@@ -85,6 +87,32 @@ class InferenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["max_tokens"], 1024)
         self.assertEqual(payload["messages"], messages)
         self.assertEqual(str(requests[0].url), adapter.chat_url)
+        self.assertEqual(requests[0].extensions["timeout"]["read"], 120.0)
+
+    async def test_veterinary_reasoning_uses_qwen35_template_argument(self) -> None:
+        """Low/High change the native Qwen3.5 flag without text directives."""
+
+        requests: list[httpx.Request] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            """Capture the two locally routed requests without loading the GGUF."""
+
+            requests.append(request)
+            return httpx.Response(200, json={"choices": [{"message": {"content": "Réponse"}}]})
+
+        adapter = inference_adapter(self.registry, "veterinary")
+        transport = httpx.MockTransport(respond)
+        await adapter.generate([], high_reasoning=False, transport=transport)
+        await adapter.generate([], high_reasoning=True, transport=transport)
+
+        self.assertEqual(
+            [
+                json.loads(request.content)["chat_template_kwargs"]["enable_thinking"]
+                for request in requests
+            ],
+            [False, True],
+        )
+        self.assertTrue(all(request.extensions["timeout"]["read"] == 300.0 for request in requests))
 
     async def test_readiness_requires_the_expected_alias_and_valid_json(self) -> None:
         """Une API accessible ne prouve pas que le bon modèle est chargé."""

@@ -46,6 +46,7 @@ class ModelRegistryTests(unittest.TestCase):
             "runtime/llama.cpp/llama-server.exe",
             self.document["models"][0]["model_path"],
             self.document["models"][1]["model_path"],
+            self.document["models"][2]["model_path"],
             self.document["models"][1]["chat_template_path"],
             self.document["openhands"]["agent_runtime"]["tiktoken_cache_path"],
             self.document["openhands"]["sdk_python_path"],
@@ -53,7 +54,13 @@ class ModelRegistryTests(unittest.TestCase):
             path = self.root / relative_path
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"test")
-        for prompt_name in ("reliability.md", "general.md", "development.md", "memory.md"):
+        for prompt_name in (
+            "reliability.md",
+            "general.md",
+            "development.md",
+            "veterinary.md",
+            "memory.md",
+        ):
             path = self.root / "config" / "prompts" / prompt_name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(f"prompt {prompt_name}", encoding="utf-8")
@@ -111,14 +118,21 @@ class ModelRegistryTests(unittest.TestCase):
             timeout=15,
         )
 
-    def test_real_registry_exposes_two_profiles_without_sensitive_paths(self) -> None:
+    def test_real_registry_exposes_three_profiles_without_sensitive_paths(self) -> None:
         """Le registre réel conserve Général par défaut et masque chemins/hash à l’API."""
 
         registry = load_model_registry()
 
         self.assertEqual(registry.document.default_profile_id, "general")
-        self.assertEqual([profile.id for profile in registry.document.profiles], ["general", "development"])
+        self.assertEqual(
+            [profile.id for profile in registry.document.profiles],
+            ["general", "development", "veterinary"],
+        )
         self.assertEqual(registry.profile("general").context_tokens, 8192)
+        self.assertEqual(
+            registry.profile("general").generation.system_template_reserve_tokens,
+            1024,
+        )
         development = registry.profile("development")
         self.assertEqual(
             development.context_tokens,
@@ -131,6 +145,7 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertEqual(registry.document.agent_policy.max_duration_seconds, 1800)
         self.assertEqual(registry.document.agent_policy.max_action_response_tokens, 512)
         self.assertEqual(registry.profile("development").generation.max_user_message_bytes, 12900)
+        self.assertEqual(development.generation.system_template_reserve_tokens, 2048)
         self.assertLess(
             registry.document.resource_policies["development_desktop"].runtime_hard_limit_bytes,
             24 * 1024**3,
@@ -159,8 +174,21 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertIn("événement outil réel", development_prompt)
         self.assertIn("Une sortie de terminal, même celle d'un test", development_prompt)
         self.assertIn("Ne révèle pas de raisonnement interne", development_prompt)
+        veterinary = registry.profile("veterinary")
+        self.assertEqual(veterinary.model_name, "Qwen3.5-9B Q4_K_M")
+        self.assertEqual(veterinary.context_tokens, 16384)
+        self.assertEqual(veterinary.generation.system_template_reserve_tokens, 2048)
+        self.assertEqual(veterinary.model.reasoning_control, "chat_template_kwargs")
+        self.assertEqual(veterinary.reasoning_preference, "veterinary_reasoning")
+        self.assertEqual(veterinary.agent_engine, "direct")
+        veterinary_prompt = registry.system_prompt("veterinary")
+        self.assertIn("PROFIL VÉTÉRINAIRE", veterinary_prompt)
+        self.assertIn("urgence réelle", veterinary_prompt)
         public = registry.public_profiles()
-        self.assertEqual([profile["id"] for profile in public], ["general", "development"])
+        self.assertEqual(
+            [profile["id"] for profile in public],
+            ["general", "development", "veterinary"],
+        )
         self.assertEqual(public[0]["max_user_message_bytes"], 6000)
         self.assertEqual(public[1]["max_user_message_bytes"], 12900)
         self.assertNotIn("model_path", public[0])
@@ -224,7 +252,7 @@ class ModelRegistryTests(unittest.TestCase):
             self.load(data)
 
     def test_required_profiles_and_resource_thread_limit_are_rejected(self) -> None:
-        """Le registre conserve les deux profils de base et leurs limites CPU centrales."""
+        """Le registre conserve les trois profils et leurs limites CPU centrales."""
 
         mutations = (
             (lambda data: data["profiles"].pop(), "Profils obligatoires absents"),
@@ -294,6 +322,9 @@ class ModelRegistryTests(unittest.TestCase):
             ),
             lambda data: data["profiles"][1]["generation"].__setitem__(
                 "max_user_message_bytes", 18929
+            ),
+            lambda data: data["profiles"][2]["generation"].__setitem__(
+                "timeout_seconds", 601
             ),
             lambda data: data["agent_policy"].__setitem__(
                 "max_action_response_tokens", 2049
@@ -383,18 +414,33 @@ class ModelRegistryTests(unittest.TestCase):
         """Une seule définition modèle suffit ; chaque contrat de profil reste distinct."""
 
         data = copy.deepcopy(self.document)
-        data["profiles"][0]["model_id"] = data["models"][1]["id"]
+        data["profiles"][0]["model_id"] = data["models"][2]["id"]
         registry = self.load(data)
         general = registry.profile("general")
-        development = registry.profile("development")
+        veterinary = registry.profile("veterinary")
 
-        self.assertIs(general.model, development.model)
-        self.assertEqual(general.runtime.alias, development.runtime.alias)
+        self.assertIs(general.model, veterinary.model)
+        self.assertEqual(general.runtime.alias, veterinary.runtime.alias)
         self.assertEqual(general.tools, [])
         self.assertEqual(general.workspace_permission, "none")
-        self.assertEqual(development.tools, ["terminal", "file_editor", "task_tracker"])
-        self.assertNotEqual(registry.system_prompt("general"), registry.system_prompt("development"))
-        self.assertEqual(len(registry.document.models), 2)
+        self.assertEqual(veterinary.tools, [])
+        self.assertEqual(veterinary.workspace_permission, "none")
+        self.assertNotEqual(registry.system_prompt("general"), registry.system_prompt("veterinary"))
+        self.assertEqual(len(registry.document.models), 3)
+
+    def test_reasoning_preferences_remain_bound_to_their_profiles(self) -> None:
+        """Général et Vétérinaire ne peuvent ni partager ni échanger leur préférence."""
+
+        for profile_id, preference in (
+            ("general", "veterinary_reasoning"),
+            ("veterinary", "general_reasoning"),
+        ):
+            data = copy.deepcopy(self.document)
+            next(profile for profile in data["profiles"] if profile["id"] == profile_id)[
+                "reasoning_preference"
+            ] = preference
+            with self.subTest(profile=profile_id), self.assertRaises(RegistryError):
+                self.load(data)
 
     def test_voice_engines_require_their_exact_assets_and_capabilities(self) -> None:
         """A voice cannot masquerade as another engine or advertise a fake rate control."""
@@ -453,7 +499,10 @@ class ModelRegistryTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["default_profile_id"], "general")
         self.assertEqual(payload["active_profile_id"], "general")
-        self.assertEqual([profile["id"] for profile in payload["profiles"]], ["general", "development"])
+        self.assertEqual(
+            [profile["id"] for profile in payload["profiles"]],
+            ["general", "development", "veterinary"],
+        )
         self.assertEqual(payload["profiles"][0]["max_user_message_bytes"], 6000)
         self.assertEqual(payload["profiles"][1]["max_user_message_bytes"], 12900)
         self.assertNotIn("model_path", json.dumps(payload))

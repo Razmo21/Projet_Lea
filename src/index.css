@@ -417,6 +417,32 @@ button:disabled {
   margin: 0;
 }
 
+.voice-settings {
+  display: grid;
+  gap: 18px;
+}
+
+.settings-field {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-field > label {
+  font-weight: 600;
+}
+
+.settings-field input[type="range"] {
+  padding: 0;
+  border: 0;
+  accent-color: #2563eb;
+}
+
+.settings-note {
+  margin: 0;
+  color: #475569;
+  line-height: 1.5;
+}
+
 .settings button:focus-visible,
 .reasoning-options input:focus-visible {
   outline: 3px solid #2563eb;
@@ -433,6 +459,12 @@ button:disabled {
 .resource-row progress { width: 100%; accent-color: #2563eb; }
 .resource-option { display: flex; align-items: center; gap: 8px; }
 .resource-option input { width: auto; margin: 0; }
+.settings .resource-option {
+  padding: 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #f8fafc;
+}
 @media (max-width: 420px) {
   .resource-row { grid-template-columns: 45px minmax(95px, 1fr) minmax(50px, 1fr); }
 }
