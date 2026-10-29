@@ -29,6 +29,7 @@ class Preferences(BaseModel):
     general_reasoning: ReasoningLevel = "low"
     veterinary_reasoning: ReasoningLevel = "high"
     show_resource_chart: bool = False
+    web_enabled: bool = False
     voice_microphone_id: str = Field(default="", max_length=256, pattern=r"^[^\x00]*$")
     voice_language: Literal["fr", "en"] = "fr"
     voice_enabled: bool = True
@@ -45,6 +46,7 @@ class PreferenceChange(BaseModel):
     general_reasoning: ReasoningLevel | None = None
     veterinary_reasoning: ReasoningLevel | None = None
     show_resource_chart: bool | None = None
+    web_enabled: bool | None = None
     voice_microphone_id: str | None = Field(default=None, max_length=256, pattern=r"^[^\x00]*$")
     voice_language: Literal["fr", "en"] | None = None
     voice_enabled: bool | None = None
@@ -75,14 +77,14 @@ class PreferencesStore:
         """Refuse une préférence persistée invalide au lieu de l'écraser par défaut."""
 
         row = connection.execute(
-            "SELECT revision, general_reasoning, veterinary_reasoning, show_resource_chart, voice_microphone_id, "
+            "SELECT revision, general_reasoning, veterinary_reasoning, show_resource_chart, web_enabled, voice_microphone_id, "
             "voice_language, voice_enabled, voice_id, voice_volume, voice_rate FROM user_preferences WHERE id = 1"
         ).fetchone()
         if row is None:
             raise PreferencesError("Les préférences enregistrées sont absentes ou invalides.")
         try:
             values = dict(row)
-            for key in ("show_resource_chart", "voice_enabled"):
+            for key in ("show_resource_chart", "web_enabled", "voice_enabled"):
                 if type(values[key]) is not int or values[key] not in (0, 1):
                     raise PreferencesError("Les préférences enregistrées sont invalides.")
                 values[key] = bool(values[key])

@@ -668,3 +668,233 @@ Le Qwen2.5-Coder-14B ignoré, non référencé et devenu inutile a été supprim
 demande explicite. Le Qwen2.5-Coder-7B validé reste le seul modèle Programmation.
 La prochaine étape autorisée après validation manuelle est l'étape 16 — Web.
 La vision reste suspendue et le profil Auxiliaire est retiré définitivement.
+
+## D-035 — Web Gateway manuel, éphémère et commun aux profils
+
+La phase 16.1 étend l’unique backend FastAPI ; elle ne crée ni navigateur, ni
+serveur, ni modèle, ni conteneur. Une préférence SQLite désactivée par défaut
+permet l’usage du Web, mais ne l’autorise jamais automatiquement. Le backend
+reconnaît une demande réseau explicite ou la case dédiée, demande confirmation
+si l’intention ou le contenu privé est ambigu, puis émet en RAM un permis lié au
+texte exact. Ce permis expire rapidement, est supprimé avant le premier accès et
+ne peut servir à une seconde demande. Les confirmations en attente expirent et
+disparaissent au redémarrage.
+
+Le fournisseur prioritaire est l’interface Lite publique de DuckDuckGo :
+gratuite et sans compte. La validation a montré une protection intermittente et
+spécifique à certaines formulations, même avec HTTP 200. Onze instances
+publiques SearXNG annoncées disponibles ont répondu par HTTP 429 ou par une page
+de contrôle anti-robot ; elles ne sont donc pas présentées comme un repli fiable.
+Le seul secours retenu est la page HTML publique de Bing, gratuite et sans clé.
+Il reçoit une version déterministe composée uniquement des termes autorisés,
+essaie une fois avec la même identité réseau, puis ses URL de suivi signées sont
+décodées localement pour lire et citer la destination publique réelle. Il s’agit
+d’un fournisseur indépendant après refus, pas d’un nouveau passage sur le défi
+DuckDuckGo. Si les deux échouent, aucun modèle n’est appelé et Léa annonce que
+tous les fournisseurs sont indisponibles. Aucune API payante n’est ajoutée.
+
+Chaque requête HTTP est sans cookie, proxy ambiant ou redirection automatique.
+Le gateway accepte seulement HTTP/HTTPS sur 80/443, résout toutes les adresses,
+refuse l’ensemble du nom si une destination n’est pas globale, puis connecte
+httpx à l’IP approuvée en conservant le Host et le SNI originaux. Chaque
+redirection repasse par cette validation. Deux tentatives de moteur au maximum,
+trois sources, trois redirections, 30 secondes par opération, 500 caractères de
+requête condensée envoyée au fournisseur et des réponses sous un mébioctet
+bornent l’usage. Cette borne ne limite pas le message utilisateur, qui reste sous
+le budget de son profil. Les URL à identifiants, localhost, réseaux privés,
+link-local, réservés et métadonnées cloud sont refusés.
+
+Le fournisseur reçoit uniquement les termes utiles. Une directive initiale
+explicite comme « Cherche sur Internet » est retirée par une règle déterministe,
+sans intervention du modèle et sans élargir le permis. La même condensation
+place les noms propres en tête avant l'unique essai de chaque fournisseur ; elle
+n'ajoute aucun mot et ne relance jamais DuckDuckGo après un défi. Historique, souvenirs,
+fichiers et prompts ne quittent pas la machine. Le HTML est décodé en mémoire,
+les éléments actifs et de navigation sont ignorés, puis le texte est joint au
+dernier message utilisateur comme donnée non fiable. Le modèle local ne reçoit
+aucun outil réseau. Programmation utilise l’endpoint conversationnel uniquement
+pour cette synthèse : OpenHands, le terminal et l’Agent Server restent sans Web.
+
+SQLite 13 conserve seulement, sous la réponse assistante, titre, URL, domaine,
+court résumé, fournisseur, date de consultation, éventuelle date publiée
+déclarée et statut de lecture. Ni HTML intégral, ni jeton, ni opération active
+ne sont persistés. SQLite 14 ajoute au message un type public borné d’échec Web,
+sans changer la contrainte historique des erreurs de génération. Une suppression
+de conversation cascade ces métadonnées.
+Un tel échec ne peut être ni réessayé ni modifié par les anciennes routes : un
+nouveau brouillon, un nouvel envoi et un nouveau permis sont obligatoires.
+L’annulation signale l’événement éphémère au backend et coupe aussi la synthèse
+locale si la collecte vient de finir. L’absence de demande ne démarre aucune
+boucle, tâche ou processus supplémentaire.
+
+Pour un tour local qui combine une catégorie actuelle bornée (météo, sport,
+actualité, version ou décision) et une intention présente, l’orchestrateur ne
+consulte ni le modèle ni le réseau. Il finalise une réponse déterministe qui
+reconnaît l’absence de vérification et propose une autorisation ponctuelle si le
+réglage le permet. Une année passée désactive ce chemin afin de conserver les
+questions historiques ; les connaissances générales sans intention actuelle
+restent également confiées au modèle local.
+
+À la clôture de 16.1, cette décision couvrait seulement recherche simple et pages HTML publiques.
+JavaScript, PDF, recherche approfondie, compte, formulaire, téléchargement,
+achat, publication, CAPTCHA et navigateur dynamique restent refusés ou reportés
+aux phases 16.2/16.3 après validation explicite de 16.1.
+
+## D-036 — Vérification multi-source et documents publics sous le permis existant
+
+Après acceptation technique explicite de 16.1, la phase 16.2 prolonge le même
+`WebGateway`, la même préférence et le même permis consommé avant le premier
+accès. Une intention de vérification bornée autorise au plus trois recherches
+complémentaires directement liées au texte utilisateur, quatre sources par
+défaut (six au plafond injectable) et 45 secondes. Elle ne crée ni service,
+navigateur, modèle, compte, boucle de fond ni accès réseau OpenHands.
+
+Les lots de résultats sont parcourus par rang afin qu’une première recherche ne
+remplisse pas tout le budget avant les recherches d’origine et de contexte. URL,
+origine éditoriale probable et empreinte textuelle servent uniquement à éviter
+les doublons ; le nom du domaine ne reçoit aucun score arbitraire de crédibilité.
+Un recouvrement lexical minimal écarte le hors-sujet évident. L’essai réel d’une
+affirmation sur la Grande Muraille a ainsi révélé des résultats Bing indépendants
+mais sans rapport ; ils ne sont désormais plus comptés comme preuves et
+l’opération échoue honnêtement avec `web_no_results`.
+
+Le backend compte seulement les origines effectivement lues, pas les extraits de
+moteur. Sous deux origines, il finalise lui-même « impossible à vérifier » avec
+`model_id` nul. Au-delà, le modèle local compare les données non fiables sous un
+contrat de verdict proportionné. Les identifiants `[S1]` à `[S6]` viennent de
+l’ordre contrôlé par le backend ; toute référence hors de cet ensemble est
+neutralisée avant SQLite. Cela valide la provenance de la référence, pas la
+vérité sémantique automatique de chaque phrase du modèle.
+
+La migration 15 reconstruit seulement `web_sources`, préserve les lignes 16.1 et
+ajoute nature, dates distinctes et limites. `snippet_only` reste explicitement
+une page non consultée. L’interface affiche l’identifiant, le fournisseur, le
+type et les limites sans inventer de date d’événement.
+
+Les PDF sont reçus par le client SSRF existant, limités à 5 Mio puis lus en RAM
+par `pypdf==6.21.2`, sans temporaire ni OCR. Quarante pages, 12 000 caractères et
+des plafonds internes de décompression/parsing bornent le travail. Signature,
+MIME, chiffrement, texte absent et corruption sont refusés. La date interne du
+PDF n’est jamais renommée date de publication.
+
+Une page vidéo statique peut fournir titre, description, dates et transcription
+JSON-LD. Sans transcription, la source reste `video_metadata` et annonce que la
+vidéo n’a été ni vue ni écoutée. Une plateforme inaccessible demande à
+l’utilisateur le texte pertinent, sans API payante ni contournement.
+
+La validation manuelle 16.1/16.2 est reportée à la fin de l’étape 16 à la demande
+de l’utilisateur. L’autorisation explicite de 16.3 a ensuite été donnée le
+25 octobre 2026.
+
+## D-037 — Edge éphémère comme dernier recours non interactif du Web Gateway
+
+Après acceptation technique explicite de 16.2, la phase 16.3 prolonge le même
+`WebGateway`, la même préférence et le même permis à usage unique. La lecture
+HTTP classique reste prioritaire. Seul un HTML contenant une coquille JavaScript
+générique et trop peu de texte peut appeler `EdgeDynamicPageReader`; un document
+statique ne démarre aucun navigateur.
+
+La dépendance `playwright==1.64.1` est limitée au pilote Python installé avec
+accord. Aucun Chromium n’est téléchargé : Léa lance Microsoft Edge Stable déjà
+présent, headless, avec un nouveau profil temporaire. Le constructeur ne lance
+rien au démarrage et un verrou autorise une seule session à la fois. Le contexte,
+le pilote, le proxy et le profil sont fermés après succès, échec, annulation du
+tour ou annulation de la tâche backend.
+
+La session n’accorde aucune permission et désactive téléchargements, extensions,
+service workers, QUIC, WebRTC non proxifié et réseau de fond connu. Elle ne
+produit aucun clic. Les `<details>` fermés sont lus par `textContent` sans mutation
+du DOM ; la pagination navigue directement vers au plus deux liens de même hôte
+reconnus comme « suivant ». Les formulaires, boutons, fenêtres secondaires,
+comptes, CAPTCHA et paywalls ne sont jamais actionnés.
+
+Un proxy loopback créé pour l’opération reçoit tout HTTP(S), réutilise la
+politique URL du gateway, rejette toute résolution contenant une adresse non
+globale et connecte l’IP publique sélectionnée. Il refuse aussi tout hôte autre
+que celui de la page initiale. L’interception Playwright limite les ressources
+à document/script/style/XHR/fetch, les méthodes à GET/HEAD, retire les en-têtes
+d’authentification visibles et refuse les URL de téléchargement ou d’action
+sensible. Les limites sont trois pages, 80 requêtes, 24 connexions, 12 Mio et
+20 secondes.
+
+Le proxy applicatif et l’interception ne sont pas assimilés à une isolation
+réseau parfaite de Chromium au niveau OS. Pour conserver une frontière défendable,
+les CDN et API sur un hôte distinct, les redirections inter-hôtes et les sections
+qui exigent un bouton restent incompatibles. Edge respecte aussi d’éventuelles
+politiques d’entreprise externes au projet. En cas d’incompatibilité, Léa échoue
+sans élargir le réseau, contourner la protection ou réutiliser le profil personnel.
+
+La migration 16 ajoute `dynamic_html` au type de preuve. Seuls le texte borné,
+l’URL finale, les métadonnées et une limite explicite sont transmis au modèle et
+persistés ; ni HTML brut, cookie, profil ni capture n’est conservé. Edge agentique
+pour OpenHands, vision vidéo, téléchargement et actions distantes restent hors
+périmètre. La campagne manuelle unique demeure reportée à la fin de l’étape 16.
+
+## D-038 — Une confirmation Web désigne un tour exact, jamais une intention implicite
+
+La validation manuelle de l’étape 16 a montré qu’une réponse backend proposant
+le Web ne créait pas toujours l’attente correspondante. Une confirmation courte
+pouvait alors suivre le chemin local et être interprétée librement par le modèle.
+Même lorsqu’une attente existait, la synthèse utilisait le texte « Oui, vas-y »
+comme question courante au lieu de la demande initiale. Le mélange avec
+l’historique pouvait ainsi produire un faux appel d’outil, un ancien sujet et des
+identifiants de sources sans collecte réelle.
+
+L’attente en RAM contient désormais la question exacte, l’identifiant du message
+source, le profil, la révision et l’expiration. Le backend la crée aussi après un
+refus déterministe d’information actuelle, puis la consomme avant le réseau. Il
+vérifie encore le message source dans SQLite ; toute absence, expiration,
+réutilisation, mutation, autre conversation ou autre profil produit une réponse
+locale demandant une nouvelle autorisation. La requête initiale, et non la
+confirmation, est envoyée au Web Gateway puis au modèle avec les résultats réels.
+
+Une nouvelle synthèse Web exclut l'historique des tours précédents : leurs
+réponses et références ne peuvent pas servir de preuves à la collecte courante.
+Sans `WebResearch` courant, une génération qui simule un bloc d’outil,
+revendique une consultation Internet ou attribue une preuve à `[S…]` est remplacée
+par un refus déterministe. Avec une recherche simple, le passage lu reste en RAM
+le temps de contrôler une correspondance lexicale minimale avec la citation ; il
+n’est pas ajouté à SQLite. Les scores textuellement structurés conservent leur
+association équipe-nombre : une inversion est rejetée et des pages discordantes
+imposent l’incertitude. Ce mécanisme ne prétend ni résoudre tous les alias
+sportifs ni démontrer l’entaillement sémantique général.
+
+Un domaine écrit explicitement borne les résultats de recherche acceptés à cet
+hôte ou ses sous-domaines. Une URL complète reste une lecture directe et son hôte
+ne bloque pas une recherche complémentaire indépendante si cette page échoue.
+Sans résultat pertinent, l’opération échoue honnêtement. Aucun domaine, match,
+score ou verdict particulier n’est codé en dur.
+
+Enfin, Web désactivé reste une interdiction absolue de réseau, mais le refus est
+maintenant persisté comme un tour de conversation sans appel au modèle. L’incident
+historique d’un `llama-server.exe` survivant sans état signé n’a pas été reproduit.
+Le superviseur conserve donc son choix fail-closed : un processus non rattachable
+à l’état PID/chemin/date de Léa n’est ni adopté ni tué automatiquement.
+
+## D-039 — Le consentement vient du texte et la preuve reste proportionnée à la demande
+
+La stabilisation finale retire la case ponctuelle du frontend et le champ
+`web_authorized` du contrat d’envoi. Lorsque la préférence globale est active,
+le backend autorise seulement une formulation Web explicite ou la consommation
+d’une confirmation liée à une attente exacte. Un ancien client qui envoie le
+booléen supprimé est refusé par le schéma strict ; aucun état d’interface ne peut
+donc transformer la préférence en autorisation permanente.
+
+Une URL directe est une demande documentaire par défaut. La source peut établir
+ce qu’elle contient ou affirme, sans constituer une confirmation indépendante de
+la vérité générale. Les deux origines restent exigées lorsqu’une demande réclame
+explicitement corroboration, comparaison multi-source ou consensus. Cette
+distinction évite une recherche complémentaire inutile sans affaiblir les
+verdicts factuels approfondis.
+
+La limite de 500 caractères s’applique aux termes condensés remis à DuckDuckGo
+ou Bing, pas au message utilisateur. Pour le HTML seulement, une réponse qui
+dépasse la borne de 768 Kio peut être arrêtée à la borne puis analysée dans sa
+partie reçue ; la preuve déclare alors sa lecture partielle. PDF, résultats de
+recherche et autres ressources conservent leur comportement strict.
+
+Enfin, chaque page de pagination dynamique conserve son URL et son extrait sous
+une source distincte. Les citations simples contrôlent aussi les nombres et
+versions de leur affirmation contre la preuve citée. Ces vérifications restent
+déterministes et prudentes : elles ne prétendent pas remplacer une analyse
+sémantique universelle.

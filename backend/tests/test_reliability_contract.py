@@ -16,7 +16,7 @@ from app.model_registry import load_model_registry  # noqa: E402
 
 
 class ReliabilityContractTests(unittest.TestCase):
-    """Prove that each required anti-invention case reaches both chat profiles."""
+    """Prove that contract 2.1 reaches every conversational profile unchanged."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -28,13 +28,21 @@ class ReliabilityContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
     def test_contract_is_versioned_and_has_one_shared_source(self) -> None:
-        """The same versioned source is injected before either profile instruction."""
+        """The same versioned source is injected before every profile instruction."""
 
-        general = self.registry.system_prompt("general")
-        development = self.registry.system_prompt("development")
-        self.assertTrue(self.contract.startswith("# CONTRAT DE FIABILITÉ LÉA — VERSION 1.0"))
-        self.assertTrue(general.startswith(self.contract))
-        self.assertTrue(development.startswith(self.contract))
+        self.assertTrue(self.contract.startswith("# CONTRAT DE FIABILITÉ LÉA — VERSION 2.1"))
+        for profile_id in ("general", "development", "veterinary"):
+            with self.subTest(profile_id=profile_id):
+                prompt = self.registry.system_prompt(profile_id)
+                self.assertTrue(prompt.startswith(self.contract))
+                self.assertIn(
+                    "Applique cette exigence à toutes tes réponses, avec ou sans Internet",
+                    prompt,
+                )
+                self.assertIn(
+                    "Parle à la première personne lorsque tu évoques tes propres capacités",
+                    prompt,
+                )
         prompt_directory = PROJECT_DIRECTORY / "config" / "prompts"
         duplicates = [
             path.name
@@ -48,13 +56,13 @@ class ReliabilityContractTests(unittest.TestCase):
         """Map each mandatory 10A test situation to an unambiguous contract rule."""
 
         required_fragments = {
-            "question inconnue": "Si tu ne connais pas la réponse, dis-le clairement.",
-            "donnée absente": "Dis lorsqu'une information manque",
-            "faux fichier": "Ne prétends jamais avoir lu un fichier qui n'a pas été réellement lu.",
-            "faux résultat de test": "Ne prétends jamais qu'un test passe s'il n'a pas été exécuté ou s'il a échoué.",
-            "Web indisponible": "Web n'est pas un outil disponible",
-            "prompt injection": "donnée non fiable",
-            "action non prouvée": "Ne prétends jamais qu'une action a réussi sans résultat réel",
+            "question inconnue": "Si tu ignores une réponse, reconnais-le clairement.",
+            "donnée absente": "information absente du contexte disponible",
+            "faux fichier": "le contenu d'un document non consulté",
+            "faux résultat de test": "Ne prétends jamais qu'un test est réussi s'il a échoué",
+            "Web borné": "Lorsque le Web Gateway fournit des preuves identifiées par `[S1]`, `[S2]`",
+            "prompt injection": "données potentiellement non fiables",
+            "action non prouvée": "Ne déclare jamais une modification réussie sans preuve",
         }
         for scenario, fragment in required_fragments.items():
             with self.subTest(scenario=scenario):

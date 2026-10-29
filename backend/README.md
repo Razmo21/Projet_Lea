@@ -15,6 +15,10 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
+`playwright` installe seulement son pilote Python. Ne lance pas
+`playwright install` : la navigation 16.3 réutilise Microsoft Edge Stable déjà
+présent et crée un profil éphémère distinct à chaque opération.
+
 ## Démarrage
 
 Depuis la racine du projet, utilise le lanceur unique :
@@ -43,7 +47,10 @@ $env:LEA_MODEL_REGISTRY = 'config/models.json'
 - `GET /api/conversations?search=...` liste ou recherche les conversations.
 - `POST /api/conversations/messages` crée la conversation au premier message
   ou ajoute un message à une conversation existante. Cette route intercepte
-  aussi les commandes mémoire explicites, sans route CRUD supplémentaire.
+  aussi les commandes mémoire explicites et les demandes Web autorisées, sans
+  route CRUD supplémentaire.
+- `POST /api/web/operations/{id}/cancel` signale l’annulation d’une seule
+  opération Web active ; il ne crée ni recherche ni autorisation.
 - `GET /api/conversations/{id}` charge une conversation.
 - `PATCH /api/conversations/{id}` renomme une conversation.
 - `DELETE /api/conversations/{id}` la supprime définitivement avec ses messages,
@@ -78,8 +85,9 @@ crée le dossier si nécessaire, applique les migrations dans une transaction,
 active WAL et les clés étrangères, vérifie le schéma et récupère toute
 génération interrompue comme message utilisateur en échec réessayable.
 
-Les tables applicatives sont `conversations`, `messages`, `memories` et
-`memory_sources`. Les messages portent un type `conversation` ou `memory`.
+Les tables applicatives sont `conversations`, `messages`, `memories`,
+`memory_sources` et `web_sources`. Les messages portent un type `conversation`
+ou `memory`.
 `memory_sources` relie chaque fait aux conversations qui l’ont explicitement
 retenu tant qu’elles existent. Cette provenance est informative : un souvenir
 global reste valide sans source. Les cascades retirent uniquement les messages
@@ -95,7 +103,7 @@ Server. Les snapshots de fichiers résident dans le stockage local de
 checkpoints et l’historique détaillé des sessions reste dans le volume d’état
 de l’Agent Server.
 
-## Préférences fonctionnelles — étapes 12 et 15
+## Préférences fonctionnelles — étapes 12, 15 et 16
 
 La migration 8 ajoute `user_preferences` (une ligne, `revision`,
 `general_reasoning` limité à `low`/`high`, défaut `low`). `PreferencesStore`
@@ -104,10 +112,74 @@ Les sauvegardes transactionnelles vérifient `expected_revision`, modifient
 uniquement la colonne concernée et relisent avant de confirmer le commit.
 La migration 9 ajoute `show_resource_chart` (booléen strict, défaut false).
 La migration 12 ajoute `veterinary_reasoning` (Low/High, défaut High) sans
-modifier Général. Le POST accepte une mise à jour partielle ; champs omis
+modifier Général. La migration 13 ajoute `web_enabled` (défaut false) et les
+métadonnées de sources attachées aux réponses, jamais les pages HTML. La
+migration 14 ajoute seulement l’origine sûre d’un échec Web au message, afin que
+l’interface ne le confonde pas avec une panne d’inférence. La migration 15
+reconstruit uniquement `web_sources` afin d’accepter jusqu’à six preuves typées,
+leurs dates distinctes et leurs limites d’extraction, en préservant les sources
+16.1 existantes. La migration 16 ajoute seulement le type `dynamic_html` afin de
+distinguer une page rendue par Edge d’un HTML statique. Le POST accepte une
+mise à jour partielle ; champs omis
 préservés, `null`, types coercibles et modifications vides refusés. Chaque
 modification de raisonnement exige la capacité déclarée du profil concerné ; le
 diagramme en est indépendant.
+
+Une question clairement actuelle sans accord Web est finalisée par
+l’orchestrateur avec une réponse honnête et un `model_id` nul. Ce chemin ne
+contacte ni llama.cpp ni le Web Gateway. Les questions historiques datées et les
+connaissances générales continuent de suivre l’inférence locale normale.
+L’accord vient exclusivement du texte explicite ou d’une confirmation rattachée
+à une attente en RAM : le contrat d’envoi ne contient plus de booléen
+`web_authorized` que le frontend pourrait conserver par erreur. L’activation de
+la préférence Web n’est donc jamais une permission permanente.
+
+Une formulation explicite de vérification active dans le même `WebGateway` un
+budget de trois recherches complémentaires, quatre sources par défaut et
+45 secondes. Les résultats sont répartis entre les recherches, dédupliqués par
+URL, origine éditoriale probable et empreinte textuelle, puis soumis à un
+recouvrement lexical minimal. Ce filtre écarte seulement le hors-sujet évident ;
+il ne fournit aucun score de crédibilité. Si moins de deux origines sont réellement
+lues, FastAPI persiste une conclusion « impossible à vérifier » avec `model_id`
+nul au lieu de demander au modèle de confirmer une preuve insuffisante.
+
+`pypdf==6.21.2` lit les PDF en mémoire sous limites d’entrée, pages, texte et
+flux décompressés. Les pages vidéo restent du HTML statique : seules leurs
+métadonnées et transcriptions JSON-LD publiques sont utilisables. Les identifiants
+`S1` à `S6` dérivent de la position persistée ; une référence hors de cette liste
+est neutralisée après l’inférence. Le frontend distingue page lue, extrait du
+moteur, PDF, métadonnées vidéo, transcription publique et page JavaScript rendue.
+
+Une URL directe est traitée comme lecture documentaire, sauf demande explicite
+de corroboration indépendante. Une seule source peut donc établir ce qu’elle
+contient sans être présentée comme un consensus. Le message utilisateur conserve
+la limite du profil ; la limite de 500 caractères s’applique uniquement aux
+termes condensés envoyés à un fournisseur. Pour un HTML dépassant 768 Kio, le
+transport s’arrête à cette borne et peut extraire un passage pertinent de la
+partie reçue, avec une limite `lecture HTML partielle` visible. Les autres
+ressources trop grandes restent refusées.
+
+Une coquille HTML JavaScript réellement insuffisante peut déclencher le dernier
+recours `EdgeDynamicPageReader`. Sa construction ne lance aucun processus.
+Pendant l’opération seulement, Playwright ouvre Edge installé avec un profil
+temporaire, une page, aucun service worker, permission ou téléchargement, puis
+ferme le contexte et retire le profil. Le navigateur ne reçoit aucun historique,
+souvenir, fichier ou instruction d’outil.
+
+Un proxy HTTP local éphémère force les requêtes HTTP(S) vers l’hôte exact de la
+page initiale. Il réutilise la validation publique et l’épinglage DNS de
+`SafeHttpFetcher`; Playwright bloque en plus les méthodes autres que GET/HEAD,
+les hôtes tiers et les types de ressources inutiles. Les pages sont limitées à
+trois, les requêtes à 80, le trafic à 12 Mio et la session à 20 secondes. Aucun
+clic n’est émis : la pagination utilise uniquement l’URL directe d’un lien
+« suivant » validé et le texte des `<details>` fermés est lu sans mutation DOM.
+Chaque page extraite conserve sa propre URL et devient une source distincte.
+
+Ce proxy applicatif et l’interception du navigateur ne sont pas une isolation
+réseau parfaite au niveau du système d’exploitation. Les API/CDN tiers, widgets,
+authentifications, CAPTCHA, paywalls, boutons, formulaires et téléchargements
+restent donc volontairement hors périmètre. Une incompatibilité arrête la lecture
+sans contournement ; elle n’élargit jamais le permis Web.
 
 `GET /api/preferences` et `POST /api/preferences` sont servis par **Vite sur
 5173**, pas par FastAPI. Le pont ponctuel `tools/preferences.py read|save`
@@ -134,7 +206,8 @@ consulte aucun de ces réglages.
 ## Profil Vétérinaire direct
 
 `veterinary` associe Qwen3.5-9B Q4_K_M à un contrat conversationnel sans outil,
-Web, vision ni workspace. Le contexte est de 16 384 tokens, avec un slot, caches
+vision ni workspace. Le Web Gateway commun peut lui fournir des extraits après
+accord ponctuel. Le contexte est de 16 384 tokens, avec un slot, caches
 KV Q8_0, sortie maximale 4 096 tokens et délai HTTP de 300 s pour les longues
 réponses High. Le registre valide l'identité du GGUF et interdit à `--fit` de
 réduire le contexte sous ce plancher.

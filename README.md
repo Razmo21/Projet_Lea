@@ -30,6 +30,15 @@ L’étape 15 ajoute le profil Vétérinaire local et compare les contrats de r�
 avant de conserver leurs optimisations. L'intégration technique est prête ; ses
 limites scientifiques et la procédure de validation manuelle sont consignées
 dans `docs/ETAPE_15_VALIDATION.md`.
+La phase 16.1 ajoute une recherche et une lecture HTML publiques strictement
+manuelles, communes aux trois profils. La phase 16.2 ajoute la vérification
+multi-source, les PDF textuels et l’analyse opportuniste des textes publics de
+vidéos ; voir `docs/ETAPE_16_1_VALIDATION.md` et
+`docs/ETAPE_16_2_VALIDATION.md`. La phase 16.3 ajoute un recours Edge éphémère
+pour certaines pages JavaScript publiques ; voir `docs/ETAPE_16_3_VALIDATION.md`.
+La première campagne manuelle est terminée ; les derniers correctifs et les
+limites acceptées sont résumés dans `docs/ETAPE_16_3_VALIDATION.md`. Une
+revalidation utilisateur reste nécessaire avant le commit de l’étape 16.
 
 ## Philosophie
 
@@ -41,6 +50,7 @@ On ne commence jamais une nouvelle fonctionnalité tant que l'étape actuelle n'
 
 - React + TypeScript + Vite
 - Python + FastAPI
+- Playwright Python utilisant Microsoft Edge déjà installé, uniquement à la demande
 - llama.cpp avec le modèle local Qwen
 - SQLite
 
@@ -317,7 +327,8 @@ installation llama.cpp que Général. Le fichier est
 `models/veterinary/Qwen3.5-9B-Q4_K_M.gguf`; le registre en vérifie la taille et
 le SHA-256 avant tout lancement. Sa fenêtre Léa est de 16 384 tokens, avec un
 seul slot, KV Q8_0 et une sortie maximale de 4 096 tokens. Il n'a ni outil, ni
-workspace, ni Web, ni vision et ne démarre jamais Docker.
+workspace, ni vision et ne démarre jamais Docker. Comme les autres profils, il
+peut recevoir les résultats du Web Gateway après une autorisation manuelle.
 
 Ses deux vocations sont de même importance : apprentissage vétérinaire et
 raisonnement clinique théorique. Le contrat demande l'espèce, distingue données,
@@ -334,6 +345,131 @@ pilote réellement `enable_thinking` dans le template natif Qwen3.5 ; la pensée
 interne n'est ni affichée ni persistée. Les deux voix locales, la dictée,
 l'historique, la mémoire explicite et le diagramme de ressources utilisent les
 mêmes chemins génériques que les autres profils.
+
+### Web Gateway — phases 16.1 à 16.3
+
+Le réglage **Autoriser les demandes Web explicites** est désactivé par défaut.
+Une fois activé, les questions restent locales par défaut. Seule une formulation
+explicite telle que « Cherche sur Internet… » autorise le Web pour ce tour. Une
+demande actuelle sans cette autorisation propose la recherche et attend une
+confirmation ; « Oui, vas-y » ne vaut que pour la demande exacte en attente dans
+cette conversation, avec le même profil et la même révision, puis elle est
+consommée. Une attente absente, expirée, modifiée, déjà utilisée ou issue d’un
+autre contexte ne lance rien. La confirmation courte n’est jamais envoyée seule
+au modèle à la place de la question initiale.
+
+Le backend interroge d’abord l’interface Lite gratuite de DuckDuckGo, sans
+compte. Si ce fournisseur refuse ou ne peut pas exploiter la recherche, il
+effectue au plus une tentative indépendante sur la page HTML publique de Bing,
+avec la même identité réseau et sans contourner la protection initiale. Il lit
+ensuite au plus trois pages HTML publiques simples. Il n’envoie que les termes
+utiles de la requête courante, condensés dès l'unique essai primaire sans ajout
+de terme ni nouvelle tentative : ni historique, ni souvenir, ni fichier local. Les sources
+réellement utilisées sont enregistrées comme métadonnées et restent cliquables
+dans l’historique ; les pages HTML complètes ne sont pas conservées.
+
+Sans accord Web sur le tour, une demande ciblée de météo, résultat sportif,
+actualité, version ou décision actuelle reçoit directement une réponse de
+l’orchestrateur indiquant que l’information ne peut pas être confirmée et
+proposant une recherche autorisée. Ni le modèle ni le fournisseur Web ne sont
+appelés dans ce cas. Les questions historiques datées et les connaissances
+générales continuent d’utiliser le chemin local normal. Les échecs de collecte
+sont affichés comme erreurs Web, et non plus comme échecs génériques de génération.
+Lorsque le réglage Web est désactivé, une demande explicite est tout de même
+conservée dans la conversation avec un refus déterministe ; aucun fournisseur ni
+modèle n’est alors appelé.
+
+Les destinations sont limitées à HTTP/HTTPS sur les ports standards. DNS est
+résolu puis épinglé à une adresse publique ; les réseaux locaux/réservés, les
+identifiants d’URL, les redirections dangereuses et les délais excessifs sont
+refusés. Une ressource trop grande est refusée, hormis la lecture HTML partielle
+bornée décrite plus bas. Le contenu reçu reste une donnée non fiable.
+Programmation utilise cette voie conversationnelle séparée : OpenHands, son
+terminal et ses conteneurs restent sans accès Internet.
+
+Un échec Web ne réutilise jamais l'accord du tour. L'action proposée recopie la
+question dans un nouveau brouillon, et la recherche ne repart qu'après un nouvel
+envoi explicite de l'utilisateur.
+
+Une demande explicite de vérification, de comparaison, de rumeur ou de fact-check
+active la recherche approfondie. Le même permis couvre au plus trois recherches
+complémentaires directement liées à la demande et quatre sources par défaut
+(six au plafond configurable). Le backend privilégie les origines distinctes,
+écarte les URL et copies textuelles en double ainsi que les résultats manifestement
+hors sujet. Il ne déduit toutefois aucune crédibilité du seul nom de domaine.
+Avec moins de deux origines indépendantes effectivement lues, il conclut lui-même
+« impossible à vérifier » sans demander au modèle de confirmer l’affirmation.
+
+Les PDF publics sont lus en mémoire avec `pypdf`, sous limites de 5 Mio, 40 pages,
+12 000 caractères extraits et plafonds de décompression. Aucun OCR ni fichier
+temporaire. Un PDF image, chiffré, malformé, trop grand ou au MIME incohérent est
+refusé honnêtement. Pour une vidéo publique, Léa utilise seulement la description,
+les métadonnées ou une transcription textuelle réellement exposée par la page ;
+elle ne prétend jamais avoir vu ou écouté la vidéo et demande le texte si nécessaire.
+
+Les sources portent des identifiants `[S1]…` attribués par le backend, leur type,
+leur statut de lecture et des dates distinctes de publication, mise à jour,
+document et consultation. Une référence inventée par le modèle est neutralisée
+avant persistance. Un extrait de moteur reste libellé `snippet_only`, jamais
+comme page consultée. DuckDuckGo et Bing peuvent limiter ou modifier leur HTML ;
+les fournisseurs sont isolés derrière une interface et l’absence de Web conserve
+le fonctionnement local normal.
+
+Les réponses locales ne peuvent pas publier un faux bloc `[Tech]`, une fausse
+demande à une base Web ni attribuer une valeur probante à `[S1]` sans collecte
+contrôlée. Pour une recherche simple, la source citée doit aussi partager des
+termes porteurs avec l’affirmation correspondante. Un domaine écrit explicitement
+borne les résultats acceptés ; une URL complète reste lue directement. Cette
+lecture décrit par défaut ce que contient le document demandé ; elle n’exige des
+sources indépendantes que si la demande sollicite explicitement une corroboration,
+une comparaison ou un consensus. Le message utilisateur n’est pas limité à 500
+caractères : seules les requêtes condensées envoyées aux fournisseurs le sont.
+Lorsque des pages lues exposent clairement deux équipes et leurs scores, le
+backend conserve ces associations, refuse leur inversion et annonce
+l’incertitude si les sources se contredisent. Les valeurs numériques ou versions
+attribuées à une citation doivent aussi apparaître dans la preuve correspondante.
+Ces contrôles lexicaux et structurés ne constituent pas une compréhension
+sémantique universelle.
+
+Une page HTML volumineuse est lue en flux jusqu’à la limite existante de 768 Kio.
+Le parseur peut extraire dans cette partie bornée les passages liés à la demande,
+sans charger la fin de la ressource ; la source indique alors explicitement que
+la lecture est partielle. PDF, pages de recherche et autres types de ressources
+conservent leur refus strict en cas de dépassement.
+
+Pour une vérification portant sur une date civile complète, le backend distingue
+les dates éditoriales de page des passages datés du contenu. Une confirmation
+doit citer au moins deux pages réellement lues qui contiennent la date demandée ;
+une contradiction doit faire de même pour une date alternative commune. Si ce
+rattachement déterministe manque, Léa répond prudemment au lieu de publier le
+verdict du modèle. Ce contrôle lexical ne prétend pas comprendre une négation ou
+garantir l’entaillement complet du passage.
+
+Une page HTML classique reste toujours lue sans navigateur. Si son HTML est une
+coquille JavaScript générique et manifestement insuffisante, le même permis déjà
+consommé peut lancer Microsoft Edge installé sur le PC. Playwright utilise un
+profil neuf dans un répertoire temporaire, sans navigateur téléchargé, compte,
+permission, cookie personnel, téléchargement ou service worker. La session ne
+survit jamais à l’opération.
+
+Le navigateur effectue uniquement des requêtes GET/HEAD vers l’hôte exact de la
+page initiale. Un proxy loopback éphémère résout toutes ses destinations, refuse
+les adresses non publiques et épingle l’IP comme le lecteur HTTP. Les méthodes
+mutantes, autres schémas, hôtes tiers, ressources média, WebSocket, formulaires,
+clics, boutons, authentifications, CAPTCHA et URL transactionnelles sont refusés.
+La pagination suit directement au plus deux liens `rel=next` ou « suivant » de
+même hôte ; les `<details>` sont lus dans le DOM sans les ouvrir ni déclencher
+d’événement. Chaque page parcourue devient une preuve distincte rattachée à son
+URL exacte, au lieu d’attribuer tout le contenu à la dernière page visitée. Un
+maximum de trois pages, 80 requêtes, 12 Mio de trafic et 20 secondes borne chaque
+session.
+
+Cette défense en profondeur n’est pas un conteneur réseau ni une preuve
+d’isolation parfaite de Chromium. Elle bloque les chemins pris en charge et a
+été testée contre localhost, fichiers, redirections et sous-ressources locales.
+Par prudence, les CDN/API sur un autre hôte, les sections nécessitant un bouton,
+les connexions et les protections anti-robot ne sont pas pris en charge. Léa
+échoue honnêtement au lieu de cliquer ou contourner le site.
 
 ## Architecture indépendante des modèles
 
@@ -606,15 +742,17 @@ preuves réelles, simulations, limites et ménage. Le benchmark difficile est co
 
 ## Roadmap
 
-Les étapes 11 à 14 sont terminées. L’étape 15 est techniquement prête et attend
-la validation manuelle ; elle n'ajoute ni Web ni vision.
+Les étapes 11 à 14 sont terminées. Les phases 16.1 à 16.3 sont techniquement
+prêtes ; leur validation manuelle est regroupée à la fin de l’étape 16.
 
 - Étape 11 — Architecture indépendante des modèles.
 - Étape 12 — Centre de paramètres de Léa.
 - Étape 13 — Programmation avancée.
 - Étape 14 — Microphone et conversation vocale (terminée et validée manuellement).
 - Étape 15 — Vétérinaire et optimisation des contrats (validation manuelle requise).
-- Étape 16 — Accès Web (non commencée).
+- Étape 16.1 — Recherche Web fondamentale (techniquement acceptée).
+- Étape 16.2 — Recherche approfondie/PDF (techniquement prête).
+- Étape 16.3 — Navigation Web publique dynamique (techniquement prête).
 - Étape 17 — Génération d’images.
 - Étape 19 — Speech-to-Speech.
 - Étape 20 — Refonte visuelle.

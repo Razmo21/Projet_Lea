@@ -151,6 +151,16 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "incomplet|migration SQLite"):
             self.database.initialize()
 
+    def test_latest_schema_without_web_source_index_is_rejected(self) -> None:
+        """Une version 16 incomplète échoue au démarrage plutôt qu'à la première réponse Web."""
+
+        self.database.initialize()
+        with self.database.connection() as connection:
+            connection.execute("DROP INDEX idx_web_sources_message_position")
+
+        with self.assertRaisesRegex(RuntimeError, "incomplet"):
+            self.database.initialize()
+
     def test_stage_8_database_migrates_to_latest_schema_without_data_loss(self) -> None:
         """Keep the legacy migration path intact while later stage tables are introduced."""
 

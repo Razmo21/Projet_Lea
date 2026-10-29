@@ -754,9 +754,16 @@ class ApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertIn("fenêtre de contexte", response.json()["detail"])
         self.assertEqual(len(self.gateway.calls), calls_before)
+        # L'attente de confirmation Web vit uniquement en RAM et ne fait donc
+        # pas partie de la représentation persistée comparée ici.
+        persisted_conversation = {
+            key: value
+            for key, value in conversation.items()
+            if key != "web_confirmation_pending"
+        }
         self.assertEqual(
             self.application.state.database.get_conversation(conversation["id"]),
-            conversation,
+            persisted_conversation,
         )
 
         edited = self.client.patch(
@@ -771,7 +778,7 @@ class ApiTestCase(unittest.TestCase):
         self.assertEqual(len(self.gateway.calls), calls_before)
         self.assertEqual(
             self.application.state.database.get_conversation(conversation["id"]),
-            conversation,
+            persisted_conversation,
         )
 
     def test_memory_and_large_question_are_rejected_before_any_pending_write(self) -> None:

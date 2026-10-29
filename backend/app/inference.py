@@ -26,6 +26,21 @@ class ModelResponseError(RuntimeError):
     """Signale une réponse d’inférence mal formée ou refusée par le moteur."""
 
 
+class ModelContextError(ModelResponseError):
+    """Distingue un prompt trop long d'une génération vide ou invalide."""
+
+    def __init__(self, prompt_tokens: int | None = None, context_tokens: int | None = None) -> None:
+        """Conserve les seules tailles techniques utiles au diagnostic local."""
+
+        super().__init__("Le contexte transmis au modèle local dépasse sa fenêtre disponible.")
+        self.prompt_tokens = prompt_tokens
+        self.context_tokens = context_tokens
+
+
+class ModelTruncatedError(ModelResponseError):
+    """Refuse une réponse coupée par la limite de génération."""
+
+
 def llama_cpp_arguments(configuration: dict[str, Any]) -> list[str]:
     """Construit une liste sans shell à partir des paramètres déjà validés."""
 
@@ -93,6 +108,12 @@ class LlamaCppAdapter:
         """Adresse de readiness : la liste doit annoncer l’alias configuré."""
 
         return f"http://{self.endpoint.host}:{self.endpoint.port}{self.endpoint.models_path}"
+
+    @property
+    def local_base_url(self) -> str:
+        """Adresse locale commune aux endpoints de template et de tokenisation."""
+
+        return f"http://{self.endpoint.host}:{self.endpoint.port}"
 
     @property
     def sdk_base_url(self) -> str:
@@ -165,15 +186,22 @@ class LlamaCppAdapter:
         messages: list[dict[str, str]],
         *,
         high_reasoning: bool = False,
+        max_tokens: int | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> str:
         """Échange au format OpenAI local avec le contrôle déclaré par le modèle."""
 
+        output_tokens = min(
+            self.profile.generation.max_tokens if max_tokens is None else max_tokens,
+            self.profile.generation.max_tokens,
+        )
+        if output_tokens <= 0:
+            raise ValueError("La limite de sortie du modèle doit être positive.")
         payload: dict[str, Any] = {
             "model": self.profile.runtime.alias,
             "messages": messages,
             "stream": False,
-            "max_tokens": self.profile.generation.max_tokens,
+            "max_tokens": output_tokens,
         }
         if self.profile.model.stop_sequences:
             payload["stop"] = list(self.profile.model.stop_sequences)
@@ -191,14 +219,59 @@ class LlamaCppAdapter:
         except httpx.RequestError as error:
             raise ModelUnavailableError(MODEL_UNAVAILABLE_MESSAGE) from error
         except httpx.HTTPStatusError as error:
+            try:
+                details = error.response.json().get("error", {})
+                if isinstance(details, dict) and details.get("type") == "exceed_context_size_error":
+                    raise ModelContextError(
+                        details.get("n_prompt_tokens"), details.get("n_ctx")
+                    ) from error
+            except (TypeError, ValueError, AttributeError):
+                pass
             raise ModelResponseError("Le modèle local de Léa a renvoyé une erreur.") from error
         try:
-            content = response.json()["choices"][0]["message"]["content"]
+            choice = response.json()["choices"][0]
+            if choice.get("finish_reason") == "length":
+                raise ModelTruncatedError("La réponse du modèle local a été tronquée.")
+            content = choice["message"]["content"]
             if not isinstance(content, str):
                 raise TypeError("Réponse non textuelle.")
             return content
-        except (IndexError, KeyError, TypeError, ValueError) as error:
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError) as error:
             raise ModelResponseError(MODEL_INVALID_RESPONSE_MESSAGE) from error
+
+    async def prompt_token_count(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        high_reasoning: bool = False,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> int:
+        """Compte le vrai template de chat avec le tokenizer du modèle déjà chargé."""
+
+        template_payload: dict[str, Any] = {"messages": messages}
+        if self.profile.model.reasoning_control == "chat_template_kwargs":
+            template_payload["chat_template_kwargs"] = {"enable_thinking": high_reasoning}
+        try:
+            async with httpx.AsyncClient(timeout=10.0, transport=transport) as client:
+                template_response = await client.post(
+                    f"{self.local_base_url}/apply-template", json=template_payload
+                )
+                template_response.raise_for_status()
+                prompt = template_response.json()["prompt"]
+                if not isinstance(prompt, str):
+                    raise TypeError("Template non textuel.")
+                token_response = await client.post(
+                    f"{self.local_base_url}/tokenize", json={"content": prompt}
+                )
+                token_response.raise_for_status()
+                tokens = token_response.json()["tokens"]
+                if not isinstance(tokens, list) or not all(isinstance(token, int) for token in tokens):
+                    raise TypeError("Tokenisation invalide.")
+                return len(tokens)
+        except httpx.RequestError as error:
+            raise ModelUnavailableError(MODEL_UNAVAILABLE_MESSAGE) from error
+        except (httpx.HTTPStatusError, KeyError, TypeError, ValueError) as error:
+            raise ModelResponseError("Le budget du contexte local ne peut pas être vérifié.") from error
 
 
 def inference_adapter(registry: LoadedModelRegistry, profile_id: str) -> LlamaCppAdapter:

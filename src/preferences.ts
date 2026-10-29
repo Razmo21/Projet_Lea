@@ -8,6 +8,7 @@ export type Preferences = {
   veterinary_reasoning_available: boolean
   profile_settings: ProfileSetting[]
   show_resource_chart: boolean
+  web_enabled: boolean
 } & VoicePreferences
 
 export type ProfileSetting = {
@@ -36,6 +37,7 @@ export type PreferenceChange = {
   general_reasoning?: ReasoningLevel
   veterinary_reasoning?: ReasoningLevel
   show_resource_chart?: boolean
+  web_enabled?: boolean
 } & Partial<VoicePreferences>
 
 // Une réponse HTTP réussie ne suffit pas : la valeur persistée doit être exploitable.
@@ -52,6 +54,7 @@ export function isPreferences(value: unknown): value is Preferences {
         typeof item.model_name === 'string' && typeof item.reasoning_available === 'boolean'
     }) &&
     typeof data.show_resource_chart === 'boolean' &&
+    typeof data.web_enabled === 'boolean' &&
     typeof data.voice_microphone_id === 'string' && data.voice_microphone_id.length <= 256 &&
     (data.voice_language === 'fr' || data.voice_language === 'en') &&
     typeof data.voice_enabled === 'boolean' && typeof data.voice_id === 'string' && /^[a-zA-Z0-9_-]+$/.test(data.voice_id) &&
@@ -94,6 +97,7 @@ export async function requestPreferences(
     (change.general_reasoning !== undefined && (!data.general_reasoning_available || data.general_reasoning !== change.general_reasoning)) ||
     (change.veterinary_reasoning !== undefined && (!data.veterinary_reasoning_available || data.veterinary_reasoning !== change.veterinary_reasoning)) ||
     (change.show_resource_chart !== undefined && data.show_resource_chart !== change.show_resource_chart) ||
+    (change.web_enabled !== undefined && data.web_enabled !== change.web_enabled) ||
     Object.keys(defaultVoicePreferences).some((key) => {
       const field = key as keyof VoicePreferences
       return change[field] !== undefined && data[field] !== change[field]

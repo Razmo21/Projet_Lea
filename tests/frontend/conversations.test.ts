@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import {
@@ -6,7 +7,16 @@ import {
   buildSendMessagePayload,
   conversationIdFromSearch,
   createLatestRequestGate,
+  isAmbiguousWebRequest,
+  isExplicitWebRequest,
+  isWebConfirmation,
+  isWebFailure,
+  messageFailureLabel,
+  webAuthorizationForTurn,
+  webRetryDraft,
+  webSourceKindLabel,
 } from '../../src/conversations.ts'
+import type { WebSource } from '../../src/conversations.ts'
 import type { ConversationDetail } from '../../src/conversations.ts'
 import {
   activeModelProfile,
@@ -51,6 +61,7 @@ const conversation: ConversationDetail = {
       kind: 'conversation',
       model_id: null,
       profile_id: null,
+      web_sources: [],
       error: null,
       created_at: '2026-08-12T00:00:00.000Z',
       updated_at: '2026-08-12T00:00:00.000Z',
@@ -65,6 +76,7 @@ const conversation: ConversationDetail = {
       kind: 'conversation',
       model_id: 'lea-general',
       profile_id: 'general',
+      web_sources: [],
       error: null,
       created_at: '2026-08-12T00:00:00.000Z',
       updated_at: '2026-08-12T00:00:00.000Z',
@@ -81,6 +93,7 @@ test('the browser sends only the conversation id, message and expected revision'
     message: 'Nouveau message',
     expected_revision: 7,
   })
+  assert.equal('web_authorized' in payload, false)
   assert.equal('history' in payload, false)
   assert.equal(JSON.stringify(payload).includes('/no_think'), false)
   assert.equal(JSON.stringify(payload).includes('system'), false)
@@ -93,6 +106,44 @@ test('a deferred new conversation has no id or revision before its first message
     message: 'Premier message',
     expected_revision: null,
   })
+})
+
+test('Web consent comes only from explicit wording or the scoped confirmation', () => {
+  assert.equal(isExplicitWebRequest('Cherche sur Internet la version actuelle'), true)
+  assert.equal(isExplicitWebRequest('https://example.com/article'), true)
+  assert.equal(webAuthorizationForTurn('Cherche sur Internet la version actuelle'), true)
+  assert.equal(webAuthorizationForTurn('https://example.com/article'), true)
+  assert.equal(webAuthorizationForTurn('Une question ordinaire'), false)
+  assert.equal(isExplicitWebRequest('Peux-tu regarder cela ?'), false)
+  assert.equal(isAmbiguousWebRequest('Peux-tu regarder ce qui se passe ?'), true)
+  assert.equal(isWebConfirmation('Oui, vas-y.'), true)
+  assert.equal(isWebConfirmation('Oui, cherche'), true)
+  assert.equal(isWebConfirmation('Vas-y'), true)
+  assert.equal(isWebConfirmation("Toi cherche s'il te plaît"), true)
+  assert.equal(isWebConfirmation('Toi, recherche stp.'), true)
+  assert.equal(isWebConfirmation('Oui, mais plus tard'), false)
+})
+
+test('the question form no longer exposes the obsolete per-turn Web checkbox', () => {
+  const appSource = readFileSync(new URL('../../src/App.tsx', import.meta.url), 'utf8')
+
+  assert.equal(appSource.includes('Utiliser le Web uniquement pour cette question'), false)
+  assert.equal(appSource.includes('webRequested'), false)
+})
+
+test('Web evidence labels distinguish PDFs, transcripts and metadata-only videos', () => {
+  const source: WebSource = {
+    source_id: 'S1', title: 'Preuve', url: 'https://example.com/preuve',
+    domain: 'example.com', snippet: 'Résumé', provider: 'Test',
+    consulted_at: '2026-10-24T12:00:00+00:00', published_at: null,
+    updated_at: null, document_date: null, retrieval_status: 'read',
+    source_kind: 'pdf', limitations: null,
+  }
+  assert.equal(webSourceKindLabel(source), 'PDF lu')
+  assert.equal(webSourceKindLabel({ ...source, source_kind: 'dynamic_html' }), 'page JavaScript lue')
+  assert.equal(webSourceKindLabel({ ...source, source_kind: 'video_transcript' }), 'transcription publique')
+  assert.equal(webSourceKindLabel({ ...source, source_kind: 'video_metadata' }), 'métadonnées vidéo seulement')
+  assert.equal(webSourceKindLabel({ ...source, source_kind: 'search_snippet' }), 'extrait du moteur seulement')
 })
 
 
@@ -158,6 +209,62 @@ test('only ordinary conversation turns allow destructive message actions', () =>
   assert.equal(
     allowsDestructiveMessageAction({ kind: 'memory' }),
     false,
+  )
+})
+
+test('persisted Web failures are not presented as model generation failures', () => {
+  assert.equal(
+    messageFailureLabel({ error: 'model_error', failure_kind: 'web_blocked' }),
+    'Fournisseur Web bloqué.',
+  )
+  assert.equal(
+    messageFailureLabel({ error: 'model_error', failure_kind: 'web_timeout' }),
+    'Recherche Web trop lente.',
+  )
+  assert.equal(
+    messageFailureLabel({ error: 'model_error', failure_kind: 'web_extraction' }),
+    'Contenu Web inaccessible.',
+  )
+  assert.equal(
+    messageFailureLabel({ error: 'model_error', failure_kind: 'web_extraction' }),
+    'Contenu Web inaccessible.',
+  )
+  assert.equal(
+    messageFailureLabel({ error: 'model_error', failure_kind: null }),
+    'Échec de la génération.',
+  )
+  assert.equal(
+    messageFailureLabel({ error: 'model_error', failure_kind: 'web_error' }),
+    'Recherche ou synthèse Web échouée.',
+  )
+  assert.equal(isWebFailure({ failure_kind: 'web_blocked' }), true)
+  assert.equal(isWebFailure({ failure_kind: 'web_error' }), true)
+  assert.equal(isWebFailure({ failure_kind: 'model_error' }), false)
+  assert.equal(isWebFailure({ failure_kind: null }), false)
+})
+
+test('a failed Web confirmation prepares the original question as a new explicit draft', () => {
+  const question = 'Quelle est la température actuelle à Montréal ?'
+  const history = [
+    { role: 'user' as const, position: 1, content: question },
+    { role: 'assistant' as const, position: 2, content: 'Veux-tu que je cherche ?' },
+    { role: 'user' as const, position: 3, content: "Toi cherche s'il te plaît" },
+  ]
+
+  assert.equal(
+    webRetryDraft(history[2], history),
+    `Cherche sur Internet : ${question}`,
+  )
+  assert.equal(
+    webRetryDraft(
+      { position: 5, content: 'Cherche sur Internet la température actuelle à Montréal' },
+      history,
+    ),
+    'Cherche sur Internet la température actuelle à Montréal',
+  )
+  assert.equal(
+    webRetryDraft({ position: 3, content: 'Oui' }, []),
+    '',
   )
 })
 

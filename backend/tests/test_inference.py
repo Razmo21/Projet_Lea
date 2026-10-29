@@ -13,7 +13,9 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.inference import (  # noqa: E402
+    ModelContextError,
     ModelResponseError,
+    ModelTruncatedError,
     ModelUnavailableError,
     inference_adapter,
     llama_cpp_arguments,
@@ -89,6 +91,49 @@ class InferenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(requests[0].url), adapter.chat_url)
         self.assertEqual(requests[0].extensions["timeout"]["read"], 120.0)
 
+    async def test_short_web_output_uses_a_bounded_override(self) -> None:
+        """Une synthèse courte ne change pas le plafond des tours ordinaires."""
+
+        requests: list[httpx.Request] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            """Conserve les deux payloads locaux sans générer de texte."""
+
+            requests.append(request)
+            return httpx.Response(200, json={"choices": [{"message": {"content": "Réponse"}}]})
+
+        adapter = inference_adapter(self.registry, "general")
+        transport = httpx.MockTransport(respond)
+        await adapter.generate([], max_tokens=512, transport=transport)
+        await adapter.generate([], transport=transport)
+        self.assertEqual(
+            [json.loads(request.content)["max_tokens"] for request in requests],
+            [512, 1024],
+        )
+
+    async def test_prompt_count_uses_the_active_chat_template(self) -> None:
+        """Le budget comprend les marqueurs du template réellement servi."""
+
+        paths: list[str] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            """Imite seulement les deux endpoints locaux de comptage."""
+
+            paths.append(request.url.path)
+            if request.url.path == "/apply-template":
+                self.assertEqual(json.loads(request.content)["messages"][0]["content"], "Test")
+                return httpx.Response(200, json={"prompt": "<template>Test</template>"})
+            self.assertEqual(json.loads(request.content)["content"], "<template>Test</template>")
+            return httpx.Response(200, json={"tokens": [1, 2, 3]})
+
+        adapter = inference_adapter(self.registry, "general")
+        count = await adapter.prompt_token_count(
+            [{"role": "user", "content": "Test"}],
+            transport=httpx.MockTransport(respond),
+        )
+        self.assertEqual(count, 3)
+        self.assertEqual(paths, ["/apply-template", "/tokenize"])
+
     async def test_veterinary_reasoning_uses_qwen35_template_argument(self) -> None:
         """Low/High change the native Qwen3.5 flag without text directives."""
 
@@ -155,6 +200,35 @@ class InferenceTests(unittest.IsolatedAsyncioTestCase):
 
                 with self.assertRaises(ModelResponseError):
                     await adapter.generate([], transport=httpx.MockTransport(respond))
+
+    async def test_context_overflow_and_truncated_output_have_distinct_errors(self) -> None:
+        """Le dépassement 400 de llama.cpp et finish_reason=length sont identifiables."""
+
+        adapter = inference_adapter(self.registry, "general")
+
+        def overflow(request: httpx.Request) -> httpx.Response:
+            """Reproduit la structure d'erreur observée sur le vrai moteur."""
+
+            return httpx.Response(400, json={"error": {
+                "type": "exceed_context_size_error",
+                "n_prompt_tokens": 8369,
+                "n_ctx": 8192,
+            }})
+
+        with self.assertRaises(ModelContextError) as caught:
+            await adapter.generate([], transport=httpx.MockTransport(overflow))
+        self.assertEqual((caught.exception.prompt_tokens, caught.exception.context_tokens), (8369, 8192))
+
+        def truncated(request: httpx.Request) -> httpx.Response:
+            """Une sortie coupée ne devient pas une réponse publiable."""
+
+            return httpx.Response(200, json={"choices": [{
+                "message": {"content": "Réponse incomplète"},
+                "finish_reason": "length",
+            }]})
+
+        with self.assertRaises(ModelTruncatedError):
+            await adapter.generate([], transport=httpx.MockTransport(truncated))
 
     def test_sdk_configuration_is_model_driven(self) -> None:
         """Le port, le préfixe API et les stops SDK proviennent du registre."""

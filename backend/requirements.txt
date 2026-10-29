@@ -1,4 +1,6 @@
 fastapi==0.141.1
 httpx==0.28.1
+playwright==1.64.1
+pypdf==6.21.2
 starlette==1.6.0
 uvicorn==0.34.0

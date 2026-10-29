@@ -7,7 +7,15 @@ import {
   conversationIdFromSearch,
   createLatestRequestGate,
   formatActivity,
+  isAmbiguousWebRequest,
+  isExplicitWebRequest,
+  isWebConfirmation,
+  isWebFailure,
+  messageFailureLabel,
   setConversationInUrl,
+  webAuthorizationForTurn,
+  webRetryDraft,
+  webSourceKindLabel,
 } from './conversations'
 import type {
   ConversationDetail,
@@ -177,6 +185,8 @@ function App() {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState('')
   const [isRenaming, setIsRenaming] = useState(false)
+  const [webInProgress, setWebInProgress] = useState(false)
+  const [webOperationId, setWebOperationId] = useState<string | null>(null)
 
   // Verrous synchrones : ils bloquent les doubles clics avant le prochain rendu React.
   const generationLock = useRef(false)
@@ -901,7 +911,30 @@ function App() {
       setConversationError('La question est trop longue pour le contexte actif de Léa.')
       return
     }
-    const payload = buildSendMessagePayload(activeConversation, submitted)
+    const confirmsPendingWeb = activeConversation?.web_confirmation_pending === true
+      && isWebConfirmation(submitted)
+    if (
+      programmingActive
+      && !isExplicitWebRequest(submitted)
+      && !isAmbiguousWebRequest(submitted)
+      && !confirmsPendingWeb
+    ) {
+      setConversationError(
+        'En Programmation, cette zone accepte uniquement une demande Web explicite. '
+        + 'Utilise la tâche OpenHands pour modifier un projet.',
+      )
+      return
+    }
+    const usesWeb = webAuthorizationForTurn(submitted) || confirmsPendingWeb
+    const operationId = usesWeb ? crypto.randomUUID() : null
+    const payload = {
+      // Le texte explicite ou la confirmation liée au tour constituent les
+      // seules autorisations ; le réglage global n'est jamais une permission.
+      ...buildSendMessagePayload(activeConversation, submitted),
+      ...(operationId ? { web_request_id: operationId } : {}),
+    }
+    setWebInProgress(usesWeb)
+    setWebOperationId(operationId)
     void runGeneration(
       () =>
         apiRequest<ConversationDetail>('/api/conversations/messages', {
@@ -909,7 +942,22 @@ function App() {
           body: JSON.stringify(payload),
         }),
       submitted,
-    )
+    ).finally(() => {
+      setWebInProgress(false)
+      setWebOperationId(null)
+    })
+  }
+
+  // Le backend conserve l'autorité : le bouton ne fait que signaler l'opération en cours.
+  async function cancelWebRequest() {
+    if (!webOperationId) return
+    try {
+      await apiRequest(`/api/web/operations/${encodeURIComponent(webOperationId)}/cancel`, {
+        method: 'POST',
+      })
+    } catch (error) {
+      setConversationError(error instanceof Error ? error.message : 'L’annulation Web n’a pas été confirmée.')
+    }
   }
 
   // Réinitialise seulement l'interface; SQLite attend toujours le premier message.
@@ -1030,6 +1078,7 @@ function App() {
       conversationLoadingLock.current ||
       renameLock.current ||
       message.role !== 'user' ||
+      isWebFailure(message) ||
       !allowsDestructiveMessageAction(message)
     ) return
     setRenameDraft(null)
@@ -1050,6 +1099,7 @@ function App() {
       isGenerating ||
       conversationLoadingLock.current ||
       message.role !== 'user' ||
+      isWebFailure(message) ||
       !allowsDestructiveMessageAction(message)
     ) return
     const content = editDraft.trim()
@@ -1119,6 +1169,28 @@ function App() {
     )
   }
 
+  // Prépare une nouvelle conversation Web sans recycler le tour ni son ancien accord.
+  function prepareWebRetry(message: ConversationMessage) {
+    if (
+      !activeConversation ||
+      isGenerating ||
+      conversationLoadingLock.current ||
+      message.role !== 'user' ||
+      !isWebFailure(message) ||
+      preferences?.web_enabled !== true
+    ) return
+    conversationRequests.current.invalidate()
+    conversationLoadingLock.current = false
+    setIsConversationLoading(false)
+    setActiveConversation(null)
+    closeEditors()
+    setQuestion(webRetryDraft(message, activeConversation.messages))
+    setPendingText('')
+    setConversationError('')
+    setConversationInUrl(null)
+    focusQuestion()
+  }
+
   // Copie le texte visible et fournit un retour bref, y compris en cas d'échec.
   async function handleCopy(message: ConversationMessage) {
     try {
@@ -1163,60 +1235,107 @@ function App() {
   )
   const projectCapabilityActive = Boolean(activeProfile?.capabilities.includes('workspace_projects'))
 
-  // Reuse the existing run poller; voice introduces no second agent-status loop.
+  // La voix utilise le suivi OpenHands existant, sans seconde boucle de polling.
   useEffect(() => {
     const waiting = voiceRunWaiter.current
     if (!waiting) return
-    if (agentRun?.run_id === waiting.id && !isActiveAgentRun(agentRun)) waiting.resolve(agentRun)
-    else if (agentPollingHealth.consecutive_failures >= 3) waiting.reject(new Error('Suivi OpenHands indisponible. Vérifie le run dans l’interface classique avant toute nouvelle demande.'))
+    if (agentRun?.run_id === waiting.id && !isActiveAgentRun(agentRun)) {
+      waiting.resolve(agentRun)
+    } else if (agentPollingHealth.consecutive_failures >= 3) {
+      waiting.reject(new Error('Suivi OpenHands indisponible. Vérifie le run dans l’interface classique avant toute nouvelle demande.'))
+    }
   }, [agentRun, agentPollingHealth])
 
-  // The captured callback belongs to the conversation visible at the first mic click.
+  // La dictée reste liée à la conversation visible au premier clic sur le micro.
   function dictated(text: string) {
-    if (activeConversationRef.current?.id !== activeConversation?.id) throw new Error('La conversation a changé ; dictée non insérée.')
-    if (programmingActive) setAgentTask((draft) => appendDictation(draft, text))
-    else setQuestion((draft) => appendDictation(draft, text))
+    if (activeConversationRef.current?.id !== activeConversation?.id) {
+      throw new Error('La conversation a changé ; dictée non insérée.')
+    }
+    if (programmingActive) {
+      setAgentTask((draft) => appendDictation(draft, text))
+    } else {
+      setQuestion((draft) => appendDictation(draft, text))
+    }
   }
 
-  // Voice changes input/output only: existing endpoints own persistence and permissions.
+  // La voix change l'entrée et la sortie ; les endpoints existants gardent les permissions et la persistance.
   async function sendVoice(text: string, signal: AbortSignal): Promise<{ text: string; review?: boolean; notice?: string }> {
-    if (signal.aborted || !activeProfile || coreStatus.state !== 'ready' || activeConversationRef.current?.id !== activeConversation?.id) throw new Error('Le contexte a changé. Recommence l’intervention.')
-    if (byteLength(text) > activeProfile.max_user_message_bytes) throw new Error('La transcription est trop longue pour le profil actif.')
-    if (activeProfile.capabilities.includes('agent_runs')) {
-      if (!projectCatalog?.active_project_id || isActiveAgentRun(agentRun)) throw new Error('Sélectionne un projet et termine le run actif dans l’interface classique.')
-      setIsAgentStarting(true); setAgentChanges(null)
+    if (signal.aborted || !activeProfile || coreStatus.state !== 'ready'
+      || activeConversationRef.current?.id !== activeConversation?.id) {
+      throw new Error('Le contexte a changé. Recommence l’intervention.')
+    }
+    if (byteLength(text) > activeProfile.max_user_message_bytes) {
+      throw new Error('La transcription est trop longue pour le profil actif.')
+    }
+    const explicitVoiceWeb = isExplicitWebRequest(text)
+    const confirmsPendingVoiceWeb = activeConversation?.web_confirmation_pending === true
+      && isWebConfirmation(text)
+    const possibleVoiceWeb = explicitVoiceWeb
+      || isAmbiguousWebRequest(text)
+      || confirmsPendingVoiceWeb
+    if (activeProfile.capabilities.includes('agent_runs') && !possibleVoiceWeb) {
+      if (!projectCatalog?.active_project_id || isActiveAgentRun(agentRun)) {
+        throw new Error('Sélectionne un projet et termine le run actif dans l’interface classique.')
+      }
+      setIsAgentStarting(true)
+      setAgentChanges(null)
       let run: AgentRun
       try {
         run = requireAgentRun(await apiRequest('/api/agent-runs', {
-          method: 'POST', body: JSON.stringify({ task: text, record_conversation: true,
-            conversation_id: activeConversation?.id ?? null, expected_revision: activeConversation?.revision ?? null,
-            expected_profile_id: activeProfile.id, expected_project_id: projectCatalog.active_project_id }),
+          method: 'POST',
+          body: JSON.stringify({
+            task: text,
+            record_conversation: true,
+            conversation_id: activeConversation?.id ?? null,
+            expected_revision: activeConversation?.revision ?? null,
+            expected_profile_id: activeProfile.id,
+            expected_project_id: projectCatalog.active_project_id,
+          }),
         }))
         setAgentRun(run)
         if (run.conversation_id) await loadConversation(run.conversation_id, true)
         await loadConversations(search)
-      } finally { setIsAgentStarting(false) }
-      // Closing audio does not silently cancel an already-authorized project mutation.
+      } finally {
+        setIsAgentStarting(false)
+      }
+      // Fermer l'audio n'annule pas silencieusement une mutation de projet déjà autorisée.
       if (signal.aborted) throw new Error('Audio fermé. Le run reste consultable dans Programmation.')
       const finished = await new Promise<AgentRun>((resolve, reject) => {
-        if (!isActiveAgentRun(run)) { resolve(run); return }
+        if (!isActiveAgentRun(run)) {
+          resolve(run)
+          return
+        }
         const cancel = () => reject(new Error('Audio fermé ; consulte le run dans Programmation.'))
         signal.addEventListener('abort', cancel, { once: true })
         voiceRunWaiter.current = {
           id: run.run_id,
-          resolve: (value) => { signal.removeEventListener('abort', cancel); resolve(value) },
-          reject: (error) => { signal.removeEventListener('abort', cancel); reject(error) },
+          resolve: (value) => {
+            signal.removeEventListener('abort', cancel)
+            resolve(value)
+          },
+          reject: (error) => {
+            signal.removeEventListener('abort', cancel)
+            reject(error)
+          },
         }
-        // A very short run may have ended while its conversation was loading.
-        // One snapshot closes that race; subsequent updates still use the existing poller.
+        // Un run court peut finir pendant le chargement de sa conversation.
+        // Un instantané couvre cette course ; la suite utilise le poller existant.
         void apiRequest<unknown>(`/api/agent-runs/${run.run_id}`, { signal }).then((payload) => {
           const current = requireAgentRun(payload)
-          if (!isActiveAgentRun(current) && voiceRunWaiter.current?.id === run.run_id) voiceRunWaiter.current.resolve(current)
+          if (!isActiveAgentRun(current) && voiceRunWaiter.current?.id === run.run_id) {
+            voiceRunWaiter.current.resolve(current)
+          }
         }).catch((failure: unknown) => {
-          if (voiceRunWaiter.current?.id === run.run_id) voiceRunWaiter.current.reject(failure instanceof Error ? failure : new Error('Suivi du run indisponible.'))
+          if (voiceRunWaiter.current?.id === run.run_id) {
+            voiceRunWaiter.current.reject(failure instanceof Error ? failure : new Error('Suivi du run indisponible.'))
+          }
         })
-      }).finally(() => { voiceRunWaiter.current = null })
-      const detail = finished.conversation_id ? await apiRequest<ConversationDetail>(`/api/conversations/${finished.conversation_id}`) : null
+      }).finally(() => {
+        voiceRunWaiter.current = null
+      })
+      const detail = finished.conversation_id
+        ? await apiRequest<ConversationDetail>(`/api/conversations/${finished.conversation_id}`)
+        : null
       if (detail) await refreshAfterMutation(detail, conversationRequests.current.current())
       const answer = detail?.messages.find((item) => item.agent_run_id === finished.run_id && item.role === 'assistant')?.content
       return {
@@ -1226,15 +1345,36 @@ function App() {
       }
     }
     let answer = ''
+    const voiceWebOperationId = explicitVoiceWeb || confirmsPendingVoiceWeb
+      ? crypto.randomUUID()
+      : null
+    const cancelVoiceWeb = () => {
+      if (voiceWebOperationId) {
+        void apiRequest(`/api/web/operations/${voiceWebOperationId}/cancel`, { method: 'POST' }).catch(() => undefined)
+      }
+    }
+    signal.addEventListener('abort', cancelVoiceWeb, { once: true })
     const result = await runGeneration(async () => {
-      const detail = await apiRequest<ConversationDetail>('/api/conversations/messages', { method: 'POST',
-        body: JSON.stringify({ ...buildSendMessagePayload(activeConversation, text), expected_profile_id: activeProfile.id }) })
+      const detail = await apiRequest<ConversationDetail>('/api/conversations/messages', {
+        method: 'POST',
+        signal,
+        body: JSON.stringify({
+          // La voix suit la même autorisation textuelle : le backend valide la
+          // formulation et peut demander confirmation avant tout réseau.
+          ...buildSendMessagePayload(activeConversation, text),
+          expected_profile_id: activeProfile.id,
+          ...(voiceWebOperationId ? { web_request_id: voiceWebOperationId } : {}),
+        }),
+      })
       answer = detail.messages.at(-1)?.role === 'assistant' ? detail.messages.at(-1)!.content : ''
       return detail
-    }, text, false)
-    if (result !== 'completed' || !answer) throw new Error('La réponse n’a pas abouti. Consulte l’historique avant de réessayer ; aucune demande n’est renvoyée automatiquement.')
+    }, text, false).finally(() => signal.removeEventListener('abort', cancelVoiceWeb))
+    if (result !== 'completed' || !answer) {
+      throw new Error('La réponse n’a pas abouti. Consulte l’historique avant de réessayer ; aucune demande n’est renvoyée automatiquement.')
+    }
     return { text: answer }
   }
+
   return (
     <main>
       {settingsOpen && <Settings onBack={closeSettings} onSaved={setPreferences} />}
@@ -1638,8 +1778,29 @@ function App() {
                 ) : (
                   <p>{message.content}</p>
                 )}
+                {message.role === 'assistant' && message.web_sources.length > 0 && (
+                  <section className="message-sources" aria-label="Sources Web collectées">
+                    <strong>Web utilisé — Sources contrôlées par Léa</strong>
+                    <ol>
+                      {message.web_sources.map((source) => (
+                        <li key={`${source.source_id}:${source.url}`}>
+                          <a href={source.url} target="_blank" rel="noopener noreferrer">
+                            [{source.source_id}] {source.title}
+                          </a>
+                          <small>
+                            {source.domain} · {source.provider} · {webSourceKindLabel(source)}
+                            {source.published_at ? ` · publié : ${source.published_at}` : ''}
+                            {source.updated_at ? ` · mis à jour : ${source.updated_at}` : ''}
+                            {source.document_date ? ` · date interne du document : ${source.document_date}` : ''}
+                          </small>
+                          {source.limitations && <small>Limite : {source.limitations}</small>}
+                        </li>
+                      ))}
+                    </ol>
+                  </section>
+                )}
                 {message.status === 'failed' && (
-                  <p className="message-error">Échec de la génération.</p>
+                  <p className="message-error">{messageFailureLabel(message)}</p>
                 )}
                 {editingMessageId !== message.id && (
                   <div className="message-actions">
@@ -1650,7 +1811,9 @@ function App() {
                     >
                       Copier
                     </button>
-                    {message.role === 'user' && allowsDestructiveMessageAction(message) && (
+                    {message.role === 'user' &&
+                      !isWebFailure(message) &&
+                      allowsDestructiveMessageAction(message) && (
                       <button
                         type="button"
                         className="text-button"
@@ -1662,6 +1825,7 @@ function App() {
                     )}
                     {message.role === 'user' &&
                       message.status === 'failed' &&
+                      !isWebFailure(message) &&
                       allowsDestructiveMessageAction(message) && (
                         <button
                           type="button"
@@ -1675,6 +1839,25 @@ function App() {
                           }
                         >
                           Réessayer
+                        </button>
+                      )}
+                    {message.role === 'user' &&
+                      message.status === 'failed' &&
+                      isWebFailure(message) &&
+                      allowsDestructiveMessageAction(message) && (
+                        <button
+                          type="button"
+                          className="text-button"
+                          onClick={() => prepareWebRetry(message)}
+                          disabled={
+                            isGenerating ||
+                            isConversationLoading ||
+                            isRenaming ||
+                            preferences?.web_enabled !== true ||
+                            coreStatus.state !== 'ready'
+                          }
+                        >
+                          Préparer une nouvelle recherche
                         </button>
                       )}
                     {message.role === 'assistant' && allowsDestructiveMessageAction(message) && (
@@ -1716,13 +1899,7 @@ function App() {
           )}
         </section>
 
-        {programmingActive ? (
-          <p className="conversation-empty">
-            Le profil Programmation utilise la tâche OpenHands ci-dessus, pas la conversation directe.
-          </p>
-        ) : (
-          // Même encadré que la conversation, sans changer les contrôles de saisie.
-          <form className="conversation" aria-label="Votre question" onSubmit={handleSubmit}>
+        <form className="conversation" aria-label="Votre question" onSubmit={handleSubmit}>
             <label htmlFor="question">Votre question</label>
             <textarea
               ref={questionInput}
@@ -1737,19 +1914,50 @@ function App() {
                 isRenaming
               }
             />
+            {preferences?.web_enabled !== true && (
+              <p className="web-note">Le Web est désactivé dans Paramètres.</p>
+            )}
+            {programmingActive && (
+              <p className="web-note">
+                Cette zone reste réservée au Web conversationnel. OpenHands et son terminal
+                restent sans accès Internet.
+              </p>
+            )}
+            {webInProgress && (
+              <div className="web-progress" role="status">
+                <span>Recherche Web autorisée en cours…</span>
+                {webOperationId && (
+                  <button
+                    type="button"
+                    className="secondary-button compact-button"
+                    onClick={() => void cancelWebRequest()}
+                  >
+                    Annuler la recherche
+                  </button>
+                )}
+              </div>
+            )}
             <button
               type="submit"
               disabled={
                 isGenerating ||
                 isConversationLoading ||
                 isRenaming ||
-                coreStatus.state !== 'ready'
+                coreStatus.state !== 'ready' ||
+                (
+                  programmingActive
+                  && !isExplicitWebRequest(question)
+                  && !isAmbiguousWebRequest(question)
+                  && !(
+                    activeConversation?.web_confirmation_pending === true
+                    && isWebConfirmation(question)
+                  )
+                )
               }
             >
               {isGenerating ? 'Envoi...' : 'Envoyer'}
             </button>
-          </form>
-        )}
+        </form>
       </section>
       <VoiceControls preferences={preferences} onMode={setVoiceOpen} onDictated={dictated} onSend={sendVoice}
         hidden={settingsOpen} contextKey={`${coreStatus.state}:${selectedProfileId}:${projectCatalog?.active_project_id ?? ''}`}

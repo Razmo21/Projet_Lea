@@ -166,9 +166,73 @@ validation physique finalement confirmée par l’utilisateur.
 - [x] Rapport technique : `docs/ETAPE_15_VALIDATION.md`.
 - [ ] Validation manuelle dans Microsoft Edge autonome.
 
-## Roadmap validée — après la validation manuelle de l’étape 15
+## ÉTAPE 16 — Accès Web — phases 16.1 à 16.3 techniquement prêtes
 
-- Étape 16 — Accès Web.
+- [x] Web Gateway backend partagé par Général, Programmation et Vétérinaire.
+- [x] Préférence SQLite 13 désactivée par défaut et accord manuel par requête.
+- [x] Confirmation conservatrice des demandes ambiguës et permission à usage unique.
+- [x] Recherche gratuite DuckDuckGo Lite et lecture de pages HTML publiques simples.
+- [x] DNS épinglé, filtrage SSRF/redirections, limites de temps, taille et nombre de sources.
+- [x] Pages traitées comme données non fiables, sans historique ni souvenir transmis.
+- [x] Sources cliquables persistées sans conserver les pages HTML complètes.
+- [x] Indicateur, erreurs et annulation Web dans l’interface ; voix explicite partagée.
+- [x] Tests simulés, suites de non-régression, build et essai fournisseur réel.
+- [x] Correctif manuel 16.1 : texte explicite aligné avec le bouton, termes utiles
+  extraits sans modèle, parseur `<meta>` robuste et erreurs Web différenciées.
+- [x] Correctif de fiabilité 16.1 : DuckDuckGo prioritaire, un secours Bing borné,
+  fournisseur réellement cité, migration 14 pour l’origine des erreurs et garde-fou
+  ciblé sur les informations actuelles sans recherche automatique.
+- [x] Requête utile condensée avant l'unique essai primaire ; nouvel accord et
+  nouveau brouillon obligatoires après tout échec Web.
+- [x] Correctif « informations actuelles sans Web » : tournure météo française
+  reconnue et réponse backend déterministe, sans appel modèle ni réseau.
+- [x] Phase 16.1 techniquement acceptée ; validation manuelle complète reportée
+  à la fin de l’étape 16 sur décision de l’utilisateur.
+- [x] Phase 16.2 — jusqu’à trois recherches complémentaires et quatre sources
+  par défaut, pertinence minimale, origines/copies distinctes et verdict prudent.
+- [x] Dates de publication, mise à jour, document et consultation distinguées ;
+  citations `[S…]` attribuées et validées par le backend avant persistance.
+- [x] PDF publics textuels lus en RAM sous limites d’octets, pages, texte et
+  décompression ; aucun OCR, temporaire persistant ni contenu actif.
+- [x] Descriptions, métadonnées et transcriptions vidéo publiques exploitées
+  seulement lorsqu’elles existent, sans prétendre visionner une vidéo.
+- [x] Tests déterministes 16.2, non-régression 16.1 et vérifications Internet
+  réelles documentés dans `docs/ETAPE_16_2_VALIDATION.md`.
+- [x] Correctif de fiabilité 16.2 : dates éditoriales exclues des appuis
+  d’événement, passages datés rapprochés, verdicts positifs/contradictoires
+  rattachés à deux citations lues ou remplacés par une conclusion prudente.
+- [x] Correctifs de validation manuelle : confirmation `Oui, vas-y` rattachée
+  au message, au profil et à la révision exacts ; aucun envoi de la confirmation
+  seule au modèle, réutilisation ou mélange de sujets.
+- [x] Faux outils et revendications de sources refusés hors collecte ; anciens
+  tours exclus de la synthèse Web et citations courantes contrôlées avant persistance.
+- [x] Domaine explicitement demandé, pertinence simple et associations
+  équipe-score contrôlés génériquement ; URL officielle directe préservée.
+- [x] Web désactivé : refus conversationnel persistant, sans réseau ni modèle.
+- [x] Validation automatisée et parcours Internet réel isolé réussis ; aucune
+  modification du superviseur pour l’incident `stdin.empty` non reproductible.
+- [x] Première campagne manuelle de l’étape 16 réalisée dans Microsoft Edge ;
+  les correctifs ultérieurs restent soumis à la revalidation finale ci-dessous.
+- [x] Phase 16.3 — recours Edge à la demande pour les coquilles JavaScript,
+  profil éphémère, proxy DNS épinglé limité à l’hôte initial et zéro clic.
+- [x] Pagination sûre par liens directs, tableaux et `<details>` lus sans action,
+  formulaires, comptes, transactions, téléchargements et réseau local refusés.
+- [x] Tests Edge locaux isolés, site dynamique public réel, fermeture/annulation,
+  non-régression 16.1/16.2 et preuves dans `docs/ETAPE_16_3_VALIDATION.md`.
+- [x] Stabilisation finale : contrat de fiabilité 2.1 partagé par les trois
+  profils, français permanent et messages déterministes à la première personne.
+- [x] Case Web ponctuelle et booléen d’envoi supprimés ; autorisation uniquement
+  textuelle ou issue d’une confirmation exacte, sous préférence globale active.
+- [x] Messages longs acceptés, requêtes fournisseur toujours bornées ; lecture
+  documentaire distinguée de la corroboration indépendante.
+- [x] HTML volumineux lu partiellement sous la borne existante, extraits ciblés,
+  provenance exacte de chaque page dynamique et validations de citations durcies.
+- [x] Préparation de clôture : consultation directe officielle et document unique
+  vérifiés avec le modèle réel ; refus prudent conservé si la sortie manque de citations.
+- [ ] Revalidation manuelle finale des scénarios corrigés avant le commit utilisateur.
+
+## Roadmap validée — après la validation technique de la phase 16.3
+
 - Étape 17 — Génération d’images.
 - Étape 19 — Speech-to-Speech.
 - Étape 20 — Refonte visuelle.

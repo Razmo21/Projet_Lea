@@ -34,6 +34,7 @@ test('voice preferences require bounds and an exact persistence confirmation', a
     veterinary_reasoning_available: true,
     profile_settings: [],
     show_resource_chart: false,
+    web_enabled: false,
   }
   assert.equal(isPreferences(payload), true)
   for (const voice_rate of [NaN, 0.1, 2]) assert.equal(isPreferences({ ...payload, voice_rate }), false)
@@ -152,6 +153,11 @@ function captureHarness(t: any, supportsOpus = true, decodeError = false) {
   return {
     track, reports, header, mime,
     elapsed() { now = 1100 },
+    failRecorderStop() {
+      recorder.stop = () => {
+        throw new DOMException('Recorder state changed', 'InvalidStateError')
+      }
+    },
     data(bytes: Uint8Array) { recorder.ondataavailable?.({ data: new Blob([bytes], { type: mime }) }) },
     finish() { recorder.onstop?.() },
     inspected: () => ({ decodedBytes, closed }),
@@ -195,6 +201,18 @@ test('cancellation during finalization releases tracks and ignores late recorder
   const pending = mic.stop(); mic.cancel(); h.data(Uint8Array.of(1, 2)); h.finish()
   await assert.rejects(pending, /annulé/)
   assert.equal(h.track.stopped, true); assert.equal(h.inspected().decodedBytes, undefined)
+})
+
+test('cancellation releases the microphone when MediaRecorder.stop throws', async t => {
+  const h = captureHarness(t)
+  const mic = new MicrophoneCapture()
+  await mic.start('', () => {})
+  h.failRecorderStop()
+
+  mic.cancel()
+
+  assert.equal(h.track.stopped, true)
+  await assert.rejects(mic.stop(), /Aucun enregistrement actif/)
 })
 
 test('a missing stop event is bounded, releases the microphone and refuses partial audio', async t => {

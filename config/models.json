@@ -86,7 +86,8 @@
     "checkpoints": "Snapshots et rollback de projet",
     "openhands": "Moteur OpenHands Agent Server / SDK local",
     "veterinary_learning": "Apprentissage et révisions en médecine vétérinaire",
-    "veterinary_clinical_reasoning": "Analyse pédagogique de cas cliniques vétérinaires"
+    "veterinary_clinical_reasoning": "Analyse pédagogique de cas cliniques vétérinaires",
+    "web_research": "Recherche et lecture Web simples après autorisation explicite"
   },
   "tool_catalog": [
     "terminal",
@@ -167,7 +168,8 @@
       },
       "capabilities": [
         "conversation",
-        "explicit_memory"
+        "explicit_memory",
+        "web_research"
       ],
       "tools": [],
       "workspace_permission": "none",
@@ -203,7 +205,8 @@
         "workspace_projects",
         "agent_runs",
         "checkpoints",
-        "openhands"
+        "openhands",
+        "web_research"
       ],
       "tools": [
         "terminal",
@@ -241,6 +244,7 @@
       "capabilities": [
         "conversation",
         "explicit_memory",
+        "web_research",
         "veterinary_learning",
         "veterinary_clinical_reasoning"
       ],

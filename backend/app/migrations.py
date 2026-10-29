@@ -12,7 +12,7 @@ from .memory import (
 
 
 MigrationOperation = str | Callable[[sqlite3.Connection], None]
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 16
 
 
 def _backfill_memory_sources(connection: sqlite3.Connection) -> None:
@@ -431,6 +431,140 @@ MIGRATIONS: Mapping[int, Sequence[MigrationOperation]] = {
     12: (
         "ALTER TABLE user_preferences ADD COLUMN veterinary_reasoning TEXT NOT NULL DEFAULT 'high' "
         "CHECK(veterinary_reasoning IN ('low', 'high'))",
+    ),
+    # v13 : le Web reste désactivable et chaque source appartient à une réponse.
+    # Aucune page HTML ni autorisation éphémère n'est persistée.
+    13: (
+        "ALTER TABLE user_preferences ADD COLUMN web_enabled INTEGER NOT NULL DEFAULT 0 CHECK(web_enabled IN (0, 1))",
+        """
+        CREATE TABLE web_sources (
+            id TEXT PRIMARY KEY CHECK(length(id) = 36),
+            assistant_message_id TEXT NOT NULL,
+            position INTEGER NOT NULL CHECK(position BETWEEN 1 AND 3),
+            title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 300),
+            url TEXT NOT NULL CHECK(length(url) BETWEEN 8 AND 2048),
+            domain TEXT NOT NULL CHECK(length(domain) BETWEEN 1 AND 253),
+            snippet TEXT NOT NULL CHECK(length(snippet) BETWEEN 1 AND 700),
+            provider TEXT NOT NULL CHECK(length(provider) BETWEEN 1 AND 100),
+            consulted_at TEXT NOT NULL CHECK(length(consulted_at) BETWEEN 20 AND 40),
+            published_at TEXT CHECK(published_at IS NULL OR length(published_at) BETWEEN 1 AND 100),
+            retrieval_status TEXT NOT NULL CHECK(retrieval_status IN ('read', 'snippet_only')),
+            UNIQUE(assistant_message_id, position),
+            FOREIGN KEY(assistant_message_id) REFERENCES messages(id) ON DELETE CASCADE,
+            CHECK(instr(title, char(0)) = 0),
+            CHECK(instr(url, char(0)) = 0),
+            CHECK(instr(domain, char(0)) = 0),
+            CHECK(instr(snippet, char(0)) = 0),
+            CHECK(instr(provider, char(0)) = 0)
+        )
+        """,
+        "CREATE INDEX idx_web_sources_message_position ON web_sources(assistant_message_id, position)",
+    ),
+    # v14 : l'interface distingue durablement la collecte Web de l'inférence.
+    # Le code historique d'échec reste compatible avec les contraintes existantes.
+    14: (
+        "ALTER TABLE messages ADD COLUMN failure_kind TEXT "
+        "CHECK(failure_kind IS NULL OR failure_kind IN ("
+        "'web_error', 'web_authorization', 'web_policy', 'web_unavailable', "
+        "'web_network', 'web_timeout', 'web_http', 'web_blocked', "
+        "'web_no_results', 'web_extraction', 'web_providers_unavailable', "
+        "'web_cancelled'))",
+    ),
+    # v15 : preuves 16.2 typées, dates distinctes et jusqu'à six sources bornées.
+    15: (
+        "DROP INDEX idx_web_sources_message_position",
+        "ALTER TABLE web_sources RENAME TO web_sources_v14",
+        """
+        CREATE TABLE web_sources (
+            id TEXT PRIMARY KEY CHECK(length(id) = 36),
+            assistant_message_id TEXT NOT NULL,
+            position INTEGER NOT NULL CHECK(position BETWEEN 1 AND 6),
+            title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 300),
+            url TEXT NOT NULL CHECK(length(url) BETWEEN 8 AND 2048),
+            domain TEXT NOT NULL CHECK(length(domain) BETWEEN 1 AND 253),
+            snippet TEXT NOT NULL CHECK(length(snippet) BETWEEN 1 AND 700),
+            provider TEXT NOT NULL CHECK(length(provider) BETWEEN 1 AND 100),
+            consulted_at TEXT NOT NULL CHECK(length(consulted_at) BETWEEN 20 AND 40),
+            published_at TEXT CHECK(published_at IS NULL OR length(published_at) BETWEEN 1 AND 100),
+            updated_at TEXT CHECK(updated_at IS NULL OR length(updated_at) BETWEEN 1 AND 100),
+            document_date TEXT CHECK(document_date IS NULL OR length(document_date) BETWEEN 1 AND 100),
+            retrieval_status TEXT NOT NULL CHECK(retrieval_status IN ('read', 'snippet_only')),
+            source_kind TEXT NOT NULL DEFAULT 'html'
+                CHECK(source_kind IN ('html', 'search_snippet', 'pdf', 'video_metadata', 'video_transcript')),
+            limitations TEXT CHECK(limitations IS NULL OR length(limitations) BETWEEN 1 AND 300),
+            UNIQUE(assistant_message_id, position),
+            FOREIGN KEY(assistant_message_id) REFERENCES messages(id) ON DELETE CASCADE,
+            CHECK(instr(title, char(0)) = 0),
+            CHECK(instr(url, char(0)) = 0),
+            CHECK(instr(domain, char(0)) = 0),
+            CHECK(instr(snippet, char(0)) = 0),
+            CHECK(instr(provider, char(0)) = 0),
+            CHECK(limitations IS NULL OR instr(limitations, char(0)) = 0)
+        )
+        """,
+        """
+        INSERT INTO web_sources(
+            id, assistant_message_id, position, title, url, domain, snippet,
+            provider, consulted_at, published_at, updated_at, document_date,
+            retrieval_status, source_kind, limitations
+        )
+        SELECT id, assistant_message_id, position, title, url, domain, snippet,
+               provider, consulted_at, published_at, NULL, NULL,
+               retrieval_status,
+               CASE WHEN retrieval_status = 'snippet_only' THEN 'search_snippet' ELSE 'html' END,
+               CASE WHEN retrieval_status = 'snippet_only'
+                    THEN 'Page non consultée ; extrait du moteur de recherche uniquement.'
+                    ELSE NULL END
+        FROM web_sources_v14
+        """,
+        "DROP TABLE web_sources_v14",
+        "CREATE INDEX idx_web_sources_message_position ON web_sources(assistant_message_id, position)",
+    ),
+    # v16 : distingue une page rendue par Edge d'un HTML lu sans JavaScript.
+    16: (
+        "DROP INDEX idx_web_sources_message_position",
+        "ALTER TABLE web_sources RENAME TO web_sources_v15",
+        """
+        CREATE TABLE web_sources (
+            id TEXT PRIMARY KEY CHECK(length(id) = 36),
+            assistant_message_id TEXT NOT NULL,
+            position INTEGER NOT NULL CHECK(position BETWEEN 1 AND 6),
+            title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 300),
+            url TEXT NOT NULL CHECK(length(url) BETWEEN 8 AND 2048),
+            domain TEXT NOT NULL CHECK(length(domain) BETWEEN 1 AND 253),
+            snippet TEXT NOT NULL CHECK(length(snippet) BETWEEN 1 AND 700),
+            provider TEXT NOT NULL CHECK(length(provider) BETWEEN 1 AND 100),
+            consulted_at TEXT NOT NULL CHECK(length(consulted_at) BETWEEN 20 AND 40),
+            published_at TEXT CHECK(published_at IS NULL OR length(published_at) BETWEEN 1 AND 100),
+            updated_at TEXT CHECK(updated_at IS NULL OR length(updated_at) BETWEEN 1 AND 100),
+            document_date TEXT CHECK(document_date IS NULL OR length(document_date) BETWEEN 1 AND 100),
+            retrieval_status TEXT NOT NULL CHECK(retrieval_status IN ('read', 'snippet_only')),
+            source_kind TEXT NOT NULL DEFAULT 'html'
+                CHECK(source_kind IN ('html', 'dynamic_html', 'search_snippet', 'pdf', 'video_metadata', 'video_transcript')),
+            limitations TEXT CHECK(limitations IS NULL OR length(limitations) BETWEEN 1 AND 300),
+            UNIQUE(assistant_message_id, position),
+            FOREIGN KEY(assistant_message_id) REFERENCES messages(id) ON DELETE CASCADE,
+            CHECK(instr(title, char(0)) = 0),
+            CHECK(instr(url, char(0)) = 0),
+            CHECK(instr(domain, char(0)) = 0),
+            CHECK(instr(snippet, char(0)) = 0),
+            CHECK(instr(provider, char(0)) = 0),
+            CHECK(limitations IS NULL OR instr(limitations, char(0)) = 0)
+        )
+        """,
+        """
+        INSERT INTO web_sources(
+            id, assistant_message_id, position, title, url, domain, snippet,
+            provider, consulted_at, published_at, updated_at, document_date,
+            retrieval_status, source_kind, limitations
+        )
+        SELECT id, assistant_message_id, position, title, url, domain, snippet,
+               provider, consulted_at, published_at, updated_at, document_date,
+               retrieval_status, source_kind, limitations
+        FROM web_sources_v15
+        """,
+        "DROP TABLE web_sources_v15",
+        "CREATE INDEX idx_web_sources_message_position ON web_sources(assistant_message_id, position)",
     ),
 }
 

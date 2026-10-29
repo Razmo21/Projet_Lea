@@ -60,6 +60,7 @@ class PreferencesTests(unittest.TestCase):
 
         self.assertEqual(self.store.read().general_reasoning, "low")
         self.assertEqual(self.store.read().veterinary_reasoning, "high")
+        self.assertFalse(self.store.read().web_enabled)
         self.assertEqual(self.store.save(self.change("high")).revision, 1)
         self.assertEqual(
             self.store.save(
@@ -72,6 +73,17 @@ class PreferencesTests(unittest.TestCase):
         self.assertEqual(PreferencesStore(reopened).read().general_reasoning, "high")
         self.assertEqual(PreferencesStore(reopened).read().veterinary_reasoning, "low")
         self.assertEqual(self.store.save(self.change("low", 2)).revision, 3)
+
+    def test_web_default_partial_update_and_restart(self) -> None:
+        """L'activation globale est booléenne, explicite et persistante."""
+
+        saved = self.store.save(PreferenceChange(expected_revision=0, web_enabled=True))
+        self.assertTrue(saved.web_enabled)
+        reopened = Database(self.path)
+        reopened.initialize(recover_generations=False)
+        self.assertTrue(PreferencesStore(reopened).read().web_enabled)
+        with self.assertRaises(ValidationError):
+            PreferenceChange(expected_revision=1, web_enabled="true")
 
     def test_stage15_migration_preserves_existing_preferences(self) -> None:
         """La nouvelle colonne Vétérinaire n'altère aucun choix déjà validé."""
@@ -242,9 +254,11 @@ class PreferencesTests(unittest.TestCase):
         conversation_id, _ = self.database.create_pending_conversation("Ancienne conversation")
         before = self.database.get_conversation(conversation_id)
         with self.database.connection() as connection:
+            connection.execute("DROP TABLE web_sources")
             connection.execute("DROP TABLE user_preferences")
             connection.execute("DROP INDEX idx_messages_agent_role")
             connection.execute("ALTER TABLE messages DROP COLUMN agent_run_id")
+            connection.execute("ALTER TABLE messages DROP COLUMN failure_kind")
             connection.execute("DELETE FROM schema_migrations WHERE version >= 8")
         self.database.initialize(recover_generations=False)
         self.assertEqual(self.database.get_conversation(conversation_id), before)

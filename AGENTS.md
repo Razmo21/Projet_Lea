@@ -47,15 +47,17 @@ Après modification :
 
 ## Étape actuelle
 
-Les étapes 10 à 14 sont validées manuellement et terminées. L’étape 15 intègre
-le profil Vétérinaire local Qwen3.5-9B Q4_K_M et optimise les contrats seulement
-lorsque la comparaison ne révèle pas de régression. Son implémentation technique,
-ses mesures, ses erreurs scientifiques connues et ses essais sont consignés dans
-`docs/ETAPE_15_VALIDATION.md`; la validation manuelle dans Edge reste requise.
+Les étapes 10 à 14 sont validées manuellement et terminées. L’étape 15 et ses
+limites scientifiques sont consignées dans `docs/ETAPE_15_VALIDATION.md`.
+Les phases 16.1 et 16.2 sont techniquement acceptées. La phase 16.3 ajoute au
+même Web Gateway un recours Edge public, éphémère et non interactif pour les
+seules coquilles JavaScript insuffisantes ; ses preuves sont consignées dans
+`docs/ETAPE_16_3_VALIDATION.md`. La première campagne manuelle des trois phases
+est terminée ; ses correctifs de stabilisation attendent la revalidation finale
+de l’utilisateur avant le commit.
 
-Ne commence pas l’étape 16 — Web. La vision reste suspendue et reportée ; le
-profil Auxiliaire est supprimé définitivement de la roadmap. Ne réintroduis ni
-l’un ni l’autre. Aucun commit ni push sans demande explicite.
+Ne commence aucune étape suivante. La vision reste suspendue et le profil
+Auxiliaire reste supprimé. Aucun commit ni push sans demande explicite.
 
 ## Interdictions actuelles
 
@@ -65,7 +67,7 @@ Ne crée PAS :
 - un nouveau modèle local ;
 - une nouvelle installation de llama.cpp ;
 - RAG ;
-- accès Internet ;
+- accès Internet autre que le Web Gateway 16.1/16.2/16.3, après autorisation explicite ;
 - Tauri ;
 - authentification ;
 - télémétrie ;
@@ -83,7 +85,7 @@ contrats et permissions ; `models` porte les paramètres des modèles et
 `profiles[].model_id` les associe. Ne réintroduis pas de dépendance au nom de
 Qwen dans le code métier ni de parseur concurrent dans les lanceurs.
 
-Les préférences fonctionnelles sont dans SQLite (`user_preferences`, migrations 8–12),
+Les préférences fonctionnelles sont dans SQLite (`user_preferences`, migrations 8–16),
 pas dans le registre. Le contrôleur Vite peut les lire/sauver sans FastAPI ni
 modèle chargé, via le CLI ponctuel existant. Ne déclenche pas la récupération
 des générations en ouvrant les paramètres. Général Low/High prend effet à la
@@ -92,7 +94,12 @@ requête suivante ; aucun contrôle de raisonnement fictif pour Programmation.
 Docker Desktop et l’interface OpenHands restent ouverts manuellement. Le seul
 lancement explicite d’un run crée son conteneur Agent Server : ni l’activation
 du profil ni sa finalisation ne doivent créer de serveur idle. L’automatisation
-Edge par l’agent est reportée : aucun accès Web ou pont Windows arbitraire.
+Edge agentique par OpenHands reste reporté : aucun pont Windows arbitraire. Le
+Web Gateway peut rendre en dernier recours une page JavaScript publique dans un
+profil Edge jetable, sans clic, compte, profil personnel, formulaire, méthode
+mutante ni téléchargement. Le proxy éphémère borne la session à l’hôte initial
+public et réapplique l’épinglage DNS ; PDF textuels et textes vidéo accessibles
+restent ceux de 16.2. Aucun OCR, vision vidéo ni accès réseau OpenHands.
 La surveillance reste en lecture seule, en RAM, sans arrêt automatique sur seuil.
 Elle est commune à tous les profils IA actifs et cesse avec le cœur ; seuls
 les contrôles Docker/OpenHands dépendent des besoins agentiques du profil.

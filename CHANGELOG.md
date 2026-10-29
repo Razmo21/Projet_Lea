@@ -1,5 +1,242 @@
 # Changelog — Projet Léa
 
+## Étape 16 — Préparation de clôture — 29 octobre 2026
+
+- État de travail préservé avant intervention. Aucun état intermédiaire de l'étape
+  16 n'existe dans Git ; le dernier commit est celui de l'étape 15.
+- Une URL HTML demandée directement privilégie le début de la page,
+  où se trouvent souvent titre, fait principal et date, au lieu de privilégier
+  un bloc tardif de navigation ou de téléchargements. Le comportement des PDF
+  et des recherches générales reste inchangé.
+- Après les données documentaires non fiables, une consigne courte rappelle au
+  modèle de citer chaque phrase factuelle. Le validateur continue de refuser les
+  citations inventées, les chiffres non sourcés et les valeurs non étayées.
+- Les essais isolés avec le vrai modèle et les pages officielles NHL et Python
+  ont produit chacun une courte réponse `[S1]` valide. Les sorties multi-phrases
+  mal citées restent une limite acceptée et donnent un refus prudent.
+- Vérification finale : 368 tests backend, 48 tests frontend, build TypeScript/Vite
+  et `git diff --check` réussis. Les tests n'ont laissé aucun dossier temporaire
+  dans `backend/tests`.
+
+## Étape 16 — Correctif ciblé de synthèse Web — 29 octobre 2026
+
+- Le dépassement de la fenêtre du modèle est désormais identifié séparément
+  d'une réponse vide, tronquée ou invalide. Le prompt Web est compté avec le
+  template et le tokenizer du modèle local actif, puis ses extraits sont bornés
+  avant génération ; les preuves complètes restent disponibles pour la validation.
+- Une réponse chiffrée sans citation ou avec une valeur et une unité absentes de
+  la source lue est refusée. Après un échec Web, une nouvelle demande explicitement
+  autorisée peut démarrer dans la même conversation sans réutiliser le permis.
+- Validation : 367 tests backend, 48 tests frontend, build et `pip check` réussis.
+  Deux recherches consécutives ont réussi via l'API isolée avec le modèle local
+  actif et des preuves de test ; une collecte publique distincte a aussi produit
+  une synthèse sourcée acceptée par le validateur. Le cœur a ensuite été
+  redémarré proprement pour charger le correctif ; Vite est resté actif.
+
+## Étape 16 — Vérification répétée et lisibilité — 27 octobre 2026
+
+- Une course lors de l'annulation du microphone est couverte par un test : si
+  `MediaRecorder.stop()` lève une erreur après la lecture de son état, les pistes
+  sont tout de même libérées et aucun audio n'est transmis.
+- Les contrôles vocaux et leur raccordement dans l'interface sont aérés et
+  commentés ; la documentation précise que la synthèse Web exclut les anciens
+  tours de conversation.
+- Vérification : 359 tests backend et 48 tests frontend réussis, build
+  TypeScript/Vite, `pip check`, base SQLite intègre sous schéma 16, services
+  existants joignables et `git diff --check` sans erreur.
+
+## Étape 16 — Stabilisation finale du Web Gateway — 25 octobre 2026
+
+- Le contrat de fiabilité 2.1 est chargé en tête des trois profils
+  conversationnels, en Low comme en High et avec ou sans Web. Les messages
+  déterministes parlent à la première personne et distinguent les échecs Web,
+  documentaires et vidéo sans reformulation des faits.
+- La case « Utiliser le Web uniquement pour cette question » et le champ
+  `web_authorized` ont été supprimés. La préférence globale reste un prérequis ;
+  seul le texte explicite ou une confirmation liée à la demande exacte crée le
+  permis éphémère consommé avant le réseau.
+- La borne de 500 caractères vise désormais uniquement la requête condensée du
+  fournisseur, jamais le message utilisateur. Les URL, délais, ressources et
+  budgets réseau conservent leurs limites antérieures.
+- Une URL directe est lue en mode documentaire par défaut : elle peut établir ce
+  que la source contient, tandis qu’une corroboration indépendante continue
+  d’exiger plusieurs origines réellement lues. Les recherches additionnelles
+  inutiles sont ainsi évitées.
+- L’extraction sélectionne des passages liés à la requête, filtre les pages de
+  ville manifestement étrangères à un résultat sportif et vérifie les valeurs
+  numériques ou versions attribuées à une citation. Le découpage des phrases ne
+  confond plus les points d’un numéro de version avec une fin de phrase.
+- Le HTML volumineux peut être exploité dans la partie reçue sous la borne
+  existante de 768 Kio, avec une limite explicite de lecture partielle. Les
+  autres ressources surdimensionnées restent refusées.
+- La pagination dynamique conserve une preuve et une URL exactes pour chaque
+  page parcourue, sans changer les budgets Edge ni autoriser de clic.
+- Validation ciblée : 96 tests de contrat, Web Gateway, recherche et navigateur
+  dynamique réussis, dont les sessions locales avec le véritable Edge installé.
+- Validation complète : 356 tests backend et 46 tests frontend réussis, build
+  TypeScript/Vite, registre des trois profils et dépendances Python vérifiés. Un
+  cycle réel arrêt–démarrage a rétabli Général, FastAPI et Vite avec leurs
+  endpoints sains ; un premier démarrage transitoire annulé proprement n’a pas
+  été reproduit lors du démarrage séquencé puis du cycle complet suivants.
+
+## Étape 16 — Correctifs de validation manuelle — 25 octobre 2026
+
+- Une proposition de recherche sur une donnée actuelle conserve désormais en
+  RAM la question exacte, le message source, le profil et la révision de la
+  conversation. `Oui`, `Vas-y`, `Oui, cherche` et `Oui, vas-y` consomment cette
+  seule attente ; une attente absente, expirée, déjà utilisée, modifiée ou issue
+  d’un autre contexte ne déclenche aucun accès réseau.
+- La confirmation est remplacée par la question initiale avant le Web Gateway
+  et avant la construction du contexte modèle. Les anciens tours sont exclus
+  de la nouvelle synthèse Web ; une réponse locale qui simule un outil Web,
+  une consultation ou une citation probante est remplacée par un refus prudent.
+- Une préférence Web désactivée produit maintenant un vrai tour persistant et
+  déterministe, sans fournisseur ni modèle. Le frontend reconnaît les mêmes
+  confirmations courtes pour afficher et annuler la collecte réelle.
+- La recherche simple écarte les pages manifestement hors sujet et respecte un
+  domaine écrit explicitement par l’utilisateur. Une URL exacte conserve son
+  chemin de lecture directe et ne borne pas les recherches complémentaires si
+  cette source est inaccessible.
+- Les passages réellement lus restent disponibles seulement en RAM pour
+  contrôler le rattachement lexical d’une citation simple et l’association
+  structurée équipe-score. Une inversion est refusée ; des scores concordant
+  mal entre sources produisent une conclusion d’incertitude. Aucun résultat
+  sportif ni domaine particulier n’est codé en dur.
+- Validation : 77 tests Web ciblés et 348 tests backend complets réussis,
+  45 tests frontend réussis et build Vite réussi. Un parcours réel isolé
+  météo → proposition → `Oui, vas-y` a lu trois sources publiques contrôlées
+  avant la synthèse locale, sans écrire dans la base utilisateur.
+- L’incident historique d’un `llama-server.exe` sans état signé n’a pas été
+  reproduit. Le superviseur actuel conserve sa règle fail-closed : il n’adopte
+  et ne tue jamais un processus inconnu. Aucun changement de cycle de vie n’a
+  été ajouté sans preuve.
+
+## Étape 16.3 — Navigation Web publique dynamique — 25 octobre 2026
+
+- Le Web Gateway conserve recherche et lecture HTTP comme chemin normal. Une
+  coquille JavaScript générique et insuffisante peut seule déclencher le lecteur
+  Edge, sous le permis manuel déjà consommé ; les pages statiques ne lancent rien.
+- `playwright==1.64.1` pilote Microsoft Edge Stable déjà installé, sans navigateur
+  téléchargé. Chaque opération utilise un profil temporaire, une session à la
+  fois, aucune permission, aucun téléchargement, aucun service worker et zéro clic.
+- Proxy HTTP(S) éphémère ajouté : même validation publique et épinglage DNS que
+  16.1, hôte exact de la page seulement, GET/HEAD, ressources utiles, budget de
+  3 pages, 80 requêtes, 12 Mio et 20 secondes. Localhost, fichiers, hôtes tiers,
+  méthodes mutantes, URL transactionnelles et téléchargements sont refusés.
+- Pagination par URL directe d’un lien « suivant », lecture des tableaux et des
+  `<details>` sans événement interactif. Comptes, formulaires, boutons, CAPTCHA,
+  paywalls, achats et réservations restent hors périmètre.
+- Migration SQLite 16 et libellé frontend `dynamic_html`, sans HTML brut, cookie,
+  profil ou capture persisté. Les protections de citations 16.1/16.2 sont inchangées.
+- Tests Edge locaux : JavaScript, pagination, limite de pages, tableau, section,
+  authentification, CAPTCHA, POST, paiement, téléchargement, fichier, localhost,
+  redirection, sous-ressource, cookie éphémère, injection, annulation et nettoyage.
+- Essai public réel réussi sur `quotes.toscrape.com/js/` : trois pages rendues et
+  source qualifiée `dynamic_html`. Essai statique réel `example.com` resté en
+  lecture `html`. Aucun Edge ni profil de test restant après les opérations.
+- Clôture automatisée : 333 tests backend, 45 frontend, build Vite, registre des
+  trois profils, démarrage réel Général/API/frontend et migration SQLite 16 réussis.
+- L’isolation proxy/interception n’est pas présentée comme un bac à sable réseau
+  OS parfait ; CDN/API tiers et interactions non prouvées sûres sont refusés.
+- Aucun commit, push, nouveau modèle, navigateur agentique OpenHands ni étape 17.
+
+## Étape 16.2 — Recherche approfondie et vérification — 25 octobre 2026
+
+- Le Web Gateway 16.1 est réutilisé sans nouveau service : les demandes de
+  vérification explicites peuvent effectuer jusqu’à trois recherches
+  complémentaires sous le même permis consommé avant le réseau.
+- Quatre sources sont retenues par défaut, six au plafond injectable. Les URL,
+  origines et copies textuelles sont dédupliquées ; un filtre lexical conservateur
+  écarte les résultats manifestement hors sujet sans noter la crédibilité d’un domaine.
+- Une seule origine effectivement lue produit directement « impossible à vérifier »
+  sans appel modèle. Avec plusieurs preuves, le contexte demande un verdict parmi
+  confirmé, partiel, contredit, trompeur/hors contexte ou impossible à vérifier.
+- Les dates déclarées de publication et mise à jour, la date interne d’un document
+  et la consultation restent séparées. Les extraits du moteur sont explicitement
+  `snippet_only` et ne deviennent jamais une page prétendument consultée.
+- Correctif de fiabilité du 25 octobre : une date civile complète demandée est
+  normalisée sans confondre un numéro de version. Les dates éditoriales ISO,
+  y compris horodatées, sont exclues des appuis d’événement. Un verdict positif
+  doit citer deux pages lues contenant la date demandée ; une contradiction doit
+  citer deux pages lues contenant la même date alternative. Sinon le backend
+  remplace le verdict par une conclusion prudente et expose les appuis contrôlés.
+- Lecture PDF en RAM avec `pypdf` 6.21.2 : 5 Mio, 40 pages, 12 000 caractères,
+  plafonds de flux décompressés et absence d’OCR. MIME incohérent, PDF chiffré,
+  malformé, trop grand ou sans texte échouent proprement.
+- Les pages vidéo utilisent seulement métadonnées, descriptions et transcriptions
+  JSON-LD publiques lorsqu’elles existent. Une plateforme inaccessible demande
+  le texte à l’utilisateur ; aucune vision ni écoute n’est revendiquée.
+- Migration SQLite 15 : jusqu’à six sources, nature de la preuve, dates séparées
+  et limites persistées. L’interface affiche les identifiants `[S…]` attribués par
+  le backend ; toute référence inventée par le modèle est neutralisée.
+- Vérifications réelles : comparaison technique Python multi-source réussie,
+  PDF W3C lu en mémoire, page vidéo YouTube honnêtement déclarée inaccessible.
+  Une recherche sociale aux résultats Bing hors sujet a motivé le filtre puis
+  échoue désormais honnêtement avec `web_no_results`.
+- Le scénario réel Python 3.14.0 a été reproduit avant/après : le modèle confondait
+  les 12/14 octobre éditoriaux avec la sortie et répondait « partiellement
+  confirmée ». Après correction, ces dates ne peuvent plus étayer l’événement et
+  tout verdict insuffisamment cité est refusé, sans donnée propre à Python.
+- Phase 16.3 non commencée, aucun navigateur, compte, formulaire, OCR, modèle,
+  conteneur, commit ou push ajouté.
+
+## Étape 16.1 — Recherche Web fondamentale — 22 octobre 2026
+
+- Web Gateway modulaire ajouté au backend existant : recherche gratuite via
+  DuckDuckGo Lite, lecture de trois pages HTML publiques au maximum, extraction
+  légère du titre, du texte et d’une date publiée réellement déclarée.
+- Autorisation imposée côté backend : préférence Web désactivée par défaut,
+  accord explicite par requête, confirmation ambiguë en RAM et permis court
+  consommé avant le premier accès réseau. Aucun modèle ne peut fabriquer ce permis.
+- Barrière réseau commune : HTTP/HTTPS et ports standards seulement, validation
+  DNS de toutes les adresses, refus local/privé/réservé, connexion à l’IP épinglée
+  avec SNI d’origine, revalidation de trois redirections au plus, délais et tailles bornés.
+- Aucun historique, souvenir, fichier ou contenu privé n’est envoyé au moteur de
+  recherche. Les pages sont des données non fiables ; scripts/formulaires/navigation
+  sont ignorés et leur texte ne reçoit jamais un rôle système.
+- Migration SQLite 13 : préférence `web_enabled` et métadonnées de sources par
+  réponse. Aucun HTML complet ni permis n’est persisté. Sources cliquables,
+  fournisseur, domaine, dates et statut de lecture restent dans l’historique.
+- Frontend ciblé : accord à la question, indicateur en cours, annulation réelle,
+  erreurs lisibles et sources visibles. Même voie pour Général, Programmation et
+  Vétérinaire ; OpenHands et son terminal conservent leur interdiction réseau.
+- L’interface Lite DuckDuckGo a été vérifiée réellement avec une recherche
+  Python et trois pages publiques lues. Sa protection intermittente est désormais
+  relayée par une unique tentative Bing HTML, sans compte, clé ni contournement.
+- Les phases 16.2 (recherche approfondie/PDF) et 16.3 (navigateur dynamique)
+  ne sont pas commencées. Aucun commit ni push ; validation manuelle requise.
+- Correctif du 23 octobre : une instruction textuelle explicite transmet maintenant
+  le même accord ponctuel que le bouton, tandis que le backend reclasse toujours
+  la demande et impose la préférence. Les termes utiles sont retirés de la seule
+  directive initiale avant l’envoi au moteur.
+- L’interface HTML classique de DuckDuckGo a présenté une protection externe lors
+  du premier parcours Edge. Lite reste prioritaire ; le correctif de fiabilité
+  n’essaie un fournisseur indépendant qu’après cet échec, jamais une autre voie
+  DuckDuckGo ni un CAPTCHA.
+- Le parseur accepte les balises `<meta>` sans nom rencontrées sur des pages réelles.
+  Les erreurs connexion/DNS, timeout, HTTP, limitation externe, résultat vide et
+  structure HTML incompatible sont distinguées et journalisées sans la requête.
+- Correctif de fiabilité du 23 octobre : onze instances SearXNG réellement testées
+  ont été écartées après HTTP 429 ou défis. Bing HTML devient le seul secours,
+  limité à une tentative ; ses URL de suivi sont décodées localement et le
+  fournisseur effectif est affiché et persisté avec la source.
+- Migration SQLite 14 et frontend : l’origine d’un échec Web survit au rechargement
+  et n’est plus affichée comme « Échec de la génération ».
+- Correctif ciblé du 24 octobre : « Quel temps fait-il actuellement… » est
+  reconnu comme demande météo actuelle. Sans accord Web, l’orchestrateur répond
+  désormais lui-même sans appeler Qwen, le fournisseur ni le transport HTTP ;
+  les demandes historiques datées et connaissances générales restent locales.
+- Quatre recherches réelles ont réussi : technique, météo et actualité via
+  DuckDuckGo Lite ; la question sportive exacte réussit aussi par DuckDuckGo
+  lorsque les seuls termes utiles sont condensés avant son unique essai. Le
+  parcours réel donne le 20 octobre et `MTL 3 — 4 SJS`, soit Sharks de San José
+  4–3 Canadiens de Montréal, sans donnée codée dans le produit.
+- Les anciennes routes de retry/édition refusent un échec Web persisté. Le
+  frontend prépare un nouveau brouillon et exige un nouvel envoi, donc un nouveau
+  permis. Une redirection ne peut pas rejouer un cookie déposé par la réponse
+  précédente. Les suites finales comptent 295 tests backend et 44 frontend, avec
+  build réussi.
+
 ## Étape 15 — Profil Vétérinaire et contrats — 22 octobre 2026
 
 - Troisième profil local `veterinary` sur Qwen3.5-9B Q4_K_M : empreinte et

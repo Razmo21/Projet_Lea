@@ -12,6 +12,7 @@ const defaults = {
   veterinary_reasoning: 'high' as const,
   veterinary_reasoning_available: true,
   profile_settings,
+  web_enabled: false,
 }
 
 test('preferences accept only a valid revision and implemented levels', () => {
@@ -23,7 +24,6 @@ test('preferences accept only a valid revision and implemented levels', () => {
   }
   assert.equal(isPreferences({ ...defaults, voice_id: '', revision: 0, general_reasoning: 'low', general_reasoning_available: true, show_resource_chart: false }), false)
 })
-
 test('preferences save the draft through the local controller and require confirmation', async () => {
   // Le transport simulé vérifie qu'aucun chemin de modèle ne part vers le serveur.
   const transport: typeof fetch = async (url, init) => {
@@ -54,4 +54,14 @@ test('chart preference works without a reasoning capability and requires its own
   assert.equal((await requestPreferences(change, async () => Response.json(payload))).show_resource_chart, true)
   await assert.rejects(requestPreferences(change, async () => Response.json({ ...payload, show_resource_chart: false })))
   assert.equal(isPreferences({ ...payload, show_resource_chart: 'true' }), false)
+})
+
+test('Web preference requires an exact save confirmation', async () => {
+  const change = { expected_revision: 4, web_enabled: true }
+  const payload = {
+    ...defaults, revision: 5, general_reasoning: 'low' as const,
+    general_reasoning_available: true, show_resource_chart: false, web_enabled: true,
+  }
+  assert.equal((await requestPreferences(change, async () => Response.json(payload))).web_enabled, true)
+  await assert.rejects(requestPreferences(change, async () => Response.json({ ...payload, web_enabled: false })))
 })

@@ -253,6 +253,8 @@ class Database:
             "idx_project_checkpoints_state_created": "index",
             "checkpoint_files": "table",
             "idx_checkpoint_files_checkpoint_path": "index",
+            "web_sources": "table",
+            "idx_web_sources_message_position": "index",
         }
         rows = connection.execute(
             "SELECT name, type FROM sqlite_master WHERE name IN ({})".format(
@@ -278,6 +280,65 @@ class Database:
             raise RuntimeError("L’identité du modèle des messages SQLite est absente.")
         if "agent_run_id" not in message_columns:
             raise RuntimeError("Le lien des messages aux runs est absent.")
+        if "failure_kind" not in message_columns:
+            raise RuntimeError("L’origine des échecs Web SQLite est absente.")
+        preference_columns = {
+            str(row[1]): row
+            for row in connection.execute("PRAGMA table_info(user_preferences)").fetchall()
+        }
+        web_enabled_column = preference_columns.get("web_enabled")
+        if (
+            web_enabled_column is None
+            or int(web_enabled_column[3]) != 1
+            or str(web_enabled_column[4]) != "0"
+        ):
+            raise RuntimeError("La préférence Web SQLite est incohérente.")
+        web_source_columns = {
+            str(row[1]): row
+            for row in connection.execute("PRAGMA table_info(web_sources)").fetchall()
+        }
+        if set(web_source_columns) != {
+            "id",
+            "assistant_message_id",
+            "position",
+            "title",
+            "url",
+            "domain",
+            "snippet",
+            "provider",
+            "consulted_at",
+            "published_at",
+            "updated_at",
+            "document_date",
+            "retrieval_status",
+            "source_kind",
+            "limitations",
+        } or any(
+            int(web_source_columns[name][3]) != 1
+            for name in (
+                "assistant_message_id",
+                "position",
+                "title",
+                "url",
+                "domain",
+                "snippet",
+                "provider",
+                "consulted_at",
+                "retrieval_status",
+                "source_kind",
+            )
+        ):
+            raise RuntimeError("Le stockage SQLite des sources Web est incohérent.")
+        web_source_foreign_keys = {
+            (str(row[3]), str(row[2]), str(row[4]), str(row[6]).upper())
+            for row in connection.execute(
+                "PRAGMA foreign_key_list(web_sources)"
+            ).fetchall()
+        }
+        if web_source_foreign_keys != {
+            ("assistant_message_id", "messages", "id", "CASCADE")
+        }:
+            raise RuntimeError("La cascade SQLite des sources Web est incohérente.")
         memory_columns = {
             str(row[1]): row
             for row in connection.execute("PRAGMA table_info(memories)").fetchall()
@@ -477,7 +538,8 @@ class Database:
             connection.execute(
                 f"""
                 UPDATE messages
-                SET status = 'failed', error_code = 'interrupted', updated_at = ?
+                SET status = 'failed', error_code = 'interrupted',
+                    failure_kind = NULL, updated_at = ?
                 WHERE status = 'pending' AND conversation_id IN ({placeholders})
                 """,
                 (now, *conversation_ids),
@@ -519,6 +581,11 @@ class Database:
             "content": str(row["content"]),
             "status": str(row["status"]),
             "error": str(row["error_code"]) if row["error_code"] is not None else None,
+            "failure_kind": (
+                str(row["failure_kind"])
+                if row["failure_kind"] is not None
+                else None
+            ),
             "created_at": str(row["created_at"]),
             "updated_at": str(row["updated_at"]),
             "kind": str(row["kind"]),
@@ -637,14 +704,65 @@ class Database:
                     """,
                     (conversation_id,),
                 ).fetchall()
+                sources = connection.execute(
+                    """
+                    SELECT source.* FROM web_sources AS source
+                    JOIN messages AS message ON message.id = source.assistant_message_id
+                    WHERE message.conversation_id = ?
+                    ORDER BY source.assistant_message_id, source.position ASC
+                    """,
+                    (conversation_id,),
+                ).fetchall()
             except BaseException:
                 connection.rollback()
                 raise
             else:
                 connection.commit()
 
+        sources_by_message: dict[str, list[dict[str, str | None]]] = {}
+        for source in sources:
+            message_sources = sources_by_message.setdefault(
+                str(source["assistant_message_id"]), []
+            )
+            message_sources.append(
+                {
+                    "source_id": f"S{int(source['position'])}",
+                    "title": str(source["title"]),
+                    "url": str(source["url"]),
+                    "domain": str(source["domain"]),
+                    "snippet": str(source["snippet"]),
+                    "provider": str(source["provider"]),
+                    "consulted_at": str(source["consulted_at"]),
+                    "published_at": (
+                        str(source["published_at"])
+                        if source["published_at"] is not None
+                        else None
+                    ),
+                    "updated_at": (
+                        str(source["updated_at"])
+                        if source["updated_at"] is not None
+                        else None
+                    ),
+                    "document_date": (
+                        str(source["document_date"])
+                        if source["document_date"] is not None
+                        else None
+                    ),
+                    "retrieval_status": str(source["retrieval_status"]),
+                    "source_kind": str(source["source_kind"]),
+                    "limitations": (
+                        str(source["limitations"])
+                        if source["limitations"] is not None
+                        else None
+                    ),
+                }
+            )
         detail = self._summary_from_row(row)
-        detail["messages"] = [self._message_from_row(message) for message in messages]
+        detail["messages"] = []
+        for message in messages:
+            public_message = self._message_from_row(message)
+            public_message["web_sources"] = sources_by_message.get(public_message["id"], [])
+            detail["messages"].append(public_message)
         return detail
 
     def list_memories(self) -> list[dict[str, str]]:
@@ -1665,9 +1783,14 @@ class Database:
         return conversation_id, message_id
 
     def add_pending_message(
-        self, conversation_id: str, content: str, expected_revision: int
+        self,
+        conversation_id: str,
+        content: str,
+        expected_revision: int,
+        *,
+        allow_after_failed_web: bool = False,
     ) -> str:
-        """Ajoute une nouvelle question après contrôle de la révision courante."""
+        """Ajoute une question ; un nouvel accord Web peut suivre un échec Web."""
 
         message_id = str(uuid.uuid4())
         now = utc_now()
@@ -1676,15 +1799,22 @@ class Database:
             self._assert_mutation_allowed(conversation, expected_revision)
             last_message = connection.execute(
                 """
-                SELECT role, status FROM messages
+                SELECT role, status, failure_kind FROM messages
                 WHERE conversation_id = ? ORDER BY position DESC LIMIT 1
                 """,
                 (conversation_id,),
             ).fetchone()
-            if last_message is not None and (
-                str(last_message["role"]) != "assistant"
-                or str(last_message["status"]) != "completed"
-            ):
+            completed_assistant = last_message is not None and (
+                str(last_message["role"]) == "assistant"
+                and str(last_message["status"]) == "completed"
+            )
+            failed_web = last_message is not None and (
+                allow_after_failed_web
+                and str(last_message["role"]) == "user"
+                and str(last_message["status"]) == "failed"
+                and str(last_message["failure_kind"] or "").startswith("web_")
+            )
+            if last_message is not None and not (completed_assistant or failed_web):
                 raise ConversationOperationError(
                     "La dernière question doit être réessayée avant de poursuivre."
                 )
@@ -1826,11 +1956,53 @@ class Database:
         answer: str,
         model_id: str | None = None,
         profile_id: str | None = None,
+        web_sources: list[dict[str, str | None]] | tuple[dict[str, str | None], ...] = (),
     ) -> None:
-        """Persiste la réponse et clôt atomiquement la question en attente."""
+        """Persiste la réponse, ses sources bornées et clôt atomiquement la question."""
 
         assistant_id = str(uuid.uuid4())
         now = utc_now()
+        normalized_sources: list[dict[str, str | None]] = []
+        if len(web_sources) > 6:
+            raise ValueError("Trop de sources Web à persister.")
+        for source in web_sources:
+            status = source.get("retrieval_status")
+            if status not in {"read", "snippet_only"}:
+                raise ValueError("Statut de source Web invalide.")
+            source_kind = source.get("source_kind")
+            if source_kind not in {
+                "html",
+                "dynamic_html",
+                "search_snippet",
+                "pdf",
+                "video_metadata",
+                "video_transcript",
+            }:
+                raise ValueError("Type de source Web invalide.")
+            normalized_sources.append(
+                {
+                    "title": str(_bounded_text(source.get("title"), "Titre de source", 300)),
+                    "url": str(_bounded_text(source.get("url"), "URL de source", 2048)),
+                    "domain": str(_bounded_text(source.get("domain"), "Domaine de source", 253)),
+                    "snippet": str(_bounded_text(source.get("snippet"), "Résumé de source", 700)),
+                    "provider": str(_bounded_text(source.get("provider"), "Fournisseur Web", 100)),
+                    "consulted_at": str(_bounded_text(source.get("consulted_at"), "Date de consultation", 40)),
+                    "published_at": _bounded_text(
+                        source.get("published_at"), "Date de publication", 100, optional=True
+                    ),
+                    "updated_at": _bounded_text(
+                        source.get("updated_at"), "Date de mise à jour", 100, optional=True
+                    ),
+                    "document_date": _bounded_text(
+                        source.get("document_date"), "Date du document", 100, optional=True
+                    ),
+                    "retrieval_status": status,
+                    "source_kind": source_kind,
+                    "limitations": _bounded_text(
+                        source.get("limitations"), "Limites de source", 300, optional=True
+                    ),
+                }
+            )
         with self.transaction() as connection:
             conversation = self._conversation_row(connection, conversation_id)
             user_message = self._message_row(connection, conversation_id, user_message_id)
@@ -1861,10 +2033,38 @@ class Database:
                     profile_id,
                 ),
             )
+            for position, source in enumerate(normalized_sources, start=1):
+                connection.execute(
+                    """
+                    INSERT INTO web_sources(
+                        id, assistant_message_id, position, title, url, domain,
+                        snippet, provider, consulted_at, published_at, updated_at,
+                        document_date, retrieval_status, source_kind, limitations
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        assistant_id,
+                        position,
+                        source["title"],
+                        source["url"],
+                        source["domain"],
+                        source["snippet"],
+                        source["provider"],
+                        source["consulted_at"],
+                        source["published_at"],
+                        source["updated_at"],
+                        source["document_date"],
+                        source["retrieval_status"],
+                        source["source_kind"],
+                        source["limitations"],
+                    ),
+                )
             connection.execute(
                 """
                 UPDATE messages
-                SET status = 'completed', error_code = NULL, updated_at = ?
+                SET status = 'completed', error_code = NULL,
+                    failure_kind = NULL, updated_at = ?
                 WHERE id = ?
                 """,
                 (now, user_message_id),
@@ -1879,9 +2079,13 @@ class Database:
             )
 
     def fail_generation(
-        self, conversation_id: str, user_message_id: str, error_code: str
+        self,
+        conversation_id: str,
+        user_message_id: str,
+        error_code: str,
+        failure_kind: str | None = None,
     ) -> None:
-        """Rend une question échouée rejouable et libère la conversation."""
+        """Rend une question rejouable en conservant l'origine sûre de l'échec."""
 
         now = utc_now()
         with self.transaction() as connection:
@@ -1896,10 +2100,10 @@ class Database:
                 connection.execute(
                     """
                     UPDATE messages
-                    SET status = 'failed', error_code = ?, updated_at = ?
+                    SET status = 'failed', error_code = ?, failure_kind = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (error_code, now, user_message_id),
+                    (error_code, failure_kind, now, user_message_id),
                 )
             if bool(conversation["generation_active"]):
                 connection.execute(
@@ -1982,7 +2186,8 @@ class Database:
             connection.execute(
                 """
                 UPDATE messages
-                SET status = 'pending', error_code = NULL, updated_at = ?
+                SET status = 'pending', error_code = NULL,
+                    failure_kind = NULL, updated_at = ?
                 WHERE id = ?
                 """,
                 (now, message_id),
@@ -2035,7 +2240,8 @@ class Database:
             connection.execute(
                 """
                 UPDATE messages
-                SET content = ?, status = 'pending', error_code = NULL, updated_at = ?
+                SET content = ?, status = 'pending', error_code = NULL,
+                    failure_kind = NULL, updated_at = ?
                 WHERE id = ?
                 """,
                 (content, now, message_id),
@@ -2103,7 +2309,8 @@ class Database:
             connection.execute(
                 """
                 UPDATE messages
-                SET status = 'pending', error_code = NULL, updated_at = ?
+                SET status = 'pending', error_code = NULL,
+                    failure_kind = NULL, updated_at = ?
                 WHERE id = ?
                 """,
                 (now, str(user["id"])),

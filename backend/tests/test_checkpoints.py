@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -236,8 +237,9 @@ class CheckpointServiceTests(unittest.TestCase):
         checkpoint_id, frozen = self.make_checkpoint()
         (self.project_path / "keep.txt").write_text("agent change\n", encoding="utf-8")
         self.service.complete(checkpoint_id, frozen)
-        archived = self.workspace_root / "Example-original"
-        self.project_path.rename(archived)
+        # Supprimer puis recréer le nom reproduit directement l'échange TOCTOU
+        # et évite que Windows refuse un renommage atomique sous analyse locale.
+        shutil.rmtree(self.project_path)
         self.project_path.mkdir()
         replacement = self.project_path / "keep.txt"
         replacement.write_text("replacement content\n", encoding="utf-8")

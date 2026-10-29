@@ -333,6 +333,39 @@ button:disabled {
   margin-top: 8px;
 }
 
+.message-sources {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #d8dee9;
+}
+
+.message-sources ol {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding-left: 22px;
+}
+
+.message-sources li small {
+  display: block;
+  color: #64748b;
+}
+
+.web-note {
+  margin: 0;
+  color: #475569;
+}
+
+.web-progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  color: #1d4ed8;
+}
+
 .text-button {
   padding: 3px 0;
   color: #2563eb;

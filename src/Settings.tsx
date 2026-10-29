@@ -12,6 +12,7 @@ export default function Settings({ onBack, onSaved }: SettingsProps) {
   const [draft, setDraft] = useState<ReasoningLevel>('low')
   const [veterinaryDraft, setVeterinaryDraft] = useState<ReasoningLevel>('high')
   const [chartDraft, setChartDraft] = useState(false)
+  const [webDraft, setWebDraft] = useState(false)
   const [voiceDraft, setVoiceDraft] = useState<VoicePreferences>(defaultVoicePreferences)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -25,6 +26,7 @@ export default function Settings({ onBack, onSaved }: SettingsProps) {
     draft !== saved.general_reasoning ||
     veterinaryDraft !== saved.veterinary_reasoning ||
     chartDraft !== saved.show_resource_chart ||
+    webDraft !== saved.web_enabled ||
     voiceFields.some((key) => voiceDraft[key] !== saved[key])
   )
 
@@ -44,6 +46,7 @@ export default function Settings({ onBack, onSaved }: SettingsProps) {
       setDraft(value.general_reasoning)
       setVeterinaryDraft(value.veterinary_reasoning)
       setChartDraft(value.show_resource_chart)
+      setWebDraft(value.web_enabled)
       setVoiceDraft(Object.fromEntries(voiceFields.map((key) => [key, value[key]])) as VoicePreferences)
     }).catch((failure: unknown) => {
       if (current) setError(failure instanceof Error ? failure.message : 'Paramètres indisponibles.')
@@ -69,12 +72,14 @@ export default function Settings({ onBack, onSaved }: SettingsProps) {
           ? { veterinary_reasoning: veterinaryDraft }
           : {}),
         ...(chartDraft !== saved.show_resource_chart ? { show_resource_chart: chartDraft } : {}),
+        ...(webDraft !== saved.web_enabled ? { web_enabled: webDraft } : {}),
         ...Object.fromEntries(voiceFields.filter((key) => voiceDraft[key] !== saved[key]).map((key) => [key, voiceDraft[key]])),
       })
       setSaved(confirmed)
       setDraft(confirmed.general_reasoning)
       setVeterinaryDraft(confirmed.veterinary_reasoning)
       setChartDraft(confirmed.show_resource_chart)
+      setWebDraft(confirmed.web_enabled)
       setVoiceDraft(Object.fromEntries(voiceFields.map((key) => [key, confirmed[key]])) as VoicePreferences)
       onSaved(confirmed)
       setConfirmation('Paramètres enregistrés. L’affichage s’applique immédiatement ; le raisonnement à la prochaine réponse du profil concerné.')
@@ -175,7 +180,34 @@ export default function Settings({ onBack, onSaved }: SettingsProps) {
               }} />
               Afficher le diagramme des ressources
             </label>
-            <p>La surveillance reste active avec tout profil IA, même diagramme masqué. Les alertes ne coupent jamais une réponse ni un run.</p>
+            <p>
+              La surveillance reste active avec tout profil IA, même diagramme masqué. Les
+              alertes ne coupent jamais une réponse ni un run.
+            </p>
+          </fieldset>
+          <fieldset disabled={loading || saving} className="settings-group">
+            <legend>Accès Web</legend>
+            <label className="resource-option">
+              <input
+                type="checkbox"
+                checked={webDraft}
+                onChange={(event) => {
+                  // Ce réglage ouvre la possibilité de demander le Web sans l'autoriser seul.
+                  setWebDraft(event.target.checked)
+                  setConfirmation('')
+                }}
+              />
+              Autoriser les demandes Web explicites
+            </label>
+            <p>
+              Fournisseur principal : DuckDuckGo Lite, avec un secours Bing borné. Chaque recherche
+              exige encore ton accord pour la question concernée ; ce réglage n’autorise jamais un
+              accès automatique.
+            </p>
+            <p>
+              Les pages sont lues comme des données non fiables. Aucun historique, souvenir ou
+              fichier local n’est transmis.
+            </p>
           </fieldset>
           <VoiceSettings value={voiceDraft} disabled={loading || saving} onChange={(value) => { setVoiceDraft(value); setConfirmation('') }} />
           <button type="submit" disabled={!dirty || loading || saving}>
