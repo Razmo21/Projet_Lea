@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import unittest
@@ -21,6 +22,13 @@ from app.inference import (  # noqa: E402
     llama_cpp_arguments,
 )
 from app.model_registry import load_model_registry  # noqa: E402
+
+
+def stream_response(content="Réponse", finish_reason="stop"):
+    """Produit le protocole SSE local, sans prétendre diffuser le texte dans React."""
+    event = {"choices": [{"delta": {"content": content}, "finish_reason": finish_reason}]}
+    return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                          content=f"data: {json.dumps(event)}\n\ndata: [DONE]\n\n".encode())
 
 
 class InferenceTests(unittest.IsolatedAsyncioTestCase):
@@ -78,7 +86,7 @@ class InferenceTests(unittest.IsolatedAsyncioTestCase):
             """Observe le payload sans ouvrir de socket, puis renvoie une réponse standard."""
 
             requests.append(request)
-            return httpx.Response(200, json={"choices": [{"message": {"content": "Réponse"}}]})
+            return stream_response()
 
         adapter = inference_adapter(self.registry, "general")
         messages = [{"role": "user", "content": "Bonjour"}]
@@ -88,6 +96,7 @@ class InferenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["model"], self.registry.profile("general").runtime.alias)
         self.assertEqual(payload["max_tokens"], 1024)
         self.assertEqual(payload["messages"], messages)
+        self.assertTrue(payload["stream"])
         self.assertEqual(str(requests[0].url), adapter.chat_url)
         self.assertEqual(requests[0].extensions["timeout"]["read"], 120.0)
 
@@ -100,7 +109,7 @@ class InferenceTests(unittest.IsolatedAsyncioTestCase):
             """Conserve les deux payloads locaux sans générer de texte."""
 
             requests.append(request)
-            return httpx.Response(200, json={"choices": [{"message": {"content": "Réponse"}}]})
+            return stream_response()
 
         adapter = inference_adapter(self.registry, "general")
         transport = httpx.MockTransport(respond)
@@ -143,7 +152,7 @@ class InferenceTests(unittest.IsolatedAsyncioTestCase):
             """Capture the two locally routed requests without loading the GGUF."""
 
             requests.append(request)
-            return httpx.Response(200, json={"choices": [{"message": {"content": "Réponse"}}]})
+            return stream_response()
 
         adapter = inference_adapter(self.registry, "veterinary")
         transport = httpx.MockTransport(respond)
@@ -222,13 +231,62 @@ class InferenceTests(unittest.IsolatedAsyncioTestCase):
         def truncated(request: httpx.Request) -> httpx.Response:
             """Une sortie coupée ne devient pas une réponse publiable."""
 
-            return httpx.Response(200, json={"choices": [{
-                "message": {"content": "Réponse incomplète"},
-                "finish_reason": "length",
-            }]})
+            return stream_response("Réponse incomplète", "length")
 
         with self.assertRaises(ModelTruncatedError):
             await adapter.generate([], transport=httpx.MockTransport(truncated))
+
+    async def test_stream_reassembles_unicode_without_reasoning_and_rejects_incomplete_data(self):
+        """Les fragments privés et une fermeture prématurée ne deviennent jamais du texte publié."""
+        events = [
+            {'choices': [{'delta': {'reasoning_content': 'Pensée privée'}}]},
+            {'choices': [{'delta': {'content': 'Réponse '}}]},
+            {'choices': [{'delta': {'content': 'vétérinaire.'}, 'finish_reason': 'stop'}]},
+        ]
+        data = ''.join(f'data: {json.dumps(event, ensure_ascii=False)}\n\n' for event in events)
+        adapter = inference_adapter(self.registry, 'general')
+
+        class Fragments(httpx.AsyncByteStream):
+            """Coupe volontairement des caractères UTF-8 entre deux paquets."""
+
+            async def __aiter__(self):
+                """Livre les octets séparément pour éprouver le décodeur incrémental."""
+                for byte in (data + 'data: [DONE]\n\n').encode():
+                    yield bytes([byte])
+
+        result = await adapter.generate([], transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, stream=Fragments())))
+        self.assertEqual(result, 'Réponse vétérinaire.')
+        for invalid in (data, 'data: {invalide}\n\n', 'data: [DONE]\n\n'):
+            with self.subTest(invalid=invalid), self.assertRaises(ModelResponseError):
+                await adapter.generate([], transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, content=invalid.encode())))
+
+    async def test_cancelling_stream_closes_the_http_transport(self):
+        """L'annulation atteint le flux HTTP, même avant le premier fragment de réponse."""
+        started, closed = asyncio.Event(), asyncio.Event()
+
+        class WaitingStream(httpx.AsyncByteStream):
+            """Modélise un moteur encore en réflexion et observe la fermeture du transport."""
+
+            async def __aiter__(self):
+                """Attend l'arrêt sans produire de réponse finale."""
+                started.set()
+                await asyncio.sleep(30)
+                yield b'data: [DONE]\n\n'
+
+            async def aclose(self):
+                """Confirme que le client HTTP a libéré son flux."""
+                closed.set()
+
+        adapter = inference_adapter(self.registry, 'general')
+        pending = asyncio.create_task(adapter.generate([], transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, stream=WaitingStream()))))
+        await asyncio.wait_for(started.wait(), 2)
+        pending.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await pending
+        self.assertTrue(closed.is_set())
 
     def test_sdk_configuration_is_model_driven(self) -> None:
         """Le port, le préfixe API et les stops SDK proviennent du registre."""

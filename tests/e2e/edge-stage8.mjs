@@ -236,7 +236,7 @@ try {
     'Une base isolée doit commencer sans conversation.',
   )
 
-  await page.trustedClick('button', 'Démarrer Léa')
+  await page.trustedClick('button', 'Démarrer')
   await page.waitFor(
     `document.body.innerText.includes('Léa est prête.')`,
     'le démarrage du cœur',
@@ -264,12 +264,12 @@ try {
     `document.body.innerText.includes('Rex') &&
       document.querySelectorAll('.message').length === 4 &&
       [...document.querySelectorAll('button')].some((button) =>
-        button.textContent.trim() === 'Arrêter Léa' && !button.disabled
+        button.textContent.trim() === 'Arrêter' && !button.disabled
       )`,
     'la restauration après actualisation',
   )
 
-  await page.trustedClick('button', 'Arrêter Léa')
+  await page.trustedClick('button', 'Arrêter')
   await page.waitFor(
     `document.body.innerText.includes('Léa est arrêtée.')`,
     "l’arrêt du cœur en conservant Vite",
@@ -280,7 +280,7 @@ try {
     'Les messages visibles doivent rester pendant l’arrêt du cœur.',
   )
 
-  await page.trustedClick('button', 'Démarrer Léa')
+  await page.trustedClick('button', 'Démarrer')
   await page.waitFor(
     `document.body.innerText.includes('Léa est prête.') && document.querySelectorAll('.message').length === 4`,
     'la restauration après redémarrage du cœur',
@@ -350,12 +350,12 @@ try {
     'le début de la génération à interrompre',
   )
   await sleep(200)
-  await page.trustedClick('button', 'Arrêter Léa')
+  await page.trustedClick('button', 'Arrêter')
   await page.waitFor(
     `document.body.innerText.includes('Léa est arrêtée.')`,
     "l’arrêt pendant une génération",
   )
-  await page.trustedClick('button', 'Démarrer Léa')
+  await page.trustedClick('button', 'Démarrer')
   await page.waitFor(
     `document.body.innerText.includes('Léa est prête.') && !!document.querySelector('.message-failed')`,
     'la récupération de la question interrompue',
@@ -546,12 +546,12 @@ try {
   )
 
   // Le redémarrage prouve que le souvenir global reste dans SQLite sans sa source.
-  await page.trustedClick('button', 'Arrêter Léa')
+  await page.trustedClick('button', 'Arrêter')
   await page.waitFor(
     `document.body.innerText.includes('Léa est arrêtée.')`,
     "l'arrêt du cœur avant le contrôle de persistance mémoire",
   )
-  await page.trustedClick('button', 'Démarrer Léa')
+  await page.trustedClick('button', 'Démarrer')
   await page.waitFor(
     `document.body.innerText.includes('Léa est prête.')`,
     'le redémarrage du cœur avec mémoire globale',

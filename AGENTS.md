@@ -49,12 +49,13 @@ Après modification :
 
 Les étapes 10 à 14 sont validées manuellement et terminées. L’étape 15 et ses
 limites scientifiques sont consignées dans `docs/ETAPE_15_VALIDATION.md`.
-Les phases 16.1 et 16.2 sont techniquement acceptées. La phase 16.3 ajoute au
-même Web Gateway un recours Edge public, éphémère et non interactif pour les
-seules coquilles JavaScript insuffisantes ; ses preuves sont consignées dans
-`docs/ETAPE_16_3_VALIDATION.md`. La première campagne manuelle des trois phases
-est terminée ; ses correctifs de stabilisation attendent la revalidation finale
-de l’utilisateur avant le commit.
+L’étape 16 est terminée, validée manuellement et commitée, comme confirmé par
+le prompt 17. Ses protections et limites restent consignées dans
+`docs/ETAPE_16_3_VALIDATION.md`. L’étape 17 porte uniquement sur le rendu Markdown
+et la refonte de l’interface ; le chat éphémère Général a ensuite été
+explicitement demandé par l’utilisateur. Sa validation est décrite dans
+`docs/ETAPE_17_VALIDATION.md`. Elle attend la validation manuelle de l’utilisateur.
+Le packaging Windows est l’étape suivante et n’est pas commencé.
 
 Ne commence aucune étape suivante. La vision reste suspendue et le profil
 Auxiliaire reste supprimé. Aucun commit ni push sans demande explicite.
@@ -104,6 +105,20 @@ La surveillance reste en lecture seule, en RAM, sans arrêt automatique sur seui
 Elle est commune à tous les profils IA actifs et cesse avec le cœur ; seuls
 les contrôles Docker/OpenHands dépendent des besoins agentiques du profil.
 Le diagramme est masqué par défaut ; les alertes restent indépendantes du réglage.
+Le chat éphémère est limité à Général : historique et consentements en RAM,
+aucune lecture/écriture de souvenirs ni persistance des échanges. Son Web garde
+le consentement manuel et les validations du Gateway, sans lecteur Edge sur disque.
+Les traces des fournisseurs externes ne peuvent pas être garanties absentes.
+Programmation n’expose plus de chat Web : l’unique saisie inférieure démarre une
+tâche OpenHands, même si sa formulation mentionne Internet. Le backend refuse
+les routes de conversation pour tout profil agentique ; OpenHands reste sans
+accès réseau et ne doit pas inventer l’information externe manquante.
+Le bouton principal devient « Arrêter la réponse » pendant un traitement ; il
+annule le run en Programmation et la requête exacte dans les profils directs.
+Le flux d'inférence reste interne, sans publication de fragments non validés.
+Les conversations contenant des runs restent dans l'historique commun : leur
+ouverture exige Programmation chargé, mais renommage et suppression restent
+accessibles avec les autres profils. Les alertes de ressources sont en haut.
 Un arrêt Docker incertain reste non terminal et interdit une nouvelle activité
 modèle jusqu’à récupération vérifiée. Ne compense pas les décisions de Qwen.
 

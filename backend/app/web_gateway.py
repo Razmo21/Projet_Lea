@@ -21,6 +21,7 @@ import re
 import socket
 import time
 import unicodedata
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from html.parser import HTMLParser
@@ -333,6 +334,8 @@ _RESEARCH_RELEVANCE_STOPWORDS = _SECONDARY_SEARCH_STOPWORDS | frozenset(
 )
 
 LOGGER = logging.getLogger(__name__)
+# Portée de requête uniquement : les recherches privées ne journalisent même pas les hôtes en erreur.
+PRIVATE_WEB_OPERATION: ContextVar[bool] = ContextVar("private_web_operation", default=False)
 
 
 class WebGatewayError(RuntimeError):
@@ -416,6 +419,8 @@ def _log_web_failure(
 ) -> None:
     """Journalise seulement l'étape, l'hôte et le type d'erreur, jamais la requête."""
 
+    if PRIVATE_WEB_OPERATION.get():
+        return
     LOGGER.warning(
         "web_gateway_failure stage=%s host=%s error=%s status=%s",
         stage,

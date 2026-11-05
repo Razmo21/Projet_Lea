@@ -25,7 +25,7 @@ try {
       recorder.start();await new Promise(resolve=>setTimeout(resolve,1500));recorder.stop();await stopped;
       const bytes=new Uint8Array(await new Blob(chunks,{type:recorder.mimeType}).arrayBuffer());
       const decoded=await context.decodeAudioData(bytes.buffer.slice(0));
-      const {pcmWav,audioBase64}=await import('/src/voice.ts');
+      const {pcmWav,audioBase64}=await import('/src/lib/voice.ts');
       const pcm=Float32Array.from({length:16000},(_,index)=>Math.sin(index*.1)*.2);
       return {opus:audioBase64(bytes),wav:audioBase64(pcmWav(pcm)),bytes:bytes.length,seconds:decoded.duration,mime:recorder.mimeType};
     } finally { destination.stream.getTracks().forEach(track=>track.stop());oscillator.stop();await context.close() }

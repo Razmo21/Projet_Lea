@@ -10,7 +10,7 @@ const pause = milliseconds => new Promise(resolve => setTimeout(resolve, millise
 try {
   await session.navigate('http://127.0.0.1:5173')
   await session.evaluate(`(async () => {
-    window.__voiceModule = await import('/src/voice.ts');
+    window.__voiceModule = await import('/src/lib/voice.ts');
     const sound = await window.__voiceModule.voiceRequest('speak', {text:'Bonjour. Ceci est un test du microphone.', voice_id:'fr-siwis', rate:1});
     window.__input = new AudioContext({sampleRate:48000}); await window.__input.resume();
     window.__speech = await window.__input.decodeAudioData(Uint8Array.from(atob(sound.audio), c=>c.charCodeAt(0)).buffer);
@@ -65,8 +65,8 @@ try {
     window.__forcedMime='';window.__dictated='';window.__sent=0;
     const {default:React}=await import('/node_modules/.vite/deps/react.js');
     const {default:ReactDOM}=await import('/node_modules/.vite/deps/react-dom_client.js');
-    const {default:VoiceControls}=await import('/src/VoiceControls.tsx');
-    const {defaultVoicePreferences}=await import('/src/preferences.ts');
+    const {default:VoiceControls}=await import('/src/components/VoiceControls.tsx');
+    const {defaultVoicePreferences}=await import('/src/lib/preferences.ts');
     document.querySelector('#root').hidden=true;
     const mount=document.createElement('div');document.body.append(mount);window.__testRoot=ReactDOM.createRoot(mount);
     window.__testRoot.render(React.createElement(VoiceControls,{

@@ -1,783 +1,199 @@
-# Projet Léa
+Projet Léa
+Léa est une assistante personnelle d'intelligence artificielle conçue pour fonctionner principalement en local, sur Windows. Elle réunit conversation, mémoire explicite, programmation assistée, voix et consultation contrôlée du Web dans une interface unique.
+État du projet — novembre 2026 : les étapes 1 à 16 sont terminées. L'étape 17 (Markdown et refonte visuelle) est implémentée et validée manuellement ; son commit reste à effectuer. La prochaine étape est la transformation de Léa en application Windows pour finaliser la v1.0.
 
-Léa est une plateforme personnelle d'intelligence artificielle locale.
+Léa est encore un projet personnel en développement, et non un installateur Windows prêt à être distribué. Les limites connues et les validations détaillées sont conservées dans docs/.
+Sommaire
+- Fonctionnalités
+- Architecture
+- Démarrage local
+- Utilisation
+- Données et configuration
+- Sécurité et limites
+- Tests
+- Feuille de route
+- Documentation
+Fonctionnalités
+Trois profils spécialisés
+Profil	Modèle local actuel	Utilisation
+Général	Qwen3 4B	Conversation, explications, rédaction et questions courantes. Raisonnement Low/High.
+Vétérinaire	Qwen3.5 9B	Apprentissage vétérinaire et raisonnement clinique théorique. Raisonnement Low/High.
+Programmation	Qwen2.5-Coder 7B	Tâches de développement exécutées par OpenHands sur un projet autorisé.
 
-## Objectif actuel
 
-Construire une base locale minimale et stable : interface React, backend
-FastAPI, base SQLite et modèle local restent limités à cette machine.
+Le profil Programmation n'est pas un chat conventionnel : il sélectionne un dossier de travail, lance une tâche contrôlée et présente les résultats, modifications et possibilités de restauration. Il ne propose pas de sélecteur Low/High.
 
-L’étape 9 ajoute une mémoire générale explicite aux conversations persistantes.
-L’étape 10 ajoute un profil Programmation local, ses projets confinés et des
-runs agentiques contrôlés. Le backend reste l’unique autorité de l’historique,
-des souvenirs, des profils et des runs ; SQLite conserve les données locales et
-l’interface permet de reprendre, rechercher et gérer les conversations.
+Un seul modèle d'inférence est chargé à la fois. Les profils et leurs modèles sont associés par configuration, afin de pouvoir remplacer les modèles sans reconstruire Léa.
+Conversations et mémoire
+- Conversations persistantes dans SQLite : création, recherche, ouverture, renommage et suppression.
+- Les conversations Programmation figurent dans cette même liste. Leur ouverture exige le profil Programmation chargé ; leur renommage et leur suppression restent disponibles avec les autres profils.
+- Modification d'un ancien message, nouvelle génération et reprise après certaines erreurs, avec protection contre les mises à jour concurrentes.
+- Mémoire explicite : commandes telles que Retiens que… et Oublie que…. Les souvenirs ne sont pas extraits automatiquement des discussions ordinaires.
+- Chat éphémère dans le profil Général : échanges conservés uniquement en mémoire vive, sans historique ni souvenirs persistants. La session disparaît à sa fermeture ou au rechargement.
+Interface et Markdown
+- Interface React repensée autour des conversations, avec barre latérale, accueil, recherche et zone de saisie ajustable.
+- Thèmes clair et sombre, avec palette inspirée du logo de Léa.
+- Rendu Markdown CommonMark/GFM : titres, listes, tableaux, citations, cases à cocher, liens et blocs de code.
+- Copie fidèle des messages et copie indépendante des blocs de code.
+- Affichage sécurisé : pas d'exécution de HTML actif, de liens dangereux ou de chargement automatique d'images distantes.
+- Sources Web présentées dans un panneau repliable, distinct de la réponse du modèle.
+- Diagramme facultatif de l'utilisation du CPU, de la RAM et de la VRAM.
+- Alertes de ressources centrées dans le bandeau supérieur ; le diagramme reste en bas.
+- Avertissements et erreurs présentés par une phrase courte, avec diagnostics techniques conservés en interne.
+- Accueil aléatoire propre au profil : cinq phrases Programmation et cinq Vétérinaire, sans rotation automatique.
+Le bouton + de la zone de saisie est réservé à une évolution future ; l'importation de fichiers n'est pas encore implémentée. Le rendu LaTeX et la coloration syntaxique ne font pas partie de la v1.0 actuelle.
+Voix locale
+- Dictée : enregistrement, transcription locale et insertion du texte dans le brouillon, qui reste modifiable avant l'envoi.
+- Conversation vocale : enregistrement d'une question, transcription, réponse du modèle puis lecture audio.
+- Reconnaissance vocale locale avec Whisper ; synthèse vocale locale avec Kyutai Pocket TTS (voix naturelle de Léa, Estelle) ou Piper/SIWIS selon la configuration.
+La conversation vocale fonctionne tour par tour : elle ne réactive pas automatiquement le microphone après chaque réponse. Le Speech-to-Speech continu est reporté à une version ultérieure.
+Web Gateway
+L'accès Internet est désactivé par défaut et reste soumis à deux conditions :
+1. L'option Web doit être activée dans les paramètres.
+2. Chaque recherche doit être explicitement demandée ou confirmée pour la question concernée.
+Léa ne recherche pas automatiquement des informations sur Internet lorsqu'une simple question est posée. Pour une donnée actuelle sans autorisation, elle peut proposer une recherche ; une confirmation comme Oui, vas-y n'autorise que la demande en attente.
 
-L’étape 11 sépare désormais les profils, les modèles remplaçables et le moteur
-d’inférence. Les deux Qwen actuels, les données et le parcours OpenHands sont
-conservés. L’étape 11 a été validée manuellement par l’utilisateur avant
-l’autorisation de l’étape 12.
+Le Web Gateway prend en charge, sous limites techniques :
+- Recherche publique avec DuckDuckGo Lite et repli vers Bing HTML.
+- Lecture directe de pages HTTP(S) publiques et consultation de PDF textuels.
+- Vérification à partir de plusieurs sources lorsque la demande l'exige.
+- Lecture ponctuelle de certaines pages JavaScript avec Microsoft Edge et un profil temporaire isolé.
+- Attribution des références [S1], [S2], etc. par le backend, et non par le modèle.
+Le Web Gateway conversationnel est disponible pour Général et Vétérinaire. Les tâches du profil Programmation passent par OpenHands, sans accès Web via cet outil.
+Programmation avec OpenHands
+- Sélection d'un projet dans le répertoire de travail autorisé.
+- Panneau Projet toujours visible au-dessus des messages ; consignes et réponses conservées en bulles dans l'historique, y compris pendant le run.
+- Exécution locale via OpenHands et Docker Desktop.
+- Checkpoints avant modifications, consultation des changements, Accepter ou Restaurer.
+- Les décisions de checkpoint accompagnent la réponse de la tâche ; une erreur sans réponse finale reste explicitement signalée.
+- Annulation, suivi des runs et diagnostics en cas d'échec.
+Une tâche peut modifier correctement des fichiers sans satisfaire la politique automatique de validation. Dans ce cas, Léa annonce un run non validé plutôt qu'une réussite fictive ; la restauration reste disponible. Docker Desktop doit actuellement être démarré manuellement.
+Architecture
+Interface React / TypeScript / Vite
+               │
+               ▼
+          FastAPI (Léa)
+       ┌───────┼───────────┬───────────────┐
+       ▼       ▼           ▼               ▼
+     SQLite  llama.cpp   Web Gateway    OpenHands
+               │                           │
+         Modèles Qwen                    Docker
 
-L’étape 12 ajoute le centre de paramètres de Léa, utilisable sans modèle ni
-FastAPI chargés, et a été validée manuellement. L’étape 13 fiabilise les runs
-interrompus et ajoute une surveillance légère avec diagramme facultatif.
-Elle est validée manuellement et finalisée, confirmation apportée par le prompt 14.
-L’étape 14 ajoute le microphone, la dictée locale et la conversation vocale tour
-par tour. Elle est terminée et validée manuellement ; ses essais et limites sont
-consignés dans `docs/ETAPE_14_VALIDATION.md`. L’installation avait été autorisée
-explicitement dans la limite de 10 Go.
-L’étape 15 ajoute le profil Vétérinaire local et compare les contrats de réponse
-avant de conserver leurs optimisations. L'intégration technique est prête ; ses
-limites scientifiques et la procédure de validation manuelle sont consignées
-dans `docs/ETAPE_15_VALIDATION.md`.
-La phase 16.1 ajoute une recherche et une lecture HTML publiques strictement
-manuelles, communes aux trois profils. La phase 16.2 ajoute la vérification
-multi-source, les PDF textuels et l’analyse opportuniste des textes publics de
-vidéos ; voir `docs/ETAPE_16_1_VALIDATION.md` et
-`docs/ETAPE_16_2_VALIDATION.md`. La phase 16.3 ajoute un recours Edge éphémère
-pour certaines pages JavaScript publiques ; voir `docs/ETAPE_16_3_VALIDATION.md`.
-La première campagne manuelle est terminée ; les derniers correctifs et les
-limites acceptées sont résumés dans `docs/ETAPE_16_3_VALIDATION.md`. Une
-revalidation utilisateur reste nécessaire avant le commit de l’étape 16.
+Voix locale : Whisper → modèle actif → Pocket TTS / Piper
+Léa est l'application et l'orchestrateur ; le modèle n'est qu'un composant interchangeable. L'historique, les souvenirs, les autorisations, les projets et les checkpoints restent sous le contrôle de Léa, indépendamment des poids du modèle.
+Composant	Technologie / rôle
+Interface	React, TypeScript, Vite, react-markdown, remark-gfm
+API et orchestration	Python, FastAPI
+Persistance	SQLite
+Inférence locale	llama.cpp et modèles GGUF
+Programmation agentique	OpenHands SDK / Agent Server, Docker Desktop
+Voix	Whisper, Kyutai Pocket TTS, Piper/SIWIS
+Navigation Web dynamique et tests	Playwright avec Microsoft Edge installé localement
 
-## Philosophie
 
-Une seule petite étape à la fois.
+Démarrage local
+Prérequis
+Le projet est actuellement développé et testé sur Windows 11. Avant le démarrage, les dépendances du dépôt, les runtimes et les fichiers de modèles configurés doivent déjà être installés. Le packaging en application Windows n'est pas encore réalisé.
 
-On ne commence jamais une nouvelle fonctionnalité tant que l'étape actuelle n'est pas stable, testée et validée.
-
-## Technologies utilisées
-
-- React + TypeScript + Vite
-- Python + FastAPI
-- Playwright Python utilisant Microsoft Edge déjà installé, uniquement à la demande
-- llama.cpp avec le modèle local Qwen
-- SQLite
-
-## Technologies prévues plus tard
-
-- Qdrant
-- Tauri
-
-## Ordre de développement
-
-1. Interface localhost minimale — terminée.
-2. Backend minimal — terminée.
-3. Connexion frontend/backend avec réponse fictive — terminée.
-4. Installation et test du premier modèle local — terminée.
-5. Connexion du modèle au backend — terminée.
-6. Démarrage et arrêt local — terminée.
-7. Raisonnement, contrôle local et contexte temporaire — terminée.
-8. Conversations locales persistantes et fiables — terminée.
-9. Mémoire générale explicite et persistante — terminée.
-10. Multi-modèles et profil Programmation — terminée.
-11. Architecture indépendante des modèles — terminée.
-12. Centre de paramètres de Léa — terminé.
-13. Programmation avancée — terminée.
-14. Microphone et conversation vocale — terminée.
-15. Profil Vétérinaire et optimisation des contrats — validation manuelle requise.
-
-## Démarrage local
-
-Depuis la racine du projet, utilise une seule commande pour gérer les trois composants locaux :
-
-```powershell
+Pour les fonctionnalités de programmation, Docker Desktop doit être disponible. Pour les fonctions vocales, utiliser une fenêtre Microsoft Edge externe : le navigateur intégré de VS Code a déjà présenté un problème de décodage audio.
+Démarrer, vérifier et arrêter Léa
+Dans PowerShell, depuis la racine du dépôt :
 .\lea.ps1 start
 .\lea.ps1 status
 .\lea.ps1 stop
-```
+Après le démarrage, ouvrir : http://127.0.0.1:5173.
 
-Après `start`, ouvre l’interface à l’adresse `http://127.0.0.1:5173`. La commande normale pour arrêter Léa est `stop`.
-
-## Contrôle quotidien du cœur
-
-Pour laisser l’interface ouverte sans charger le modèle ni FastAPI, démarre seulement Vite :
-
-```powershell
+Les commandes start et stop gèrent la pile locale que Léa a elle-même lancée : frontend, backend et moteur d'inférence. Elles ne doivent pas arrêter arbitrairement un processus tiers occupant un port.
+Utiliser l'interface sans charger l'IA
 npm run dev
-```
+Ouvrir ensuite http://127.0.0.1:5173. Les boutons Démarrer et Arrêter de l'interface permettent de piloter le cœur local.
 
-Ouvre ensuite `http://127.0.0.1:5173` et utilise les boutons `Démarrer Léa` et `Arrêter Léa`. Le contrôleur local limité de Vite lance ou arrête uniquement le modèle et FastAPI ; il n’accepte aucune commande du navigateur.
-
-Les mêmes opérations sont disponibles en ligne de commande :
-
-```powershell
+Les commandes équivalentes sont :
 .\lea.ps1 start-core
 .\lea.ps1 status-core
 .\lea.ps1 stop-core
-```
-
-Les commandes existantes `start`, `status` et `stop` continuent de gérer la pile complète, y compris Vite lorsqu’il a été lancé par Léa.
-
-## Microphone et conversation vocale — étape 14
-
-Pour les deux modes vocaux, ouvre `http://127.0.0.1:5173` dans une **fenêtre
-Microsoft Edge externe**, pas dans le navigateur intégré de VS Code. Ce dernier
-peut enregistrer du WebM/Opus tout en échouant à le décoder (`Unable to decode
-audio data`), avant tout envoi à Whisper. Ce défaut a été reproduit avec VS Code
-1.140.0 sur des données synthétiques identiques décodées correctement dans Edge.
-Copier l’adresse dans la barre d’Edge évite l’ouverture intégrée des liens localhost.
-
-Deux commandes distinctes se trouvent sous la zone de question :
-
-- **Dicter au microphone** : premier clic pour enregistrer, second pour
-  transcrire localement. Le texte s’ajoute au brouillon sans effacer les
-  modifications ; relire puis cliquer soi-même sur Envoyer ou Lancer le run.
-  Cette dictée fonctionne avec Vite seul, même si l’IA est arrêtée.
-- **Conversation vocale** : vue dédiée masquant les échanges écrits. Cliquer
-  sur Parler à Léa, puis Terminer et envoyer ; Léa transcrit, traite la demande
-  avec le profil actif, conserve le texte et lit la réponse. Aucun microphone
-  ne se rallume automatiquement. Arrêter la lecture coupe le son, sans effacer
-  la réponse. Retour aux conversations ferme le microphone et l’audio.
-
-Le mode vocal exige un profil prêt, mais ne le démarre jamais implicitement.
-En Programmation, choisir d’abord un projet ; les demandes passent uniquement
-par OpenHands. Le résultat impose un retour explicite au diff pour accepter
-ou restaurer, jamais une décision automatique. Fermer l’audio ne signifie pas
-annuler un run déjà lancé : son bouton d’annulation reste dans l’interface classique.
-
-Paramètres conserve dans SQLite le microphone (ou défaut système), la langue
-français/anglais, la lecture activée, la voix installée, le volume (0–100 %)
-et la vitesse SIWIS (0,75–1,5×). La voix naturelle de Léa utilise honnêtement
-sa vitesse native fixe à 1× ; le curseur est désactivé pour cette voix sans
-effacer la valeur SIWIS mémorisée. « Autoriser et lister les microphones » demande
-l’autorisation puis libère immédiatement le périphérique. Aucun faux réglage
-de sensibilité. Un périphérique mémorisé mais absent est signalé.
-
-Capture limitée à 120 secondes : le dépassement annule, sans envoi. Les sons
-restent en RAM et ne sont pas conservés. Whisper Small Q5_1, Pocket TTS et
-Piper/SIWIS fonctionnent en CPU, dans un environnement séparé ; aucun changement des Qwen,
-de leur contexte ou du backend Python. Pas d’API distante, VAD, écoute permanente,
-vision ou téléchargement pendant l’utilisation normale. La lecture des blocs
-de code ou réponses très longues est annoncée comme partielle ; le texte
-complet reste dans l’historique.
-
-En cas d’erreur de capture, la console locale (`F12`) contient un diagnostic
-`[Lea microphone]` : MIME réel, tailles des morceaux, durée écoulée, finalisation,
-conteneur et étape de décodage/conversion. Aucun son, transcription ou identifiant
-de microphone n’y est journalisé ; ces diagnostics ne sont pas envoyés au serveur.
-
-Installation administrative explicite (Internet nécessaire uniquement ici) :
-
-```powershell
-.\tools\voice\install.ps1
-```
-
-Les versions CPU sont figées dans `tools/voice/requirements.txt`. Binaires dans
-`runtime/voice/`, poids dans `models/voice/`, paramètres techniques dans l’unique
-`config/models.json` ; ces gros fichiers sont ignorés par Git. Le sélecteur propose
-« Léa — Voix naturelle française » (Pocket TTS `french`, choix par défaut) et
-« SIWIS — Voix classique » (Piper). Whisper et Pocket TTS : MIT pour le code ;
-poids Pocket TTS : CC-BY 4.0 et conditions Kyutai ; Piper : GPL-3.0-or-later ;
-dépôt des voix Piper : MIT, corpus SIWIS : CC-BY 4.0.
-Provenance, attribution, mesures et procédure physique :
-[`docs/ETAPE_14_VALIDATION.md`](docs/ETAPE_14_VALIDATION.md).
-
-## Conversations persistantes
-
-Les conversations sont enregistrées dans `data/lea.sqlite3`. Elles survivent
-à l’actualisation de la page, à l’arrêt du cœur et au redémarrage de Léa. Une
-nouvelle conversation vide n’est créée qu’au premier message valide.
-
-L’interface permet de lister, rechercher, ouvrir, renommer et supprimer une
-conversation. Elle permet aussi de réessayer une génération échouée, modifier
-un ancien message utilisateur ou régénérer une réponse ; ces deux dernières
-opérations suppriment volontairement la suite devenue incohérente. Les
-révisions empêchent un onglet périmé d’écraser silencieusement un autre onglet.
-
-Le navigateur ne transmet jamais l’historique, un rôle `system` ou
-une directive de raisonnement ajoutée par l’interface. Le backend relit uniquement les messages validés dans SQLite,
-sélectionne les paires complètes les plus récentes et construit lui-même la
-requête du modèle. Aucun échange n’est stocké dans `localStorage`,
-`sessionStorage` ou `IndexedDB`.
-
-## Mémoire générale explicite
-
-La mémoire générale est distincte de l’historique envoyé au modèle, mais chaque
-souvenir garde la trace de sa ou de ses conversations sources. Elle est ajoutée
-uniquement quand un message commence par une commande reconnue :
-
-```text
-Retiens que ...
-Souviens-toi que ...
-Souviens toi que ...
-Mémorise que ...
-Memorise que ...
-Oublie que ...
-```
-
-`Retiens`, `Souviens-toi` et `Mémorise` enregistrent le fait dans la table
-SQLite `memories`, sans appeler le modèle. La table `memory_sources` relie ce
-fait aux conversations encore présentes où il a été explicitement retenu ;
-cette provenance reste informative et ne limite pas sa durée de vie. `Oublie` supprime
-uniquement une correspondance normalisée exacte : aucun rapprochement flou ou
-sémantique n’est effectué. Un doublon exact ne crée pas une seconde ligne de
-mémoire, mais ajoute sa conversation comme source si elle est différente.
-
-Les commandes et leurs confirmations restent visibles dans leur conversation,
-mais ne sont jamais renvoyées au modèle comme historique normal. Supprimer une
-conversation supprime ses messages et ses liens de provenance dans la même
-transaction, sans supprimer les faits globaux. Les souvenirs actifs survivent
-à la suppression de leur conversation d’origine, à l’actualisation, aux
-nouvelles conversations et aux redémarrages. Seule une commande explicite
-`Oublie que ...` supprime le fait correspondant dans toutes les conversations.
-
-Une phrase ordinaire comme `Je m'appelle Stan.` n’est jamais mémorisée
-automatiquement. Il n’existe ni panneau mémoire, ni extraction automatique, ni
-RAG ou embeddings à cette étape. Pour oublier un fait, il faut employer
-`Oublie que ...` avec le même fait après normalisation déterministe.
-
-Le profil Général utilise une fenêtre `-c 8192` avec un seul slot. Le backend réserve
-1 024 tokens pour la génération (réflexion éventuelle comprise) et 1 024 pour les instructions et le
-template, puis applique une borne conservatrice d’un octet UTF-8 par token.
-La directive `/no_think` (Low) ou `/think` (High) existe uniquement dans la copie interne envoyée au
-modèle : ni elle, ni les balises de pensée, ni une pensée interne ne sont
-renvoyées à l’interface ou enregistrées dans SQLite.
-
-Les souvenirs sont sérialisés dans un bloc JSON échappé et présentés comme des
-données utilisateur, jamais comme des directives système. Leur capacité dédiée
-est de 1 800 tokens estimés avec la borne conservatrice actuelle d’un octet
-UTF-8 par token. Un ajout qui dépasserait cette capacité est refusé sans
-supprimer ni tronquer les souvenirs existants ; la mémoire compte aussi dans le
-budget global de 8 192 tokens du profil Général avant la sélection des paires d’historique.
-
-Pour isoler une base lors d’un test :
-
-```powershell
-$env:LEA_DB_PATH = 'data/lea-test.sqlite3'
-```
-
-Toutes ces données résident dans `data/lea.sqlite3` : les conversations dans
-`conversations`, leurs échanges dans `messages`, les faits actifs issus de
-`Retiens que...` dans `memories` et leur provenance facultative dans
-`memory_sources`. Une mémoire globale peut donc ne plus avoir de source après
-la suppression de sa conversation d’origine.
-
-La suppression d’une conversation est une suppression SQLite réelle et
-transactionnelle, jamais un masquage frontend. La clé étrangère efface ses
-messages et ses liens `memory_sources`; les `agent_runs` indépendants conservent
-leur audit avec un `conversation_id` mis à `NULL`, ainsi que leurs checkpoints.
-Chaque connexion active les clés étrangères et `secure_delete`. Ce dernier
-limite la conservation de contenu dans les cellules libérées, mais ne constitue
-pas une promesse d’effacement forensique du support, des sauvegardes ou des blocs SSD.
-Une maintenance hors service peut en plus effectuer un checkpoint WAL et `VACUUM`.
-
-## Profils locaux et projets de programmation
-
-Le registre `config/models.json` décrit Général, Programmation et Vétérinaire,
-leurs modèles, prompts, capacités, moteurs et limites : il est la source de
-vérité de cette configuration. Général reste toujours le profil du prochain
-démarrage complet. L'interface peut changer de profil et poursuivre la même
-conversation ; chaque réponse assistant garde le profil et l'alias du modèle
-qui l'a produite. Un seul modèle est chargé à la fois.
-
-La configuration Programmation validée est strictement locale :
-
-- `Qwen2.5-Coder-7B-Instruct Q6_K` ;
-- fenêtre de contexte de 22 000 tokens et un seul slot ;
-- `llama.cpp` b10516 (`b95502ba9`) ;
-- OpenHands SDK / Agent Server 1.43.1 minimal comme moteur agentique.
-
-Agent Canvas peut rester un outil administratif, mais il n’est pas requis pour
-un run. Docker Desktop doit actuellement être démarré manuellement : Léa ne le
-démarre pas elle-même et signale clairement son indisponibilité. Léa n’ouvre pas
-non plus l’interface OpenHands. Le conteneur Agent Server est créé uniquement
-au lancement explicite d’un run, jamais à l’activation du profil ni après sa fin.
-Aucun modèle
-cloud ni modèle local de secours n’est utilisé pour le profil Programmation.
-
-En profil Programmation, la liste des projets provient uniquement des
-sous-dossiers réels de `L:\IA_WORKSPACE`. Le registre SQLite conserve un UUID,
-un nom, un chemin relatif et l'unique sélection active ; aucun chemin absolu
-n'est exposé au navigateur. L'actualisation refuse les remontées, autres
-lecteurs, chemins UNC, liens symboliques, junctions et reparse points.
-
-Chaque run OpenHands fige de manière immuable son `project_id` et son chemin
-canonique au démarrage. Un changement de projet dans une autre session ne peut
-donc pas modifier son montage ni sa cible. Le run crée un checkpoint avant les
-modifications ; l’interface permet de consulter les changements, de les
-accepter ou de restaurer intégralement l’état initial. Une modification externe
-détectée avant un rollback est signalée comme conflit et n’est jamais écrasée
-silencieusement.
-
-SQLite conserve un résumé compact des runs, de leur checkpoint et de leur état
-(y compris acceptation ou rollback), sans dupliquer tout l’historique interne
-d’OpenHands. Les détails agentiques restent dans l’état OpenHands prévu à cet
-effet. La politique d’outils refuse les chemins `file_editor` hors du projet et
-les sorties terminal explicites de `/workspace`; l’identité, la commande, le
-port loopback et les limites du conteneur sont revérifiés avant réutilisation.
-Exécuter le code d'un projet reste plus risqué que le lire : Léa fournit
-une exécution locale contrôlée avec Docker, pas une garantie mathématique
-d'isolation du noyau Windows. Le durcissement réseau Docker avancé reste reporté
-aux étapes ultérieures ; il ne fait pas partie de l’étape 11. Ne sélectionne
-pour exécution que des projets dont tu acceptes le code.
-
-Limitation connue du modèle actuel :
-
-> Qwen2.5-Coder-7B peut échouer sur des tâches agentiques multi-fichiers longues lorsque file_editor exige des remplacements textuels exacts. Léa détecte ces boucles, refuse les mutations invalides, valide les changements par des tests et peut restaurer le checkpoint.
-
-`Lea_FinalValidation_Test` reste un benchmark difficile conservé pour comparer
-un futur GLM-5.3-Flash avec Qwen ; sa réussite complète avec Qwen n'est pas un
-critère de validation de cette étape.
-
-### Profil Vétérinaire — étape 15
-
-Le profil Vétérinaire utilise localement `Qwen3.5-9B Q4_K_M`, servi par la même
-installation llama.cpp que Général. Le fichier est
-`models/veterinary/Qwen3.5-9B-Q4_K_M.gguf`; le registre en vérifie la taille et
-le SHA-256 avant tout lancement. Sa fenêtre Léa est de 16 384 tokens, avec un
-seul slot, KV Q8_0 et une sortie maximale de 4 096 tokens. Il n'a ni outil, ni
-workspace, ni vision et ne démarre jamais Docker. Comme les autres profils, il
-peut recevoir les résultats du Web Gateway après une autorisation manuelle.
-
-Ses deux vocations sont de même importance : apprentissage vétérinaire et
-raisonnement clinique théorique. Le contrat demande l'espèce, distingue données,
-hypothèses et informations manquantes, signale les urgences et refuse d'inventer
-une source, une maladie ou une posologie. Il ne remplace pas un vétérinaire ni
-une référence scientifique actualisée. Les erreurs importantes observées lors
-des essais — ambiguïté de « abattue », surinterprétation d'une kaliémie,
-confusion entre classes d'opioïdes et catégorie inventée pour un nom fictif —
-sont détaillées dans le rapport de validation plutôt que masquées par le prompt.
-
-Dans Paramètres, Vétérinaire commence en **High** et peut être réglé sur **Low**.
-Le choix est indépendant de Général et s'applique à la requête suivante. Il
-pilote réellement `enable_thinking` dans le template natif Qwen3.5 ; la pensée
-interne n'est ni affichée ni persistée. Les deux voix locales, la dictée,
-l'historique, la mémoire explicite et le diagramme de ressources utilisent les
-mêmes chemins génériques que les autres profils.
-
-### Web Gateway — phases 16.1 à 16.3
-
-Le réglage **Autoriser les demandes Web explicites** est désactivé par défaut.
-Une fois activé, les questions restent locales par défaut. Seule une formulation
-explicite telle que « Cherche sur Internet… » autorise le Web pour ce tour. Une
-demande actuelle sans cette autorisation propose la recherche et attend une
-confirmation ; « Oui, vas-y » ne vaut que pour la demande exacte en attente dans
-cette conversation, avec le même profil et la même révision, puis elle est
-consommée. Une attente absente, expirée, modifiée, déjà utilisée ou issue d’un
-autre contexte ne lance rien. La confirmation courte n’est jamais envoyée seule
-au modèle à la place de la question initiale.
-
-Le backend interroge d’abord l’interface Lite gratuite de DuckDuckGo, sans
-compte. Si ce fournisseur refuse ou ne peut pas exploiter la recherche, il
-effectue au plus une tentative indépendante sur la page HTML publique de Bing,
-avec la même identité réseau et sans contourner la protection initiale. Il lit
-ensuite au plus trois pages HTML publiques simples. Il n’envoie que les termes
-utiles de la requête courante, condensés dès l'unique essai primaire sans ajout
-de terme ni nouvelle tentative : ni historique, ni souvenir, ni fichier local. Les sources
-réellement utilisées sont enregistrées comme métadonnées et restent cliquables
-dans l’historique ; les pages HTML complètes ne sont pas conservées.
-
-Sans accord Web sur le tour, une demande ciblée de météo, résultat sportif,
-actualité, version ou décision actuelle reçoit directement une réponse de
-l’orchestrateur indiquant que l’information ne peut pas être confirmée et
-proposant une recherche autorisée. Ni le modèle ni le fournisseur Web ne sont
-appelés dans ce cas. Les questions historiques datées et les connaissances
-générales continuent d’utiliser le chemin local normal. Les échecs de collecte
-sont affichés comme erreurs Web, et non plus comme échecs génériques de génération.
-Lorsque le réglage Web est désactivé, une demande explicite est tout de même
-conservée dans la conversation avec un refus déterministe ; aucun fournisseur ni
-modèle n’est alors appelé.
-
-Les destinations sont limitées à HTTP/HTTPS sur les ports standards. DNS est
-résolu puis épinglé à une adresse publique ; les réseaux locaux/réservés, les
-identifiants d’URL, les redirections dangereuses et les délais excessifs sont
-refusés. Une ressource trop grande est refusée, hormis la lecture HTML partielle
-bornée décrite plus bas. Le contenu reçu reste une donnée non fiable.
-Programmation utilise cette voie conversationnelle séparée : OpenHands, son
-terminal et ses conteneurs restent sans accès Internet.
-
-Un échec Web ne réutilise jamais l'accord du tour. L'action proposée recopie la
-question dans un nouveau brouillon, et la recherche ne repart qu'après un nouvel
-envoi explicite de l'utilisateur.
-
-Une demande explicite de vérification, de comparaison, de rumeur ou de fact-check
-active la recherche approfondie. Le même permis couvre au plus trois recherches
-complémentaires directement liées à la demande et quatre sources par défaut
-(six au plafond configurable). Le backend privilégie les origines distinctes,
-écarte les URL et copies textuelles en double ainsi que les résultats manifestement
-hors sujet. Il ne déduit toutefois aucune crédibilité du seul nom de domaine.
-Avec moins de deux origines indépendantes effectivement lues, il conclut lui-même
-« impossible à vérifier » sans demander au modèle de confirmer l’affirmation.
-
-Les PDF publics sont lus en mémoire avec `pypdf`, sous limites de 5 Mio, 40 pages,
-12 000 caractères extraits et plafonds de décompression. Aucun OCR ni fichier
-temporaire. Un PDF image, chiffré, malformé, trop grand ou au MIME incohérent est
-refusé honnêtement. Pour une vidéo publique, Léa utilise seulement la description,
-les métadonnées ou une transcription textuelle réellement exposée par la page ;
-elle ne prétend jamais avoir vu ou écouté la vidéo et demande le texte si nécessaire.
-
-Les sources portent des identifiants `[S1]…` attribués par le backend, leur type,
-leur statut de lecture et des dates distinctes de publication, mise à jour,
-document et consultation. Une référence inventée par le modèle est neutralisée
-avant persistance. Un extrait de moteur reste libellé `snippet_only`, jamais
-comme page consultée. DuckDuckGo et Bing peuvent limiter ou modifier leur HTML ;
-les fournisseurs sont isolés derrière une interface et l’absence de Web conserve
-le fonctionnement local normal.
-
-Les réponses locales ne peuvent pas publier un faux bloc `[Tech]`, une fausse
-demande à une base Web ni attribuer une valeur probante à `[S1]` sans collecte
-contrôlée. Pour une recherche simple, la source citée doit aussi partager des
-termes porteurs avec l’affirmation correspondante. Un domaine écrit explicitement
-borne les résultats acceptés ; une URL complète reste lue directement. Cette
-lecture décrit par défaut ce que contient le document demandé ; elle n’exige des
-sources indépendantes que si la demande sollicite explicitement une corroboration,
-une comparaison ou un consensus. Le message utilisateur n’est pas limité à 500
-caractères : seules les requêtes condensées envoyées aux fournisseurs le sont.
-Lorsque des pages lues exposent clairement deux équipes et leurs scores, le
-backend conserve ces associations, refuse leur inversion et annonce
-l’incertitude si les sources se contredisent. Les valeurs numériques ou versions
-attribuées à une citation doivent aussi apparaître dans la preuve correspondante.
-Ces contrôles lexicaux et structurés ne constituent pas une compréhension
-sémantique universelle.
-
-Une page HTML volumineuse est lue en flux jusqu’à la limite existante de 768 Kio.
-Le parseur peut extraire dans cette partie bornée les passages liés à la demande,
-sans charger la fin de la ressource ; la source indique alors explicitement que
-la lecture est partielle. PDF, pages de recherche et autres types de ressources
-conservent leur refus strict en cas de dépassement.
-
-Pour une vérification portant sur une date civile complète, le backend distingue
-les dates éditoriales de page des passages datés du contenu. Une confirmation
-doit citer au moins deux pages réellement lues qui contiennent la date demandée ;
-une contradiction doit faire de même pour une date alternative commune. Si ce
-rattachement déterministe manque, Léa répond prudemment au lieu de publier le
-verdict du modèle. Ce contrôle lexical ne prétend pas comprendre une négation ou
-garantir l’entaillement complet du passage.
-
-Une page HTML classique reste toujours lue sans navigateur. Si son HTML est une
-coquille JavaScript générique et manifestement insuffisante, le même permis déjà
-consommé peut lancer Microsoft Edge installé sur le PC. Playwright utilise un
-profil neuf dans un répertoire temporaire, sans navigateur téléchargé, compte,
-permission, cookie personnel, téléchargement ou service worker. La session ne
-survit jamais à l’opération.
-
-Le navigateur effectue uniquement des requêtes GET/HEAD vers l’hôte exact de la
-page initiale. Un proxy loopback éphémère résout toutes ses destinations, refuse
-les adresses non publiques et épingle l’IP comme le lecteur HTTP. Les méthodes
-mutantes, autres schémas, hôtes tiers, ressources média, WebSocket, formulaires,
-clics, boutons, authentifications, CAPTCHA et URL transactionnelles sont refusés.
-La pagination suit directement au plus deux liens `rel=next` ou « suivant » de
-même hôte ; les `<details>` sont lus dans le DOM sans les ouvrir ni déclencher
-d’événement. Chaque page parcourue devient une preuve distincte rattachée à son
-URL exacte, au lieu d’attribuer tout le contenu à la dernière page visitée. Un
-maximum de trois pages, 80 requêtes, 12 Mio de trafic et 20 secondes borne chaque
-session.
-
-Cette défense en profondeur n’est pas un conteneur réseau ni une preuve
-d’isolation parfaite de Chromium. Elle bloque les chemins pris en charge et a
-été testée contre localhost, fichiers, redirections et sous-ressources locales.
-Par prudence, les CDN/API sur un autre hôte, les sections nécessitant un bouton,
-les connexions et les protections anti-robot ne sont pas pris en charge. Léa
-échoue honnêtement au lieu de cliquer ou contourner le site.
-
-## Architecture indépendante des modèles
-
-Léa reste l’application et l’orchestrateur. Les conversations, la mémoire,
-les permissions et les checkpoints n’appartiennent jamais au modèle.
-
-| Élément | Responsabilité | Source |
-| --- | --- | --- |
-| Profil | Comportement, prompts, outils, permissions, budgets | `profiles` |
-| Modèle | Poids, capacités déclarées, contexte, template, paramètres moteur | `models` |
-| Association | Référence `profiles[].model_id` vers `models[].id` | `config/models.json`, schéma 3 |
-| Moteur | Arguments, endpoints, protocole d’inférence et readiness | `backend/app/inference.py` |
-| Cycle de vie | Processus identifiés, arrêt sûr, commutation et retour après échec | Contrôleurs et lanceurs existants |
-
-Les associations livrées sont `general` → `qwen-general`
-(`Huihui-Qwen3-4B-abliterated-v2 Q4_K_M`, 8 192 tokens), `development` →
-`qwen-coder` (`Qwen2.5-Coder-7B-Instruct Q6_K`, 22 000 tokens) et `veterinary` →
-`qwen-veterinary` (`Qwen3.5-9B Q4_K_M`, 16 384 tokens). Le seul moteur de
-modèle implémenté est `llama.cpp`, avec l’installation b10516 existante ;
-OpenHands orchestre uniquement le profil Programmation.
-
-Le chargeur `backend/app/model_registry.py` valide la même configuration pour
-FastAPI, OpenHands et les lanceurs. `tools/model_config.py` transmet aux scripts
-PowerShell une projection temporaire du registre et les arguments calculés par
-l’adaptateur : ce n’est pas une seconde configuration. Le modèle possède ses
-options `append_no_think`, `reasoning_control`, `stop_sequences` et son éventuel template ; les
-contrats de profil et le filtrage des réponses restent indépendants de lui.
-
-### Remplacer un modèle par configuration
-
-1. Terminer ou annuler le run actif, puis accepter ou restaurer ses changements.
-   Exécuter `.\lea.ps1 stop` avant de modifier le registre et conserver une copie
-   de `config/models.json` pour revenir à la configuration validée.
-2. Placer un GGUF déjà disponible et compatible sous `models/`. Son `model_path`
-   est relatif à la racine, par exemple `models/general/mon-modele.gguf` : aucun
-   chemin absolu, UNC, parent `..` ou échappement par lien n’est autorisé.
-3. Ajouter ou modifier une entrée `models` : identifiant unique, nom, moteur
-   `llama.cpp`, type `chat`, chemin, taille exacte et SHA-256. Obtenir ces deux
-   derniers avec `Get-Item -LiteralPath <fichier>` et
-   `Get-FileHash -Algorithm SHA256 -LiteralPath <fichier>` ; écrire le hash en
-   minuscules. Ces valeurs ne prouvent pas la qualité du modèle, seulement son
-   identité au démarrage.
-4. Adapter le contexte et les paramètres `runtime` à ce GGUF : alias unique,
-   GPU, caches KV, threads, batches, Jinja, mmap, fit et priorité. Les seuils de
-   ressources restent imposés par le profil. Un seul slot est autorisé et
-   `fit_context_min_tokens` doit égaler le contexte lorsque `fit` est actif.
-   Définir `append_no_think` et les séquences d’arrêt selon le modèle. Laisser
-   `reasoning_control` à `none` (défaut) sauf preuve réelle de compatibilité avec
-   `think_directives` ou `chat_template_kwargs`. Cette capacité autorise un
-   réglage déclaré du profil, pas une permission.
-   Un template
-   personnalisé doit rester sous `tools/openhands/templates/`, avec son hash ;
-   sans template explicite, le moteur utilise celui du GGUF.
-5. Modifier uniquement le `model_id` du profil concerné. Général et Vétérinaire
-   exigent `chat`; Programmation exige aussi `tool_calling` natif, Jinja et le
-   parsing des outils activé.
-   L’association doit respecter les budgets du profil et le plancher du
-   condenser SDK 1.43.1 (16 384 tokens d’entrée, plus la réponse réservée).
-   Ne pas changer les permissions ou les contrats pour rendre un modèle compatible.
-6. Vérifier la configuration, puis redémarrer :
-
-   ```powershell
-   .\backend\.venv\Scripts\python.exe -B tools/model_config.py
-   .\lea.ps1 start
-   ```
-
-   La première commande valide le registre, les fichiers requis et les templates,
-   mais ne charge pas les poids. Taille et hash complets du GGUF sont contrôlés
-   avant son activation. Une erreur n’entraîne aucun fallback silencieux.
-7. Tester une conversation, la mémoire et le réglage de raisonnement de chaque
-   profil direct concerné ; pour Programmation,
-   démarrer Docker manuellement, activer le profil et vérifier un petit run réel,
-   son test vert et Accept/Rollback sur un projet de test autorisé. Une capacité
-   déclarée dans le JSON n’est pas une preuve de tool calling opérationnel.
-
-Plusieurs profils peuvent référencer une même définition compatible sans partager
-leurs permissions. Cela n’autorise ni deux modèles simultanés ni la suppression
-des barrières de commutation. La substitution de configuration et le partage
-ont été testés avec des fixtures ; aucune inférence avec un troisième GGUF
-n’est revendiquée.
-
-Ajouter ultérieurement un autre moteur demandera son adaptateur, sa validation
-de configuration, son intégration aux propriétaires de processus et des tests
-de lancement/readiness/arrêt. Les contrats de profils, SQLite et les outils
-n’ont pas à être reconstruits. Aucun autre moteur, système de plugins, API
-d’édition du registre des modèles n’est implémenté. Les préférences de l’étape 12
-ne modifient jamais ce registre.
-
-### Vérifications de l’étape 11
-
-Les tests backend couvrent le registre, l’adaptateur, les profils, la mémoire,
-les conversations, les sécurités workspace, OpenHands et les checkpoints.
-Les transports HTTP et certaines pannes de cycle de vie y sont simulés ; les
-tests réels ont utilisé les deux Qwen, llama.cpp et l’Agent Server Docker.
-Sur un projet temporaire distinct du dépôt, deux runs ont lu les fichiers,
-corrigé une source et passé `python -B -m unittest -v`, avant respectivement un
-rollback exact et une acceptation. La persistance a été vérifiée après
-redémarrage avec une base isolée ; le SHA-256 de la base utilisateur est resté
-identique. Le benchmark difficile n’a pas été relancé.
-
-Commandes de non-régression :
-
-```powershell
+La lecture et la modification des paramètres restent possibles avec Vite seul lorsque les dépendances locales nécessaires sont installées.
+Utilisation
+Écrire à Léa
+- Entrée : envoyer un message ou lancer une tâche dans le profil Programmation.
+- Maj + Entrée : insérer un retour à la ligne.
+- Le champ de saisie s'agrandit jusqu'à quatre lignes, puis défile.
+- Le bouton principal propose Conversation vocale à vide, Envoyer avec du texte et Arrêter la réponse pendant le traitement. En Programmation, il annule la tâche avec l'arrêt vérifié existant ; les changements restent à examiner ou à restaurer.
+- L'arrêt local interrompt aussi la génération dans llama.cpp. Le moteur peut prendre quelques secondes pour terminer un calcul déjà engagé ; une réponse partielle n'est jamais publiée comme complète.
+- Le sélecteur de profil est situé en haut de l'interface. Les réglages Low/High concernent uniquement les profils qui les prennent en charge.
+Mémoriser ou oublier une information
+Retiens que je préfère les réponses en français.
+Oublie que je préfère les réponses en français.
+L'ajout de souvenirs est volontaire et déterministe. Un fait mentionné dans une conversation ordinaire n'est pas automatiquement enregistré comme souvenir durable. L'oubli repose sur une correspondance normalisée précise et non sur une recherche sémantique.
+Autoriser une recherche Internet
+Cherche sur Internet les dernières informations concernant ce sujet.
+Une recherche nécessite également l'activation du Web dans les paramètres. Pour une question actuelle posée sans autorisation, attendre la proposition de Léa et confirmer si la recherche est souhaitée.
+Lancer une tâche de programmation
+1. Démarrer Docker Desktop et rendre le moteur de programmation disponible.
+2. Choisir Programmation, puis un projet autorisé dans le workspace.
+3. Décrire la tâche dans le champ de saisie et lancer le run.
+4. Vérifier les fichiers modifiés et les tests réellement exécutés.
+5. Accepter les modifications validées ou Restaurer le checkpoint.
+Ne lancer des projets contenant du code exécutable que si leur contenu est digne de confiance. Un succès technique d'OpenHands n'implique pas automatiquement la validation fonctionnelle de la tâche.
+Données et configuration
+Emplacement	Rôle
+config/models.json	Registre central des modèles, profils, capacités et paramètres d'exécution.
+data/lea.sqlite3	Conversations, messages, mémoire, préférences et métadonnées persistantes.
+models/	Poids des modèles locaux, non destinés à Git.
+runtime/	Runtimes et fichiers d'exécution locaux.
+backend/app/	API, orchestration, inférence, contrôles et logique métier.
+src/	Interface et composants React/TypeScript.
+src/styles/index.css	Styles et thèmes principaux.
+public/lea-logo.png	Logo et identité visuelle de Léa.
+.lea/	État technique temporaire local, ignoré par Git.
+docs/	Décisions, comptes rendus et validations détaillées.
+
+
+Chemins actuels du poste de développement : dépôt L:\Projet_Lea, workspace de programmation L:\IA_WORKSPACE. Ces chemins décrivent l'environnement actuel et ne doivent pas être considérés comme des chemins universels.
+
+Le futur passage à un SSD interne plus rapide devra vérifier les chemins, les dépendances et la configuration du workspace. Les souvenirs et préférences utilisateur pourront être réinitialisés pendant cette migration ; le code source, .git, le registre technique et les modèles nécessaires devront être préservés.
+
+Pour remplacer un modèle compatible, arrêter d'abord Léa, sauvegarder le registre, mettre à jour config/models.json, contrôler le fichier GGUF (taille et SHA-256), puis valider la configuration et tester le profil concerné. Les détails de cette procédure sont consignés dans les décisions techniques du projet.
+Sécurité et limites
+- Local par défaut. Les conversations et souvenirs sont gérés sur la machine ; aucun compte ou modèle cloud de secours n'est nécessaire à l'inférence ordinaire.
+- Web sous consentement. Les recherches publiques peuvent transmettre la requête aux fournisseurs et laisser des traces sur les sites consultés. Le chat éphémère n'offre pas d'anonymat réseau.
+- Sources contrôlées. Le backend valide la provenance des références Web, mais ces contrôles ne garantissent pas la vérité de toute information extraite d'une page.
+- Navigation bornée. Les protections contre les destinations locales et les actions sensibles réduisent les risques ; elles ne constituent pas un bac à sable réseau formel au niveau du système.
+- OpenHands confiné. Les projets sont limités à un workspace autorisé et protégés par des checkpoints, sans garantie absolue d'isolation du code exécuté.
+- Fiabilité des modèles. Les Qwen locaux peuvent se tromper, produire un français imparfait ou ne pas terminer une synthèse. Un résultat insuffisamment validé doit être présenté comme tel.
+- Fonctionnalités reportées. Pas de Vision, de génération d'images, de mémoire automatique avancée, de véritable conversation Speech-to-Speech continue ni de logiciel Windows installé à ce stade.
+Les contrats de fiabilité et les limitations par étape sont documentés dans le dépôt. Les évolutions futures ne doivent pas affaiblir les permissions et les protections déjà validées.
+Tests
+Depuis la racine du projet :
 .\backend\.venv\Scripts\python.exe -B -m unittest discover -s backend/tests -p 'test_*.py'
 npm run test:frontend
 npm run build
 git diff --check
-```
+Les tests automatisés incluent des scénarios avec services simulés. Les fonctionnalités sensibles doivent également être testées manuellement avec les vrais modèles et périphériques : Markdown, persistance, Web, microphone, synthèse vocale et OpenHands avec restauration.
 
-## Paramètres de Léa — étape 12
+La validation de l'étape 17 a couvert ces usages dans Edge. Un run OpenHands a bien créé le fichier demandé et permis sa restauration, mais n'a pas obtenu le statut automatique validated faute de vérification reconnue après modification. Cette limite reste documentée ; elle n'est pas présentée comme une réussite de validation agentique.
 
-Le bouton **Paramètres**, à côté du titre Léa, ouvre une page dédiée. Choisir
-Low ou High puis **Valider** ; la confirmation apparaît après commit et relecture
-de la valeur enregistrée. **Retour aux conversations** préserve le brouillon,
-l’historique, le profil et le run courant. Un brouillon de préférence non validé
-demande confirmation avant d’être abandonné ; une sauvegarde en cours bloque ce retour.
+Les scripts de test pouvant modifier une base ou des préférences doivent être exécutés uniquement avec leurs environnements isolés, selon la procédure du rapport correspondant.
+Feuille de route
+Périmètre	État
+Étapes 1 à 14 — Fondations, conversations, mémoire explicite, profils, programmation et voix locale	Terminées
+Étape 15 — Profil Vétérinaire et contrats de fiabilité	Implémentée ; limites scientifiques documentées
+Étape 16 — Web Gateway (recherche, vérification, PDF, navigation dynamique)	Terminée, validée et commitée
+Étape 17 — Markdown et refonte visuelle	Implémentée et validée manuellement ; commit à effectuer
+Prochaine étape : application Windows	Non commencée
+Léa v1.0 — Packaging, tests essentiels et livraison locale	En préparation
+Léa v2.0 — Nouveaux modèles et capacités avancées sur le futur PC	Projet ultérieur
 
-- Général commence en **Low** : directive interne `/no_think`.
-- **High** utilise `/think`, avec le même budget de génération. Les essais réels
-  sur le Qwen3 installé montrent une réflexion non vide en High, vide en Low,
-  puis une réponse correcte dans les deux cas. Ce sont des directives du modèle,
-  pas un paramètre API `reasoning_effort` supporté par le template actuel.
-- Le choix s’applique à la **prochaine requête Général**, y compris retry,
-  modification et régénération. Aucun redémarrage, changement de modèle ou arrêt
-  d’un run en cours. High peut être plus lent et épuiser le budget ; une réponse
-  inutilisable reste un échec explicite, sans fallback dissimulé.
-- Aucun bloc ni marqueur de réflexion généré n’est affiché ou persisté. Les
-  textes saisis par l’utilisateur ne sont pas réécrits en fonction de ce choix.
-- Programmation n’affiche **aucun faux contrôle Low/High** : le template
-  Qwen2.5-Coder, le moteur servi et le chemin OpenHands actuel ne fournissent pas
-  de mécanisme de raisonnement réglable validé. Les outils, tests et checkpoints
-  restent identiques ; une stratégie d’agent serait un autre réglage, non implémenté.
-- Vétérinaire commence en **High** et utilise le booléen natif
-  `chat_template_kwargs.enable_thinking` du template Qwen3.5. Low et High ont été
-  distingués sur le vrai moteur ; ce choix est indépendant de Général.
 
-### Persistance et fonctionnement IA arrêtée
-
-`user_preferences`, ajoutée par la migration SQLite 8 dans `data/lea.sqlite3`,
-conserve les choix et une révision. La migration 12 ajoute
-`veterinary_reasoning` sans modifier `general_reasoning`. Le registre `config/models.json`
-reste exclusivement technique : modèles, capacités et profils. Les préférences
-n’appartiennent ni à Qwen, ni au navigateur, ni à un fichier JSON concurrent.
-La migration 9 ajoute `show_resource_chart`, booléen strict à `false` par défaut.
-Une sauvegarde partielle conserve les autres choix et vérifie la même révision.
-
-`npm run dev` suffit pour ouvrir, modifier et relire les paramètres lorsque
-FastAPI et les modèles sont arrêtés. Il faut néanmoins Vite, l’environnement
-Python **déjà installé** dans `backend/.venv` et l’accès à SQLite. Le contrôleur
-Vite lance brièvement `tools/preferences.py` avec l’action fixe `read` ou `save`,
-puis le processus se ferme. Aucun nouveau serveur Python, modèle ou Docker ne
-démarre. Une page statique `dist/` seule ne fournit pas ce contrôleur local.
-`LEA_DB_PATH` doit être défini identiquement avant de lancer Vite et le backend
-pour les essais isolés ; le navigateur ne peut pas choisir ce chemin.
-
-Une révision périmée, une valeur inconnue, un JSON invalide, une base illisible
-ou une sauvegarde refusée produisent une erreur sans confirmation mensongère.
-**Recharger les paramètres** retrouve l’état persistant après un conflit ou une
-réponse perdue. Un stockage réellement absent est initialisé en Low ; une valeur
-corrompue n’est jamais réinitialisée silencieusement. Si le modèle de remplacement
-ne déclare pas la capacité, le contrôle devient indisponible sans supprimer le choix.
-Modifier le registre reste une opération administrative exigeant l’arrêt/reprise
-documenté plus haut ; aucun réglage utilisateur actuel n’exige de redémarrage.
-
-### Ajouter ultérieurement un paramètre
-
-Ajouter une migration additive et son champ typé/validé dans
-`backend/app/preferences.py`, écrire uniquement la colonne concernée, étendre le
-contrat de `src/preferences.ts` et ajouter son contrôle dans `src/Settings.tsx`.
-Brancher sa consommation au point métier pertinent et documenter son moment
-d’application. Les révisions et transactions existantes restent réutilisées.
-Tester défaut, aller-retour, refus, concurrence et préservation des autres champs.
-Un test de colonne fictive isolée démontre cette préservation ; aucun réglage
-futur n’est livré dans l’interface et aucun framework générique n’est ajouté.
-
-### Vérifications de l’étape 12
-
-213 tests backend, 21 tests frontend, build et vérification du diff réussis.
-Les tests unitaires/integration utilisent SQLite temporaire, gateways simulés,
-processus CLI réels et doubles de transport selon le cas. Edge a réellement
-exercé la page IA arrêtée, Low/High, les brouillons, erreurs et conflits,
-l’historique et la mémoire après arrêt/reprise des trois services.
-
-Le petit projet autorisé `L:\IA_WORKSPACE\Lea_Stage12_20261016` a produit un run
-OpenHands validé, avec test vert, diff source unique et rollback exact depuis
-Edge. Une préférence a été sauvegardée pendant ce run sans interrompre ni changer
-son modèle. Accept reste couvert par la non-régression automatisée ; il n’a pas
-été recliqué dans cet essai. Aucun benchmark long, nouveau modèle ni moteur testé.
-
-Les scénarios réels sont dans `tests/e2e/edge-stage12.mjs` : phases `settings`,
-`general`, `errors`, `programming`, `persistence`, `native`, `security`, `visual`.
-Ils exigent des services **isolés** et un Edge de test avec CDP loopback 9232
-(`LEA_EDGE_CDP_PORT` modifiable). Ne pas les lancer sur la base utilisateur :
-ils changent des préférences et créent des conversations de test. `settings`
-part de Low et fonctionne sans cœur ; `general` crée la conversation ;
-`errors` part de High ; `programming` exige le projet jetable et Programmation
-déjà actif ; `persistence` suit un arrêt/reprise complet sur la même base.
-`native` exige Général ; `visual` part de la conversation et sauvegarde une
-capture dans le répertoire de test existant. Une panne réseau Edge est simulée ;
-les conflits HTTP, l’inférence et le run sont réels.
-
-## Programmation avancée — étape 13
-
-Le backend borne aussi le processus SDK (budget du registre + 60 secondes).
-Un résultat n’est accepté que pour le bon run, avec fin du processus réussie et
-preuves de validation existantes. Les erreurs publiques viennent d’une liste
-de diagnostics relus ; les textes bruts d’échec du modèle restent privés.
-
-Après crash, le backend retrouve le run persistant, vérifie puis arrête son
-conteneur exact avant de publier `failed` et de figer le diff. Il ne relance
-aucun outil. Si Docker est indisponible ou l’identité incertaine, le run reste
-non terminal et bloque une nouvelle activité modèle : rétablir Docker, puis
-redémarrer Léa. Une annulation explicite peut réessayer l’arrêt d’un run encore
-détenu par cette instance, jamais ses mutations. Rollback conserve ses contrôles
-de conflit ; Accept exige une validation réussie.
-
-Dans **Paramètres**, cocher **Afficher le diagramme des ressources** puis
-**Valider** affiche trois petites barres en bas de la page principale. Le défaut
-est masqué, la préférence persiste dans SQLite et fonctionne même IA arrêtée.
-Les alertes restent visibles sans diagramme, y compris dans les paramètres.
-
-- Une seule tâche dans FastAPI pour tout profil IA actif, dès le démarrage en
-  Général et pendant les commutations, sans base de télémétrie ni service
-  supplémentaire. Elle se ferme avec le backend ; l’interface ne sonde plus
-  les ressources lorsque Léa est arrêtée. L’API `/api/resources` ne lit qu’un cache.
-- RAM disponible Windows (cache récupérable inclus) et CPU entre deux relevés,
-  environ toutes les 10 s, via compteurs natifs sans PowerShell/WMI.
-- VRAM via `nvidia-smi` installé, environ toutes les 30 s. Modèle actif confirmé
-  par son adaptateur, endpoint et alias du registre, sans dépendance à son nom.
-  Docker n’est sondé que pour un profil OpenHands (ou son run en récupération),
-  avec cache de 30 s ; Agent Server seulement requis pendant un run.
-  Un endpoint muet est incertain, pas un PID déclaré mort.
-- RAM : WARNING sous 8 Gio, CRITICAL sous 6 Gio, deux relevés et marge de
-  remontée de 1 Gio, issus de la politique du profil actif sur ce PC de 32 Go.
-  Les politiques actuelles Général/Programmation partagent ces seuils ; un
-  autre profil utilise sa propre politique déclarée, sans modifier la collecte.
-- CPU : WARNING à partir de 90 % pendant trois intervalles ; retour sous 80 %
-  pendant deux. VRAM : WARNING sous 1 Gio sur deux nouveaux relevés, retour
-  à partir de 1,25 Gio. Un service indispensable indisponible pendant un run
-  produit CRITICAL. Aucun seuil n’arrête un run, un modèle ou Docker.
-- Une mesure absente/périmée est indiquée comme indisponible, jamais zéro.
-  NVIDIA absent ou multi-GPU : VRAM inconnue ; pas de fausse somme de mémoires.
-
-Lors d’une commutation, un ancien relevé ne peut pas réafficher les alertes de
-l’autre profil. Le cache GPU et les compteurs système restent partagés : pas
-de boucle supplémentaire. « Votre question » réutilise l’encadré de conversation
-existant, avec le même fond, bordure et espacement ; saisie et envoi inchangés.
-
-Lors de la validation initiale en Programmation, sans polling UI : 0,922 s CPU backend sur 35 s
-(environ 0,13 % des 20 processeurs logiques), mémoire résidente 61 → 59 Mio.
-Cela inclut les sondes de disponibilité ; ce n’est pas le coût total de Docker
-ou du modèle. Avec l’interface ouverte : 5,406 s CPU sur 35 s (0,77 % machine),
-environ 60 Mio. Les valeurs sont des mesures ponctuelles, pas une garantie.
-
-Le conteneur arrêté d’un run validé est supprimé sans `--force`, sans volume,
-après vérification complète d’identité. Les échecs conservent leurs conteneurs
-arrêtés et journaux. Aucun prune ni nettoyage global. Les données OpenHands,
-checkpoints et historiques sont conservés. Un PID recyclé du lanceur n’est
-jamais adopté ni tué ; un port occupé ou une identité illisible reste bloquant.
-
-L’automatisation Edge par l’agent est **reportée avec accord utilisateur** :
-les outils actuels ne démontrent pas le blocage de toutes les redirections,
-sous-ressources et destinations externes. Edge sert seulement aux tests locaux
-pilotés par le développeur, avec profil jetable ; ce n’est pas une isolation
-réseau garantie ni une nouvelle permission de l’agent. Aucun pont shell Windows
-n’a été ajouté. Docker Desktop reste manuel.
-
-Voir [le rapport de validation](docs/ETAPE_13_VALIDATION.md) pour les commandes,
-preuves réelles, simulations, limites et ménage. Le benchmark difficile est conservé.
-
-## Roadmap
-
-Les étapes 11 à 14 sont terminées. Les phases 16.1 à 16.3 sont techniquement
-prêtes ; leur validation manuelle est regroupée à la fin de l’étape 16.
-
-- Étape 11 — Architecture indépendante des modèles.
-- Étape 12 — Centre de paramètres de Léa.
-- Étape 13 — Programmation avancée.
-- Étape 14 — Microphone et conversation vocale (terminée et validée manuellement).
-- Étape 15 — Vétérinaire et optimisation des contrats (validation manuelle requise).
-- Étape 16.1 — Recherche Web fondamentale (techniquement acceptée).
-- Étape 16.2 — Recherche approfondie/PDF (techniquement prête).
-- Étape 16.3 — Navigation Web publique dynamique (techniquement prête).
-- Étape 17 — Génération d’images.
-- Étape 19 — Speech-to-Speech.
-- Étape 20 — Refonte visuelle.
-- Étape 21 — Mémoire avancée.
-- Étape 22 — Fine-tuning optionnel.
-- Étape 23 — Sécurité finale.
-- Étape 24 — Tests finaux.
-- Étape 25 — Logiciel desktop final.
-
-La vision en entrée est suspendue et reportée. Le profil Auxiliaire est supprimé
-définitivement de la roadmap.
-
-## Stockage actuel
-
-Projet :
-`L:\Projet_Lea`
-
-Workspace des projets de programmation :
-`L:\IA_WORKSPACE`
-
-Après la maintenance finale de l’étape 14, ce dossier existe et est vide. Le
-profil Programmation affiche alors un catalogue sans projet et attend une
-création/sélection explicite ; il ne crée aucun conteneur OpenHands au repos.
-
-Jeux :
-`L:\SteamLibrary`
-
-Le dossier SteamLibrary est totalement indépendant du Projet Léa.
+La v1.0 vise une application Windows utilisable simplement, avec les fonctions déjà présentes. La v2.0 pourra réévaluer les modèles, la Vision, la génération d'images, la mémoire automatique, la programmation avancée et la conversation vocale continue, en fonction du nouveau matériel et des tests réels.
+Documentation
+- [`AGENTS.md`](AGENTS.md) — Règles de travail et conventions pour les agents de développement.
+- [`TODO.md`](TODO.md) — Suivi de la feuille de route et des travaux restants.
+- [`CHANGELOG.md`](CHANGELOG.md) — Historique des changements.
+- [`docs/DECISIONS.md`](docs/DECISIONS.md) — Décisions techniques et arbitrages.
+- [`docs/ETAPE_13_VALIDATION.md`](docs/ETAPE_13_VALIDATION.md) — Programmation avancée.
+- [`docs/ETAPE_14_VALIDATION.md`](docs/ETAPE_14_VALIDATION.md) — Voix et microphone.
+- [`docs/ETAPE_15_VALIDATION.md`](docs/ETAPE_15_VALIDATION.md) — Profil Vétérinaire.
+- [`docs/ETAPE_16_1_VALIDATION.md`](docs/ETAPE_16_1_VALIDATION.md), [`16.2`](docs/ETAPE_16_2_VALIDATION.md) et [`16.3`](docs/ETAPE_16_3_VALIDATION.md) — Web Gateway.
+- [`docs/ETAPE_17_VALIDATION.md`](docs/ETAPE_17_VALIDATION.md) — Markdown, interface et campagne de validation.
+Principe de développement : avancer par étapes limitées, garder une architecture modulaire et ne déclarer une fonctionnalité validée qu'après des vérifications réelles. Codex intervient sur le code ; l'utilisateur conserve la décision de validation et la responsabilité des commits.

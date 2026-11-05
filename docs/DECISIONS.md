@@ -464,7 +464,7 @@ Programmation, aucun chargement GPU vocal prévu.
 
 ### Suite après accord et validations encore nécessaires
 
-Fichiers à adapter : `src/App.tsx`, `src/Settings.tsx`, `src/preferences.ts`,
+Fichiers à adapter : `src/App.tsx`, `src/components/Settings.tsx`, `src/lib/preferences.ts`,
 capture/lecture et vue vocale dédiées ; `vite.config.ts` et contrôleur vocal
 local borné ; `backend/app/{model_registry,preferences,migrations,main,database}.py`,
 intégration des résultats OpenHands à l’historique, helpers STT/TTS, tests
@@ -898,3 +898,130 @@ une source distincte. Les citations simples contrôlent aussi les nombres et
 versions de leur affirmation contre la preuve citée. Ces vérifications restent
 déterministes et prudentes : elles ne prétendent pas remplacer une analyse
 sémantique universelle.
+
+## D-040 — Rendu Markdown et présentation locale, sans changement métier
+
+Le prompt 17 confirme l’étape 16 validée et commitée, et remplace l’ancienne
+roadmap : cette étape concerne Markdown et interface, puis viendra le packaging
+Windows sur nouvelle autorisation. Aucun moteur d’image ni packaging n’est ajouté.
+
+Les réponses étaient placées directement dans un paragraphe React. Le rendu
+utilise désormais `react-markdown` 10 et `remark-gfm` 4. Le parseur interprète
+CommonMark/GFM une seule fois ; il ne transforme pas les données persistées.
+Le trajet modèle → filtre → SQLite → JSON est testé avec des entités, des
+antislashs, des chemins Windows et du code. Une séquence intentionnelle
+`\*\*bonjour\*\*` devient le texte littéral `**bonjour**`, pas du gras.
+Faute de provenance prouvant un double échappement historique, aucune heuristique
+ne retire les antislashs des anciens messages.
+
+Le HTML brut est ignoré, sans `rehype-raw` ni injection HTML. Les liens sont
+limités aux URL HTTP(S) absolues sans identifiants ; l’ouverture est explicite
+dans un nouvel onglet sans opener/referrer. Ce filtrage de rendu ne remplace pas
+le Web Gateway : il ne résout pas le DNS et ne certifie pas le contenu d’un lien.
+Les images sont inertes, évitant tout chargement externe au rendu. Les sources
+dépliables proviennent seulement de `web_sources` ; un marqueur Markdown ne
+devient jamais une preuve. Aucun moteur de mathématiques ou de coloration n’est
+nécessaire au périmètre obligatoire et aucun n’est ajouté.
+
+La refonte sépare barre latérale, rendu des messages, références, saisie
+ajustable et icônes SVG locales. Les opérations existantes restent dans `App`.
+Les couleurs, espacements et dimensions sont centralisés dans `index.css` ;
+clair et sombre couvrent aussi les paramètres, la voix, OpenHands et les ressources.
+Le thème est une préférence d’affichage de ce navigateur, sous la clé locale
+`lea.appearance.theme`, sans modifier le schéma SQLite des préférences IA.
+Un stockage refusé conserve un thème utilisable et produit un avis lors du choix.
+Les changements sont synchronisés entre onglets sans polling.
+
+`tsx` est réservé aux tests React. Les correctifs Vite 7.3.7 et source-map-js
+1.2.2 répondent aux alertes constatées de `npm audit`, sans version majeure.
+Les tests Edge utilisent un contexte jetable et interceptent toutes les API :
+ils prouvent les interactions et le rendu, pas une nouvelle validation physique
+du microphone, de l’inférence ou des runs Docker. Voir `ETAPE_17_VALIDATION.md`.
+
+## D-041 — Chat éphémère explicitement demandé après la refonte
+
+Le 2 novembre 2026, l’utilisateur demande un chat sans mémoire ni historique
+persistant, puis confirme son accès Web et sa restriction au profil Général.
+Ce complément est autorisé explicitement ; il ne démarre pas le packaging.
+
+Un registre RAM indépendant et borné porte les tours, révisions et confirmations
+Web. Les routes de conversation SQLite ne sont jamais utilisées pour ces échanges.
+Les souvenirs existants ne sont pas lus ; les commandes de mémoire sont sans effet.
+Fermeture, redémarrage et expiration invalident le jeton sans le recréer.
+Le statut modèle existant porte l’identité du backend pour vider la vue après
+un redémarrage, sans nouvelle interrogation périodique.
+
+Le Web réutilise les fournisseurs, transports, restrictions, budgets et
+validateurs existants, avec un gestionnaire de consentements RAM distinct.
+Il n’emploie pas Edge afin d’éviter un profil temporaire sur disque. Les
+diagnostics d’erreur du Gateway omettent les hôtes dans cette portée privée.
+Les requêtes externes peuvent néanmoins laisser des traces chez leurs destinataires,
+dans le système ou son réseau : le mode garantit l’absence de persistance
+applicative du dialogue, pas un anonymat ni un effacement physique universel.
+
+Les six titres d’accueil changent uniquement à une navigation qui réaffiche
+l’accueil. Aucun minuteur ; fondu d’apparition limité aux préférences système
+autorisant les animations. Aucun nouveau paquet.
+
+## D-042 — Programmation est une saisie de tâche unique, sans Web conversationnel
+
+Le retour utilisateur du 2 novembre 2026 remplace, pour Programmation seulement,
+la voie conversationnelle décrite historiquement en D-035. Le profil ne déclare
+plus `web_research`. La saisie commune en bas de page est son unique consigne :
+texte, Entrée, flèche et conversation vocale démarrent tous un run OpenHands sur
+le projet actif. Une mention comme « cherche sur Internet si tu ne sais pas »
+reste du texte de tâche et ne vaut jamais autorisation du Web Gateway.
+
+Cette séparation est aussi imposée côté backend avant la classification Web et
+avant toute écriture de message : un profil portant `agent_runs` ne peut pas
+utiliser les routes de conversation, même depuis un ancien client. OpenHands,
+son terminal et ses conteneurs restent sans réseau ; le contrat demande de
+signaler les données externes indisponibles sans inventer de source ni d’action.
+
+Le panneau Programmation conserve le projet, l’annulation dans cet encadré, les
+erreurs actionnables et les décisions explicites Accepter/Restaurer. Le titre
+d’accueil, le second champ, le bouton de démarrage supplémentaire et les résumés
+d’état redondants sont retirés : Envoyer suffit à lancer le run.
+La réponse finale et le motif d’échec font toutefois partie du résultat utile :
+ils restent affichés même sans diff et après une décision de checkpoint. Leur
+présentation ne transforme pas un échec ou une validation absente en succès.
+Les checkpoints, validations, protections workspace et règles Docker ne changent
+pas. Aucun nouveau mécanisme agentique ni contournement de Qwen n’est ajouté.
+
+Le complément du 3 novembre affiche Programmation comme un fil de messages.
+L'envoi texte utilise `record_conversation` et les contrôles de révision/profil/
+projet déjà employés par la voix. Aucun nouvel historique ni schéma SQLite.
+Projet reste hors du panneau défilant, donc visible pendant toute la tâche.
+Le run sélectionné fournit sa réponse, son diff et ses décisions de checkpoint ;
+une réponse tardive d'une ancienne sélection ne remplace pas le diff courant.
+Après annulation, la conversation est relue avant la tâche suivante. Les anciens
+runs sans conversation restent lisibles par projet, sans migration des échanges.
+
+## D-043 — Arrêt d'une réponse et gestion des conversations de programmation
+
+Les demandes du 4 novembre ajoutent un état Arrêter au bouton principal commun.
+Il remplace l'annulation dans Projet et conserve le même arrêt vérifié OpenHands.
+Les profils directs utilisent un UUID de requête dans `X-Lea-Response-ID`, sans
+permission Web implicite. Le runtime ne signale que l'opération correspondant à
+ce jeton et retire l'enregistrement à sa fin ; aucun processus ni polling au repos.
+Les tâches HTTP enfants sont annulées puis attendues avant la fin de la requête.
+
+Un essai réel a montré que fermer une requête llama.cpp non diffusée ne libérait
+pas son slot dans les dix secondes observées. Le transport d'inférence utilise
+donc désormais le protocole SSE local. Le flux est assemblé en RAM, sans rendu
+progressif ni publication de réflexion ; les filtres, preuves et citations sont
+validés sur le texte final comme auparavant. Une fin absente, invalide ou tronquée
+est refusée. Le délai total existant reste borné. L'arrêt peut attendre la fin
+d'un calcul de prompt déjà engagé ; 5,578 secondes ont été observées au nouvel essai.
+
+Le chat normal conserve la question interrompue sans fausse réponse et permet le
+tour suivant. Le chat éphémère conserve ses tours précédents en RAM. Les tâches
+OpenHands restent soumises aux décisions explicites de checkpoint.
+
+L'historique commun expose un indicateur `has_agent_runs` calculé depuis les
+messages existants, sans migration ni duplication de conversations. Le chargement
+du contenu exige le profil agentique prêt, aussi côté API. Renommer et supprimer
+utilisent les métadonnées et leur révision ; le renommage d'un historique agentique
+ne renvoie pas son contenu. Une bascule de profil retire son contenu de la vue.
+Les nouveaux titres d'accueil et le déplacement des alertes restent purement
+visuels : aucun minuteur de titre ni seconde collecte de ressources.

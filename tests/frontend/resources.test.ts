@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { isResourceSnapshot, resourceNotice, resourcesForProfile } from '../../src/resources.ts'
+import {
+  isResourceSnapshot,
+  resourceNotice,
+  resourcesForProfile,
+} from '../../src/lib/resources.ts'
 
 // Le payload n'a aucune autorité de commande ou d'arrêt d'un processus.
 const healthy = { active: true, stale: false, profile_id: 'general', sampled_at: 10, ram: { total_bytes: 100, used_bytes: 60, available_bytes: 40 }, vram: null, cpu_percent: 20, level: 'NORMAL' as const, messages: [] }
@@ -29,7 +33,16 @@ test('system readings work for any profile and reject stale profile alerts', () 
 
 test('critical and stale notices do not depend on chart visibility', () => {
   assert.equal(resourceNotice(healthy), '')
-  assert.equal(resourceNotice({ ...healthy, level: 'CRITICAL', messages: ['Service requis indisponible.'] }), 'Service requis indisponible.')
-  assert.match(resourceNotice({ active: true, stale: true }), /pas confirmé/)
+  assert.equal(resourceNotice({ ...healthy, level: 'CRITICAL', messages: ['Service requis indisponible.'] }), 'Service requis indisponible')
+  assert.equal(resourceNotice({ active: true, stale: true }), 'Surveillance indisponible')
   assert.match(resourceNotice(null), /indisponible/)
+})
+
+test('Les alertes simultanées gardent chaque problème sans point-virgule', () => {
+  const snapshot = { ...healthy, level: 'CRITICAL' as const, messages: [
+    'RAM disponible critique.', 'Marge VRAM faible persistante.',
+    'Docker est indisponible ; ouvre Docker Desktop manuellement.',
+  ] }
+  assert.equal(resourceNotice(snapshot), 'RAM disponible critique · VRAM disponible faible · Ouvrez Docker Desktop')
+  assert.equal(snapshot.messages[2], 'Docker est indisponible ; ouvre Docker Desktop manuellement.')
 })

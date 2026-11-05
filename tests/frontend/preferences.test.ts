@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { defaultVoicePreferences, isPreferences, requestPreferences } from '../../src/preferences.ts'
+import {
+  defaultVoicePreferences,
+  isPreferences,
+  requestPreferences,
+} from '../../src/lib/preferences.ts'
 
 const profile_settings = [
   { id: 'general', display_name: 'Général', model_name: 'Modèle général', reasoning_available: true },

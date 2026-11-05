@@ -1,3 +1,5 @@
+import { shortNotice } from './notices'
+
 export type MemoryReading = { total_bytes: number; used_bytes: number; available_bytes: number }
 export type ResourceSnapshot = {
   active: boolean
@@ -41,6 +43,7 @@ export function resourcesForProfile(snapshot: ResourceSnapshot | null, profileId
 
 // Les alertes restent indépendantes de la préférence d'affichage du diagramme.
 export function resourceNotice(snapshot: ResourceSnapshot | null): string {
-  if (!snapshot || snapshot.stale) return 'Surveillance indisponible ou en attente ; l’état des ressources n’est pas confirmé.'
-  return snapshot.messages?.join(' ') ?? ''
+  if (!snapshot || snapshot.stale) return 'Surveillance indisponible'
+  // Chaque alerte garde son propre libellé, même si plusieurs seuils sont franchis.
+  return snapshot.messages?.map((message) => shortNotice(message, 'resources')).filter(Boolean).join(' · ') ?? ''
 }

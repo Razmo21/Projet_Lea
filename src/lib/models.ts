@@ -17,6 +17,7 @@ export type ModelCatalog = {
 }
 
 export type ModelRuntimeStatus = {
+  instance_id?: string
   state: 'ready' | 'loading' | 'error'
   message: string
   active_profile_id: string
@@ -33,7 +34,8 @@ export function isModelCatalog(value: unknown): value is ModelCatalog {
     typeof catalog.default_profile_id !== 'string' ||
     typeof catalog.active_profile_id !== 'string' ||
     !Array.isArray(catalog.profiles)
-  ) return false
+  )
+    return false
 
   return catalog.profiles.every((item) => {
     if (typeof item !== 'object' || item === null) return false
@@ -56,19 +58,30 @@ export function isModelCatalog(value: unknown): value is ModelCatalog {
 }
 
 // Retrouve le profil actif sans inventer de valeur de secours côté navigateur.
-export function activeModelProfile(catalog: ModelCatalog): PublicModelProfile | null {
-  return catalog.profiles.find((profile) => profile.id === catalog.active_profile_id) ?? null
+export function activeModelProfile(
+  catalog: ModelCatalog,
+): PublicModelProfile | null {
+  return (
+    catalog.profiles.find(
+      (profile) => profile.id === catalog.active_profile_id,
+    ) ?? null
+  )
 }
 
 // Refuse un statut partiel pour que le sélecteur n'invente jamais l'état du runtime.
-export function isModelRuntimeStatus(value: unknown): value is ModelRuntimeStatus {
+export function isModelRuntimeStatus(
+  value: unknown,
+): value is ModelRuntimeStatus {
   if (typeof value !== 'object' || value === null) return false
   const status = value as Record<string, unknown>
   return (
-    (status.state === 'ready' || status.state === 'loading' || status.state === 'error') &&
+    (status.state === 'ready' ||
+      status.state === 'loading' ||
+      status.state === 'error') &&
     typeof status.message === 'string' &&
     typeof status.active_profile_id === 'string' &&
-    (status.loading_profile_id === null || typeof status.loading_profile_id === 'string') &&
+    (status.loading_profile_id === null ||
+      typeof status.loading_profile_id === 'string') &&
     typeof status.generation_active === 'boolean' &&
     typeof status.agent_run_active === 'boolean'
   )
@@ -81,10 +94,10 @@ export function canActivateModel(
 ): boolean {
   return Boolean(
     status &&
-    status.state === 'ready' &&
-    !status.loading_profile_id &&
-    !status.generation_active &&
-    !status.agent_run_active &&
-    targetProfileId !== status.active_profile_id,
+      status.state === 'ready' &&
+      !status.loading_profile_id &&
+      !status.generation_active &&
+      !status.agent_run_active &&
+      targetProfileId !== status.active_profile_id,
   )
 }

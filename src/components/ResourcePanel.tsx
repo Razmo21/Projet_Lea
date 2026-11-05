@@ -1,7 +1,12 @@
 import { useEffect, useState } from 'react'
-import { backendOrigin } from './conversations'
-import { isResourceSnapshot, resourceNotice, resourcesForProfile } from './resources'
-import type { MemoryReading, ResourceSnapshot } from './resources'
+import { createPortal } from 'react-dom'
+import { backendOrigin } from '../lib/conversations'
+import {
+  isResourceSnapshot,
+  resourceNotice,
+  resourcesForProfile,
+} from '../lib/resources'
+import type { MemoryReading, ResourceSnapshot } from '../lib/resources'
 
 // Une petite barre conserve l'unité et distingue explicitement l'absence de mesure.
 function MemoryBar({ label, value }: { label: string; value?: MemoryReading | null }) {
@@ -21,8 +26,8 @@ function MemoryBar({ label, value }: { label: string; value?: MemoryReading | nu
 }
 
 // Le navigateur lit un snapshot : la supervision appartient uniquement au backend.
-export default function ResourcePanel({ enabled, showChart, profileId }: {
-  enabled: boolean; showChart: boolean; profileId?: string
+export default function ResourcePanel({ enabled, showChart, profileId, noticeHost }: {
+  enabled: boolean; showChart: boolean; profileId?: string; noticeHost: HTMLElement | null
 }) {
   const [snapshot, setSnapshot] = useState<ResourceSnapshot | null>(null)
   // Désactiver la vue interrompt sa lecture, sans agir sur la supervision serveur.
@@ -60,18 +65,18 @@ export default function ResourcePanel({ enabled, showChart, profileId }: {
   const notice = enabled ? resourceNotice(current) : ''
   return (
     <aside className="resources" aria-label="Ressources de Léa">
-      {notice && (
+      {/* La mesure reste unique ; seul l'emplacement visuel de l'alerte change. */}
+      {notice && noticeHost && createPortal(
         <p
           role={current?.level === 'CRITICAL' ? 'alert' : 'status'}
-          className={current?.level === 'CRITICAL' ? 'status-error' : 'status-warning'}
+          className={`resource-notice ${current?.level === 'CRITICAL' ? 'status-error' : 'status-warning'}`}
         >
           {notice}
-        </p>
+        </p>, noticeHost,
       )}
       {showChart && (
         <section className="resource-chart" aria-label="Diagramme des ressources">
-          <h2>Ressources</h2>
-          {!enabled && <p>Surveillance inactive lorsque Léa est arrêtée.</p>}
+          {!enabled && <p>Surveillance arrêtée</p>}
           <MemoryBar label="RAM" value={current?.ram} />
           <div className="resource-row">
             <span>CPU</span>

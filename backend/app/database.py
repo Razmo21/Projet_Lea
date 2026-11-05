@@ -567,6 +567,7 @@ class Database:
             "revision": int(row["revision"]),
             "generation_active": bool(row["generation_active"]),
             "message_count": int(row["message_count"]) if "message_count" in row.keys() else 0,
+            "has_agent_runs": bool(row["has_agent_runs"]) if "has_agent_runs" in row.keys() else False,
         }
 
     @staticmethod
@@ -666,7 +667,8 @@ class Database:
         with self.connection() as connection:
             rows = connection.execute(
                 f"""
-                SELECT c.*, COUNT(m.id) AS message_count
+                SELECT c.*, COUNT(m.id) AS message_count,
+                       MAX(CASE WHEN m.agent_run_id IS NOT NULL THEN 1 ELSE 0 END) AS has_agent_runs
                 FROM conversations c
                 LEFT JOIN messages m ON m.conversation_id = c.id
                 {condition}
@@ -686,7 +688,8 @@ class Database:
             try:
                 row = connection.execute(
                     """
-                    SELECT c.*, COUNT(m.id) AS message_count
+                    SELECT c.*, COUNT(m.id) AS message_count,
+                           MAX(CASE WHEN m.agent_run_id IS NOT NULL THEN 1 ELSE 0 END) AS has_agent_runs
                     FROM conversations c
                     LEFT JOIN messages m ON m.conversation_id = c.id
                     WHERE c.id = ?
@@ -1799,7 +1802,7 @@ class Database:
             self._assert_mutation_allowed(conversation, expected_revision)
             last_message = connection.execute(
                 """
-                SELECT role, status, failure_kind FROM messages
+                SELECT role, status, failure_kind, error_code FROM messages
                 WHERE conversation_id = ? ORDER BY position DESC LIMIT 1
                 """,
                 (conversation_id,),
@@ -1814,7 +1817,14 @@ class Database:
                 and str(last_message["status"]) == "failed"
                 and str(last_message["failure_kind"] or "").startswith("web_")
             )
-            if last_message is not None and not (completed_assistant or failed_web):
+            # Une interruption conserve la question sans forcer sa régénération.
+            # Aucun contenu échoué n'est réinjecté dans le contexte du modèle.
+            interrupted = last_message is not None and (
+                last_message["role"] == "user"
+                and last_message["status"] == "failed"
+                and last_message["error_code"] == "interrupted"
+            )
+            if last_message is not None and not (completed_assistant or failed_web or interrupted):
                 raise ConversationOperationError(
                     "La dernière question doit être réessayée avant de poursuivre."
                 )

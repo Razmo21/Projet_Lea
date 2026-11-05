@@ -34,9 +34,9 @@ Périmètre historique : phase 16.1 uniquement ; la suite 16.2 est documentée s
   entre profils.
 - `backend/app/migrations.py`, `backend/app/database.py` : migrations 13 et 14,
   préférence, sources attachées aux réponses et origine bornée des échecs.
-- `backend/app/preferences.py`, `tools/preferences.py`, `src/preferences.ts` :
+- `backend/app/preferences.py`, `tools/preferences.py`, `src/lib/preferences.ts` :
   persistance locale du réglage hors modèle.
-- `src/App.tsx`, `src/Settings.tsx`, `src/conversations.ts`, `src/index.css` :
+- `src/App.tsx`, `src/components/Settings.tsx`, `src/lib/conversations.ts`, `src/styles/index.css` :
   consentement, état en cours, annulation et sources.
 - `config/models.json` et `config/prompts/*.md` : capacité déclarée et adaptation
   minimale des trois contrats à des extraits Web non fiables.

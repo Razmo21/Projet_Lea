@@ -203,7 +203,7 @@ export function runtimeStatusPresentation(
     return { tone: 'warning', message: runtimeMessage || 'Chargement du profil…' }
   }
   if (runtimeState === 'ready' && profileName) {
-    return { tone: 'ready', message: `${profileName} est prêt.` }
+    return { tone: 'ready', message: 'Modèle prêt' }
   }
   return { tone: 'normal', message: 'État du profil indisponible.' }
 }

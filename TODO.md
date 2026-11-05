@@ -166,7 +166,7 @@ validation physique finalement confirmée par l’utilisateur.
 - [x] Rapport technique : `docs/ETAPE_15_VALIDATION.md`.
 - [ ] Validation manuelle dans Microsoft Edge autonome.
 
-## ÉTAPE 16 — Accès Web — phases 16.1 à 16.3 techniquement prêtes
+## ÉTAPE 16 — Accès Web — terminée et validée manuellement
 
 - [x] Web Gateway backend partagé par Général, Programmation et Vétérinaire.
 - [x] Préférence SQLite 13 désactivée par défaut et accord manuel par requête.
@@ -229,13 +229,78 @@ validation physique finalement confirmée par l’utilisateur.
   provenance exacte de chaque page dynamique et validations de citations durcies.
 - [x] Préparation de clôture : consultation directe officielle et document unique
   vérifiés avec le modèle réel ; refus prudent conservé si la sortie manque de citations.
-- [ ] Revalidation manuelle finale des scénarios corrigés avant le commit utilisateur.
+- [x] Revalidation manuelle finale et commit utilisateur, confirmés par le prompt 17.
 
-## Roadmap validée — après la validation technique de la phase 16.3
+## ÉTAPE 17 — Markdown et interface — validation manuelle requise
 
-- Étape 17 — Génération d’images.
+- [x] Messages d'avertissement et d'erreur simplifiés en une phrase courte sans
+  point-virgule, sans modifier les diagnostics ni les décisions de sécurité.
+  Cycle Frontend corrigé : `node` vérifié reste l'autorité et l'ancien bootstrap
+  `npm.cmd` ambigu ne bloque plus le démarrage ou l'arrêt. Validation : 388 tests
+  backend, 71 frontend, 31 groupes Edge et cycle réel complet réussis.
+- [x] Ajustements du 4 novembre : Projet compact, bouton principal voix/envoi/arrêt,
+  interruption réelle du modèle et continuation après arrêt ; accueil spécialisé
+  Programmation/Vétérinaire, historique agentique verrouillé hors profil chargé
+  avec renommage/suppression disponibles, alertes de ressources centrées en haut.
+  Validation : 388 tests backend, 64 frontend et 30 groupes Edge ; arrêt réel
+  Général et réponse suivante vérifiés, puis Programmation rétabli.
+- [x] Diagnostic modèle → SQLite → JSON → React ; contenu brut conservé.
+- [x] CommonMark/GFM, tableaux défilants, code et copie indépendante des blocs.
+- [x] HTML brut inerte, URL filtrées, images sans chargement, provenance des sources conservée.
+- [x] Barre latérale, recherche, accueil, conversation centrale et saisie ajustable.
+- [x] Ajustements demandés après essai : crayon/poubelle au survol, commandes
+  vocales et envoi par icônes dans la saisie, Entrée/Maj+Entrée et marque simplifiée.
+- [x] Saisie et commandes sur une ligne, quatre lignes maximum, champ vidé pendant
+  l’envoi, profil à droite, menu contrasté et retrait de Régénérer.
+- [x] Barre permanente, paramètres en haut, Démarrer/Arrêter en bas, libellé
+  Conversations, « + » sans action et logo PNG fourni stocké dans le projet.
+- [x] Derniers ajustements : titres latéraux agrandis, accueil limité au titre
+  demandé, doublon Léa retiré, espacements égaux, infobulles Dictée/Envoyer et
+  nouveau logo avec palette commune aux deux thèmes, contrastes vérifiés.
+- [x] Accueil centré avec six titres aléatoires, renouvelés seulement à la
+  navigation ; rail de saisie très fin après les commandes quand il faut défiler.
+- [x] Commande principale voix/envoi selon le contenu du champ ; dictée séparée.
+  Bouton éphémère en haut à gauche du chat, même taille que Paramètres.
+- [x] Titre et actions de conversation limités à la barre latérale, bulle dédiée
+  aux réponses de Léa, défilement Paramètres au bord droit et diagramme borné au
+  chat ; son message d’indisponibilité est centré avec les mesures.
+- [x] Séparateur supérieur et séparateurs inférieurs alignés jusqu’aux bords ;
+  état normal du cœur retiré du pied de page, erreurs centrées en haut.
+  Résultat des tâches Programmation réaffiché indépendamment du diff et des
+  décisions de checkpoint, avec motif explicite en cas d’échec sans réponse.
+- [x] Paramètres simplifiés en grille responsive ; carte Programmation retirée
+  de cette page sans supprimer le profil ni ses contrôles métier. Microphone et
+  voix locale réorganisés, validation centrée sans encadré ; le bouton Paramètres
+  ouvre et ferme la page avec protection du brouillon.
+- [x] Programmation utilise uniquement la saisie inférieure comme consigne
+  OpenHands ; aucun chat Web parallèle, y compris si le texte mentionne Internet.
+  Envoyer démarre directement le run, sans titre d’accueil ni bouton de départ
+  supplémentaire. Annuler la tâche reste dans Projet et les décisions
+  Accept/Rollback restent explicites sans résumé technique redondant.
+- [x] Consignes texte enregistrées via le contrat de conversation existant,
+  bulles pendant et après le run, Projet fixe au-dessus des messages et décisions
+  de checkpoint dans la réponse. Révision relue après annulation.
+  Deux runs réels vérifiés le 3 novembre : modification/test/rollback exact,
+  puis lecture de fichier/acceptation ; aucun conteneur de ces essais conservé.
+- [x] Frontend rangé par responsabilité dans `components/`, `hooks/`, `lib/` et
+  `styles/`, sans déplacement du backend, des données, des modèles ni des contrats.
+- [x] Complément explicitement demandé : chat éphémère Général en RAM, sans
+  souvenirs ni historique persistant, Web manuel contrôlé sans navigateur sur disque.
+  Fermeture, annulation, redémarrage, absence d’écriture SQLite et inférence réelle vérifiés.
+- [x] Thèmes clair/sombre, réglage immédiat mémorisé localement dans l’interface.
+- [x] Profils, Low/High existants, Web manuel, voix, ressources et OpenHands préservés.
+- [x] Clavier, focus, navigation compacte permanente, réduction des mouvements et six tailles vérifiés dans Edge automatisé.
+- [x] Tests frontend, non-régression backend complète, build et rapport `docs/ETAPE_17_VALIDATION.md`.
+- [ ] Validation manuelle utilisateur de l’apparence et des flux réels dans Edge.
+
+## Suite — non commencée
+
+Le prompt 17 remplace l’ancien ordre pour le Markdown et la refonte visuelle.
+La prochaine étape est le packaging Windows, sur nouvelle autorisation.
+La génération d’images reste reportée. Les autres objectifs historiques restent
+à réexaminer avant toute implémentation :
+
 - Étape 19 — Speech-to-Speech.
-- Étape 20 — Refonte visuelle.
 - Étape 21 — Mémoire avancée.
 - Étape 22 — Fine-tuning optionnel.
 - Étape 23 — Sécurité finale.

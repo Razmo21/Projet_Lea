@@ -233,7 +233,75 @@ class OpenHandsApiTests(unittest.TestCase):
         self.assertIn('validated', history['messages'][1]['content'])
         changes = self.client.get(f"/api/agent-runs/{final['run_id']}/changes").json()
         self.assertEqual(changes['checkpoint']['state'], 'completed')
-        self.assertEqual(self.client.post(f"/api/conversations/{history['id']}/messages/{history['messages'][1]['id']}/regenerate", json={'expected_revision': history['revision']}, headers=origin).status_code, 400)
+        refused = self.client.post(
+            f"/api/conversations/{history['id']}/messages/{history['messages'][1]['id']}/regenerate",
+            json={'expected_revision': history['revision']},
+            headers=origin,
+        )
+        self.assertEqual(refused.status_code, 409)
+        self.assertIn("démarrer une tâche", refused.json()["detail"])
+
+    def test_programming_history_requires_loaded_profile_but_can_be_renamed_and_deleted(self) -> None:
+        """La liste est commune ; les métadonnées restent modifiables hors Programmation."""
+        origin = {"Origin": "http://127.0.0.1:5173"}
+        self.client.post('/api/models/development/activate', headers=origin)
+        project = self.client.get('/api/projects').json()['projects'][0]['id']
+        self.client.post(f'/api/projects/{project}/activate', headers=origin)
+        started = self.client.post('/api/agent-runs', headers=origin,
+            json={'task': 'Lis le fichier', 'record_conversation': True})
+        final = self.wait_for_final(started.json()['run_id'])
+        path = f"/api/conversations/{final['conversation_id']}"
+        self.assertEqual(self.client.get(path).status_code, 200)
+        self.client.post('/api/models/general/activate', headers=origin)
+        listed = self.client.get('/api/conversations').json()['conversations'][0]
+        self.assertTrue(listed['has_agent_runs'])
+        self.assertEqual(self.client.get(path).status_code, 409)
+        renamed = self.client.patch(path, headers=origin,
+            json={'title': 'Tâche renommée', 'expected_revision': listed['revision']})
+        self.assertEqual(renamed.status_code, 200)
+        self.assertNotIn('messages', renamed.json())
+        self.client.post('/api/models/development/activate', headers=origin)
+        self.assertEqual(len(self.client.get(path).json()['messages']), 2)
+        self.client.post('/api/models/general/activate', headers=origin)
+        deleted = self.client.request('DELETE', path, headers=origin,
+            json={'expected_revision': renamed.json()['revision']})
+        self.assertEqual(deleted.status_code, 204)
+        self.assertEqual(self.client.get(path).status_code, 404)
+        self.assertEqual(self.client.get(f"/api/agent-runs/{final['run_id']}").status_code, 200)
+
+    def test_recorded_tasks_keep_both_turns_after_failure_and_reject_stale_revision(self) -> None:
+        """Texte et voix partagent le même historique, sans doublon ni perte après échec."""
+        origin = {"Origin": "http://127.0.0.1:5173"}
+        self.client.post("/api/models/development/activate", headers=origin)
+        project = self.client.get("/api/projects").json()["projects"][0]["id"]
+        self.client.post(f"/api/projects/{project}/activate", headers=origin)
+        body = {"task": "Première tâche", "record_conversation": True,
+                "expected_profile_id": "development", "expected_project_id": project}
+        self.application.state.openhands_runs._process_starter = FinishedStarter("unverified")
+        first = self.client.post("/api/agent-runs", json=body, headers=origin)
+        self.assertEqual(first.status_code, 202)
+        failed = self.wait_for_final(first.json()["run_id"])
+        self.assertEqual(failed["state"], "failed")
+        identity = failed["conversation_id"]
+        history = self.client.get(f"/api/conversations/{identity}").json()
+        self.assertFalse(history["generation_active"])
+        second_body = {**body, "task": "Seconde tâche", "conversation_id": identity,
+                       "expected_revision": history["revision"]}
+        self.application.state.openhands_runs._process_starter = FinishedStarter()
+        second = self.client.post("/api/agent-runs", json=second_body, headers=origin)
+        self.assertEqual(second.status_code, 202)
+        completed = self.wait_for_final(second.json()["run_id"])
+        self.assertEqual(completed["state"], "completed")
+        history = self.client.get(f"/api/conversations/{identity}").json()
+        self.assertEqual([m["content"] for m in history["messages"] if m["role"] == "user"],
+                         [body["task"], second_body["task"]])
+        self.assertEqual(len(history["messages"]), 4)
+        self.assertEqual([m["agent_run_id"] for m in history["messages"]],
+                         [failed["run_id"]] * 2 + [completed["run_id"]] * 2)
+        self.assertEqual(self.client.post("/api/agent-runs", json=second_body, headers=origin).status_code, 409)
+        self.assertEqual(len(self.client.get("/api/agent-runs").json()["runs"]), 2)
+        self.assertEqual(self.client.post(f"/api/agent-runs/{failed['run_id']}/accept", headers=origin).status_code, 409)
+        self.assertEqual(self.client.post(f"/api/agent-runs/{completed['run_id']}/accept", headers=origin).status_code, 200)
 
     def test_programming_run_is_persisted_and_can_be_rolled_back_through_the_api(self) -> None:
         """The UI contract starts one frozen run and exposes its post-run checkpoint without direct file tools."""

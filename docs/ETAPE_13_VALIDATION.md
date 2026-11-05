@@ -223,7 +223,7 @@ frontend `App`, `Settings`, `agentRuns`, `index.css`, `preferences`, tests de
 préférences et pilote `tests/e2e/edge-stage12.mjs`.
 
 Créés : ce rapport, `backend/app/resources.py`, `backend/tests/test_resources.py`,
-`src/ResourcePanel.tsx`, `src/resources.ts`, `tests/frontend/resources.test.ts`,
+`src/components/ResourcePanel.tsx`, `src/lib/resources.ts`, `tests/frontend/resources.test.ts`,
 `tests/launcher-process-record.ps1`, `tests/e2e/edge-stage13.mjs`,
 `tests/e2e/stage13-fault.ps1`. Le prompt 13 fourni par l’utilisateur reste non suivi.
 Docstrings/commentaires sur fonctions nouvelles, transitions, seuils et sécurité ;
@@ -308,7 +308,7 @@ complément. Le benchmark difficile et les protections agentiques sont inchangé
 
 Fichiers concernés par ce seul complément : `backend/app/{main,resources}.py`,
 `backend/tests/test_resources.py`, `src/{App,Settings,ResourcePanel}.tsx`,
-`src/resources.ts`, `tests/frontend/resources.test.ts`, `tests/e2e/edge-stage13.mjs`
+`src/lib/resources.ts`, `tests/frontend/resources.test.ts`, `tests/e2e/edge-stage13.mjs`
 et documentation (`AGENTS.md`, `README.md`, `TODO.md`, `CHANGELOG.md`,
 `backend/README.md`, `docs/DECISIONS.md`, ce rapport).
 

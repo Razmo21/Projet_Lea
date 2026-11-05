@@ -15,16 +15,16 @@ import {
   webAuthorizationForTurn,
   webRetryDraft,
   webSourceKindLabel,
-} from '../../src/conversations.ts'
-import type { WebSource } from '../../src/conversations.ts'
-import type { ConversationDetail } from '../../src/conversations.ts'
+} from '../../src/lib/conversations.ts'
+import type { WebSource } from '../../src/lib/conversations.ts'
+import type { ConversationDetail } from '../../src/lib/conversations.ts'
 import {
   activeModelProfile,
   canActivateModel,
   isModelCatalog,
   isModelRuntimeStatus,
-} from '../../src/models.ts'
-import { isProjectCatalog } from '../../src/projects.ts'
+} from '../../src/lib/models.ts'
+import { isProjectCatalog } from '../../src/lib/projects.ts'
 import {
   agentRunValidationPresentation,
   effectiveValidationStatus,
@@ -37,8 +37,8 @@ import {
   requireAgentRun,
   resetPollingHealth,
   runtimeStatusPresentation,
-} from '../../src/agentRuns.ts'
-import type { AgentRun } from '../../src/agentRuns.ts'
+} from '../../src/lib/agentRuns.ts'
+import type { AgentRun } from '../../src/lib/agentRuns.ts'
 
 
 const conversation: ConversationDetail = {
@@ -414,13 +414,23 @@ test('a confirmed ready profile stays non-red after one transient polling failur
   let health = resetPollingHealth()
   const ready = runtimeStatusPresentation('Programmation', 'ready', 'Prêt.', health)
   assert.equal(`status-${ready.tone}`, 'status-ready')
-  assert.equal(ready.message, 'Programmation est prêt.')
+  assert.equal(ready.message, 'Modèle prêt')
 
   health = recordPollingFailure(health, 'État du modèle indisponible.')
   assert.equal(pollingTone(health), 'normal')
   assert.equal(runtimeStatusPresentation('Programmation', 'ready', 'Prêt.', health).tone, 'ready')
 })
 
+
+test('all ready profiles share the same label without hiding loading or errors', () => {
+  const health = resetPollingHealth()
+  for (const profile of ['Général', 'Programmation', 'Vétérinaire', 'Autre profil']) {
+    assert.equal(runtimeStatusPresentation(profile, 'ready', 'Prêt.', health).message, 'Modèle prêt')
+    assert.equal(runtimeStatusPresentation(profile, 'loading', 'Chargement…', health).message, 'Chargement…')
+    assert.equal(runtimeStatusPresentation(profile, 'error', 'Panne.', health).message, 'Panne.')
+  }
+  assert.notEqual(runtimeStatusPresentation(null, null, null, health).message, 'Modèle prêt')
+})
 
 test('persistent polling failures become visible and a valid response resets them', () => {
   let health = resetPollingHealth()

@@ -1,0 +1,431 @@
+import { useEffect, useImperativeHandle, useRef, useState } from 'react'
+import type { FormEvent, Ref } from 'react'
+import {
+  defaultVoicePreferences,
+  requestPreferences,
+} from '../lib/preferences'
+import type {
+  Preferences,
+  ReasoningLevel,
+  VoicePreferences,
+} from '../lib/preferences'
+import VoiceSettings from './VoiceSettings'
+import type { Theme } from '../lib/appearance'
+import { shortNotice } from '../lib/notices'
+
+type SettingsProps = {
+  ref?: Ref<SettingsHandle>
+  onBack: () => void
+  onSaved: (preferences: Preferences) => void
+  theme: Theme
+  onTheme: (theme: Theme) => void
+  themeError: string
+}
+
+export type SettingsHandle = {
+  close: () => void
+}
+
+const voicePreferenceFields = Object.keys(
+  defaultVoicePreferences,
+) as (keyof VoicePreferences)[]
+
+// Vue indépendante des conversations ; seul le choix confirmé vient de la persistance.
+export default function Settings({
+  ref,
+  onBack,
+  onSaved,
+  theme,
+  onTheme,
+  themeError,
+}: SettingsProps) {
+  const [saved, setSaved] = useState<Preferences | null>(null)
+  const [draft, setDraft] = useState<ReasoningLevel>('low')
+  const [veterinaryDraft, setVeterinaryDraft] = useState<ReasoningLevel>('high')
+  const [chartDraft, setChartDraft] = useState(false)
+  const [webDraft, setWebDraft] = useState(false)
+  const [voiceDraft, setVoiceDraft] = useState<VoicePreferences>(
+    defaultVoicePreferences,
+  )
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [confirmation, setConfirmation] = useState('')
+  const [reload, setReload] = useState(0)
+  const savingLock = useRef(false)
+  const title = useRef<HTMLHeadingElement>(null)
+  const dirty =
+    saved !== null &&
+    (draft !== saved.general_reasoning ||
+      veterinaryDraft !== saved.veterinary_reasoning ||
+      chartDraft !== saved.show_resource_chart ||
+      webDraft !== saved.web_enabled ||
+      voicePreferenceFields.some((key) => voiceDraft[key] !== saved[key]))
+
+  // Place le clavier dans cette vue sans déplacer le focus à chaque changement de valeur.
+  useEffect(() => {
+    title.current?.focus()
+  }, [])
+
+  // Ignore une réponse tardive après fermeture ou nouvelle tentative de chargement.
+  useEffect(() => {
+    let current = true
+    setLoading(true)
+    setSaved(null)
+    setError('')
+    setConfirmation('')
+    void requestPreferences()
+      .then((value) => {
+        if (!current) return
+        setSaved(value)
+        setDraft(value.general_reasoning)
+        setVeterinaryDraft(value.veterinary_reasoning)
+        setChartDraft(value.show_resource_chart)
+        setWebDraft(value.web_enabled)
+        setVoiceDraft(
+          Object.fromEntries(
+            voicePreferenceFields.map((key) => [key, value[key]]),
+          ) as VoicePreferences,
+        )
+      })
+      .catch((failure: unknown) => {
+        if (current)
+          setError(
+            failure instanceof Error
+              ? failure.message
+              : 'Paramètres indisponibles.',
+          )
+      })
+      .finally(() => {
+        if (current) setLoading(false)
+      })
+    return () => {
+      current = false
+    }
+  }, [reload])
+
+  // Le brouillon ne remplace la valeur enregistrée qu'après une confirmation cohérente.
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!saved || !dirty || savingLock.current || loading) return
+    savingLock.current = true
+    setSaving(true)
+    setError('')
+    setConfirmation('')
+    try {
+      const confirmed = await requestPreferences({
+        expected_revision: saved.revision,
+        ...(draft !== saved.general_reasoning
+          ? { general_reasoning: draft }
+          : {}),
+        ...(veterinaryDraft !== saved.veterinary_reasoning
+          ? { veterinary_reasoning: veterinaryDraft }
+          : {}),
+        ...(chartDraft !== saved.show_resource_chart
+          ? { show_resource_chart: chartDraft }
+          : {}),
+        ...(webDraft !== saved.web_enabled ? { web_enabled: webDraft } : {}),
+        ...Object.fromEntries(
+          voicePreferenceFields
+            .filter((key) => voiceDraft[key] !== saved[key])
+            .map((key) => [key, voiceDraft[key]]),
+        ),
+      })
+      setSaved(confirmed)
+      setDraft(confirmed.general_reasoning)
+      setVeterinaryDraft(confirmed.veterinary_reasoning)
+      setChartDraft(confirmed.show_resource_chart)
+      setWebDraft(confirmed.web_enabled)
+      setVoiceDraft(
+        Object.fromEntries(
+          voicePreferenceFields.map((key) => [key, confirmed[key]]),
+        ) as VoicePreferences,
+      )
+      onSaved(confirmed)
+      setConfirmation(
+        'Paramètres enregistrés. L’affichage s’applique immédiatement ; le raisonnement à la prochaine réponse du profil concerné.',
+      )
+    } catch (failure) {
+      setError(
+        failure instanceof Error
+          ? failure.message
+          : 'Enregistrement non confirmé.',
+      )
+    } finally {
+      savingLock.current = false
+      setSaving(false)
+    }
+  }
+
+  // Un choix non validé peut être abandonné, mais jamais pendant une sauvegarde en vol.
+  function back() {
+    if (savingLock.current) return
+    if (
+      dirty &&
+      !window.confirm(
+        'Quitter les paramètres sans enregistrer les modifications ?',
+      )
+    )
+      return
+    onBack()
+  }
+
+  // Le bouton permanent de la barre latérale suit exactement la même fermeture.
+  useImperativeHandle(ref, () => ({ close: back }))
+
+  // Modifier la sélection efface une ancienne confirmation qui ne concerne plus ce brouillon.
+  function select(level: ReasoningLevel) {
+    setDraft(level)
+    setConfirmation('')
+  }
+
+  // Le réglage Vétérinaire reste indépendant de Général jusqu'à validation.
+  function selectVeterinary(level: ReasoningLevel) {
+    setVeterinaryDraft(level)
+    setConfirmation('')
+  }
+
+  return (
+    <section
+      className="chat settings"
+      aria-labelledby="settings-title"
+      aria-busy={loading || saving}
+    >
+      <div className="page-header settings-header">
+        <h1 id="settings-title" ref={title} tabIndex={-1}>
+          Paramètres de Léa
+        </h1>
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={back}
+          disabled={saving}
+        >
+          Retour aux conversations
+        </button>
+      </div>
+      <p className="settings-description">
+        Vos préférences restent disponibles lorsque l’IA est arrêtée. Les
+        changements ne coupent ni une réponse ni un run en cours.
+      </p>
+      <fieldset className="settings-group appearance-options">
+        <legend>Apparence</legend>
+        <p className="settings-note">
+          Le thème s’applique immédiatement et reste mémorisé dans cette
+          interface.
+        </p>
+        <div className="reasoning-options">
+          <label>
+            <input
+              type="radio"
+              name="theme"
+              checked={theme === 'light'}
+              onChange={() => onTheme('light')}
+            />
+            Clair
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="theme"
+              checked={theme === 'dark'}
+              onChange={() => onTheme('dark')}
+            />
+            Sombre
+          </label>
+        </div>
+        {themeError && <p role="status">{shortNotice(themeError, 'preferences')}</p>}
+      </fieldset>
+      {loading && <p role="status">Chargement des paramètres…</p>}
+      {saved && (
+        <form
+          className="settings-form"
+          onSubmit={(event) => void save(event)}
+        >
+          <fieldset
+            disabled={loading || saving || !saved.general_reasoning_available}
+            className="settings-group"
+          >
+            <legend>Général — Raisonnement</legend>
+            <p>
+              Modèle :{' '}
+              {saved.profile_settings.find(
+                (profile) => profile.id === 'general',
+              )?.model_name ?? 'indisponible'}
+              .
+            </p>
+            <p id="reasoning-help">
+              Low donne une réponse directe. High active la réflexion interne,
+              sans l’afficher.
+            </p>
+            {!saved.general_reasoning_available && (
+              <p role="status">
+                Indisponible avec le modèle Général configuré. Le choix mémorisé
+                reste conservé, mais n’est pas appliqué.
+              </p>
+            )}
+            <div
+              className="reasoning-options"
+              aria-describedby="reasoning-help"
+            >
+              <label>
+                <input
+                  type="radio"
+                  name="reasoning"
+                  value="low"
+                  checked={draft === 'low'}
+                  onChange={() => select('low')}
+                />
+                Low — Direct
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name="reasoning"
+                  value="high"
+                  checked={draft === 'high'}
+                  onChange={() => select('high')}
+                />
+                High — Réflexion
+              </label>
+            </div>
+            <p>
+              Enregistré : {saved.general_reasoning === 'low' ? 'Low' : 'High'}.
+            </p>
+          </fieldset>
+          <fieldset
+            disabled={
+              loading || saving || !saved.veterinary_reasoning_available
+            }
+            className="settings-group"
+          >
+            <legend>Vétérinaire — Raisonnement</legend>
+            <p>
+              Modèle :{' '}
+              {saved.profile_settings.find(
+                (profile) => profile.id === 'veterinary',
+              )?.model_name ?? 'indisponible'}
+              .
+            </p>
+            <p id="veterinary-reasoning-help">
+              Low demande une réponse directe. High active la réflexion native
+              Qwen3.5, sans l’afficher.
+            </p>
+            {!saved.veterinary_reasoning_available && (
+              <p role="status">
+                Indisponible avec le modèle Vétérinaire configuré. Le choix
+                mémorisé reste conservé, mais n’est pas appliqué.
+              </p>
+            )}
+            <div
+              className="reasoning-options"
+              aria-describedby="veterinary-reasoning-help"
+            >
+              <label>
+                <input
+                  type="radio"
+                  name="veterinary-reasoning"
+                  value="low"
+                  checked={veterinaryDraft === 'low'}
+                  onChange={() => selectVeterinary('low')}
+                />
+                Low — Direct
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name="veterinary-reasoning"
+                  value="high"
+                  checked={veterinaryDraft === 'high'}
+                  onChange={() => selectVeterinary('high')}
+                />
+                High — Réflexion
+              </label>
+            </div>
+            <p>
+              Enregistré :{' '}
+              {saved.veterinary_reasoning === 'low' ? 'Low' : 'High'}.
+            </p>
+          </fieldset>
+          <fieldset disabled={loading || saving} className="settings-group">
+            <legend>Ressources</legend>
+            <label className="resource-option">
+              <input
+                type="checkbox"
+                checked={chartDraft}
+                onChange={(event) => {
+                  // Le choix reste provisoire jusqu'au commit confirmé.
+                  setChartDraft(event.target.checked)
+                  setConfirmation('')
+                }}
+              />
+              Afficher le diagramme des ressources
+            </label>
+            <p>
+              La surveillance reste active avec tout profil IA, même diagramme
+              masqué. Les alertes ne coupent jamais une réponse ni un run.
+            </p>
+          </fieldset>
+          <fieldset disabled={loading || saving} className="settings-group">
+            <legend>Accès Web</legend>
+            <label className="resource-option">
+              <input
+                type="checkbox"
+                checked={webDraft}
+                onChange={(event) => {
+                  // Ce réglage ouvre la possibilité de demander le Web sans l'autoriser seul.
+                  setWebDraft(event.target.checked)
+                  setConfirmation('')
+                }}
+              />
+              Autoriser les demandes Web explicites
+            </label>
+            <p>
+              Fournisseur principal : DuckDuckGo Lite, avec un secours Bing
+              borné. Chaque recherche exige encore ton accord pour la question
+              concernée ; ce réglage n’autorise jamais un accès automatique.
+            </p>
+            <p>
+              Les pages sont lues comme des données non fiables. Aucun
+              historique, souvenir ou fichier local n’est transmis.
+            </p>
+          </fieldset>
+          <VoiceSettings
+            value={voiceDraft}
+            disabled={loading || saving}
+            onChange={(value) => {
+              setVoiceDraft(value)
+              setConfirmation('')
+            }}
+          />
+          <div className="settings-save-bar">
+            <button type="submit" disabled={!dirty || loading || saving}>
+              {saving ? 'Enregistrement…' : 'Valider'}
+            </button>
+            {dirty && (
+              <p className="status-warning">Modifications non enregistrées</p>
+            )}
+            {confirmation && (
+              <p className="status-ready" role="status">
+                {confirmation}
+              </p>
+            )}
+          </div>
+        </form>
+      )}
+      {error && (
+        <div role="alert">
+          <p className="status-error">{shortNotice(error, 'preferences')}</p>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={saving || loading}
+            onClick={() => setReload((value) => value + 1)}
+          >
+            Recharger les paramètres
+          </button>
+        </div>
+      )}
+    </section>
+  )
+}

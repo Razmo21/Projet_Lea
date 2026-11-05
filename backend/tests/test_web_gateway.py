@@ -381,16 +381,21 @@ class AuthorizationTests(unittest.TestCase):
         """Les contrats parlent des extraits réels, jamais d'un futur outil fictif."""
 
         project_root = BACKEND_DIRECTORY.parent
-        paths = (
+        web_paths = (
             project_root / "config" / "prompts" / "reliability.md",
             project_root / "config" / "prompts" / "general.md",
-            project_root / "config" / "prompts" / "development.md",
             project_root / "config" / "prompts" / "veterinary.md",
         )
-        contents = [path.read_text(encoding="utf-8") for path in paths]
+        contents = [path.read_text(encoding="utf-8") for path in web_paths]
         self.assertNotIn("Si un outil Web devient disponible", contents[0])
         for content in contents:
             self.assertIn("Web Gateway", content)
+        development = (
+            project_root / "config" / "prompts" / "development.md"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("Web Gateway", development)
+        self.assertIn("sans accès réseau", development)
+        self.assertIn("sans inventer de source", development)
 
 
 class SafeHttpTests(unittest.IsolatedAsyncioTestCase):
@@ -1604,10 +1609,10 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(self.provider.queries, [])
         self.assertEqual(self.web_http_calls, 0)
 
-    def test_same_gateway_serves_all_profiles_without_agent_run(self) -> None:
-        """Général, Programmation et Vétérinaire partagent la voie Web bornée."""
+    def test_gateway_serves_direct_profiles_and_refuses_programming_chat(self) -> None:
+        """Les profils directs gardent le Web ; Programmation reste une tâche hors ligne."""
 
-        for profile_id in ("general", "development", "veterinary"):
+        for profile_id in ("general", "veterinary"):
             self.app.state.runtime_coordinator.active_profile_id = profile_id
             response = self.client.post(
                 "/api/conversations/messages",
@@ -1620,8 +1625,31 @@ class WebApiTests(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.json()["messages"][-1]["profile_id"], profile_id)
+
+        calls_before_refusal = (
+            len(self.provider.queries),
+            self.web_http_calls,
+            len(self.model.calls),
+        )
+        self.app.state.runtime_coordinator.active_profile_id = "development"
+        refused = self.client.post(
+            "/api/conversations/messages",
+            json={
+                "conversation_id": None,
+                "message": "Cherche sur Internet puis corrige le projet",
+                "expected_revision": None,
+                "expected_profile_id": "development",
+            },
+        )
+        self.assertEqual(refused.status_code, 409, refused.text)
+        self.assertIn("démarrer une tâche", refused.json()["detail"])
+        self.assertEqual(
+            calls_before_refusal,
+            (len(self.provider.queries), self.web_http_calls, len(self.model.calls)),
+        )
         with Database(self.database_path).connection() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM conversations").fetchone()[0], 2)
 
     def test_cancellation_route_only_marks_a_known_active_operation(self) -> None:
         """L'annulation ne crée ni permission ni opération de remplacement."""

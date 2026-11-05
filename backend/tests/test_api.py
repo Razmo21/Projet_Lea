@@ -102,6 +102,33 @@ class ApiTestCase(unittest.TestCase):
             },
         )
 
+    def test_markdown_survives_model_sqlite_json_and_application_restart(self) -> None:
+        """Le frontend doit lire le Markdown brut sans migration ni double échappement."""
+
+        raw = (
+            "## Titre\n\n**bonjour** &amp; é 🐾\n\n"
+            r"\*\*bonjour\*\* et `C:\Users\lea`"
+            "\n\n| A | B |\n| --- | --- |\n| un | deux |\n\n"
+            "```powershell\nGet-ChildItem -LiteralPath 'C:\\Users\\lea'\n```\n\n"
+            "```typescript\nconst value: string = 'bonjour';\n```"
+        )
+        self.gateway.responses = [raw]
+        response = self.send("Montre un exemple de mise en forme.")
+        self.assertEqual(response.status_code, 200)
+        identity = response.json()["id"]
+        self.assertEqual(response.json()["messages"][-1]["content"], raw)
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            stored = connection.execute(
+                "SELECT content FROM messages WHERE conversation_id = ? AND role = 'assistant'",
+                (identity,),
+            ).fetchone()[0]
+        self.assertEqual(stored, raw)
+        restarted = create_app(self.database_path, FakeModelGateway(), model_controller=self.controller)
+        with TestClient(restarted) as client:
+            loaded = client.get(f"/api/conversations/{identity}")
+            self.assertEqual(loaded.status_code, 200)
+            self.assertEqual(loaded.json()["messages"][-1]["content"], raw)
+
     def test_local_api_responses_are_not_cacheable_or_frameable(self) -> None:
         """Sensitive local data must not remain cached or render inside a hostile frame."""
 
@@ -197,8 +224,8 @@ class ApiTestCase(unittest.TestCase):
             remaining = restarted_client.get("/api/conversations").json()["conversations"]
         self.assertEqual([conversation["id"] for conversation in remaining], [survivor["id"]])
 
-    def test_model_activation_is_atomic_and_attributes_following_responses(self) -> None:
-        """L'API publie Programmation seulement après succès du contrôleur."""
+    def test_model_activation_is_atomic_and_programming_refuses_chat(self) -> None:
+        """Programmation reste figé et réserve toute saisie à la route agentique."""
 
         activated = self.client.post("/api/models/development/activate")
         self.assertEqual(activated.status_code, 200)
@@ -209,11 +236,11 @@ class ApiTestCase(unittest.TestCase):
             "development",
         )
 
-        conversation = self.send("const n: number = 3").json()
-        assistant = conversation["messages"][-1]
-        self.assertEqual(assistant["model_id"], "lea-development-openhands")
-        self.assertEqual(assistant["profile_id"], "development")
-        self.assertFalse(self.gateway.calls[-1][-1]["content"].endswith("/no_think"))
+        refused = self.send("Cherche sur Internet puis corrige le projet.")
+        self.assertEqual(refused.status_code, 409)
+        self.assertIn("démarrer une tâche", refused.json()["detail"])
+        self.assertEqual(self.gateway.calls, [])
+        self.assertEqual(self.application.state.database.list_conversations(), [])
 
         self.controller.failure = ModelControllerError("Échec simulé.")
         failed = self.client.post("/api/models/general/activate")
@@ -224,18 +251,18 @@ class ApiTestCase(unittest.TestCase):
         )
 
     def test_message_limits_use_the_profile_frozen_before_any_database_mutation(self) -> None:
-        """Un message 16K reste valide en Programmation et est refusé en Général."""
+        """Un message plus long reste valide en Vétérinaire et est refusé en Général."""
 
         self.assertEqual(
-            self.client.post("/api/models/development/activate").status_code,
+            self.client.post("/api/models/veterinary/activate").status_code,
             200,
         )
-        development_message = "d" * 8000
-        created_response = self.send(development_message)
+        veterinary_message = "v" * 8000
+        created_response = self.send(veterinary_message)
         self.assertEqual(created_response.status_code, 200)
         created = created_response.json()
-        self.assertEqual(created["messages"][0]["content"], development_message)
-        self.assertEqual(created["messages"][-1]["profile_id"], "development")
+        self.assertEqual(created["messages"][0]["content"], veterinary_message)
+        self.assertEqual(created["messages"][-1]["profile_id"], "veterinary")
 
         edited_response = self.client.patch(
             f"/api/conversations/{created['id']}/messages/{created['messages'][0]['id']}",

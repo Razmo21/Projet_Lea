@@ -6,17 +6,20 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test:frontend": "node --experimental-strip-types --test tests/frontend/*.test.ts",
+    "test:frontend": "tsx --tsconfig tsconfig.app.json --test tests/frontend/*.test.ts tests/frontend/*.test.tsx",
     "test:edge": "node tests/e2e/edge-stage8.mjs"
   },
   "dependencies": {
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "tsx": "^4.23.15",
     "typescript": "~5.8.3",
     "vite": "^7.0.0"
   }

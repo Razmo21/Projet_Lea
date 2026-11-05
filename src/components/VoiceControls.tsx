@@ -1,10 +1,30 @@
 import { useEffect, useRef, useState } from 'react'
-import { audioBase64, effectiveVoiceRate, MicrophoneCapture, VoicePlayback, voiceRequest } from './voice'
-import type { VoiceStatus } from './voice'
-import type { Preferences } from './preferences'
+import type { ReactNode } from 'react'
+import { createPortal } from 'react-dom'
+import Icon from './Icon'
+import {
+  audioBase64,
+  effectiveVoiceRate,
+  MicrophoneCapture,
+  VoicePlayback,
+  voiceRequest,
+} from '../lib/voice'
+import type { VoiceStatus } from '../lib/voice'
+import type { Preferences } from '../lib/preferences'
+import { shortNotice } from '../lib/notices'
 
-type Phase = 'idle' | 'permission' | 'recording' | 'transcribing' | 'thinking' | 'synthesizing' | 'speaking'
+type Phase =
+  | 'idle'
+  | 'permission'
+  | 'recording'
+  | 'transcribing'
+  | 'thinking'
+  | 'synthesizing'
+  | 'speaking'
 type Props = {
+  composerSendButton: ReactNode
+  ephemeral?: boolean
+  controlsHost: HTMLElement | null
   preferences: Preferences | null
   contextKey: string
   ready: boolean
@@ -12,7 +32,12 @@ type Props = {
   hidden: boolean
   onMode: (open: boolean) => void
   onDictated: (text: string) => void
-  onSend: (text: string, signal: AbortSignal) => Promise<{ text: string; review?: boolean; notice?: string }>
+  onStopResponse: () => Promise<void>
+  stopping: boolean
+  onSend: (
+    text: string,
+    signal: AbortSignal,
+  ) => Promise<{ text: string; review?: boolean; notice?: string }>
 }
 const labels: Record<Phase, string> = {
   idle: 'Prête pour une intervention.',
@@ -29,14 +54,25 @@ export default function VoiceControls(props: Props) {
   const [open, setOpen] = useState(false)
   const [phase, setPhase] = useState<Phase>('idle')
   const [message, setMessage] = useState('')
+  const [runNotice, setRunNotice] = useState('')
   const [review, setReview] = useState(false)
+  const title = useRef<HTMLHeadingElement>(null)
+  const opener = useRef<HTMLButtonElement>(null)
   const capture = useRef<MicrophoneCapture | null>(null)
   const playback = useRef<VoicePlayback | null>(null)
   const request = useRef<AbortController | null>(null)
   const epoch = useRef(0)
   const lock = useRef<Phase>('idle')
-  const callbacks = useRef({ onDictated: props.onDictated, onSend: props.onSend })
+  const callbacks = useRef({
+    onDictated: props.onDictated,
+    onSend: props.onSend,
+  })
   const options = useRef(props.preferences)
+
+  // Le clavier suit le changement de vue, sans ouvrir le microphone.
+  useEffect(() => {
+    if (open) title.current?.focus()
+  }, [open])
 
   // Le même chemin libère l'audio lors d'une navigation, d'un changement de profil ou du démontage.
   function cancel() {
@@ -52,8 +88,11 @@ export default function VoiceControls(props: Props) {
   }
 
   useEffect(() => {
+    setRunNotice('')
     if (lock.current !== 'idle') {
-      setMessage('Contexte modifié : audio annulé. Vérifie l’historique si une demande avait déjà été envoyée.')
+      setMessage(
+        'Contexte modifié : audio annulé. Vérifie l’historique si une demande avait déjà été envoyée.',
+      )
     }
     cancel()
   }, [props.contextKey, props.hidden])
@@ -72,10 +111,12 @@ export default function VoiceControls(props: Props) {
     cancel()
     setOpen(false)
     props.onMode(false)
+    window.requestAnimationFrame(() => opener.current?.focus())
     setReview(false)
+    setRunNotice('')
     setMessage(
       wasThinking
-        ? 'Le traitement lancé peut continuer. Consulte son état dans l’historique ou le panneau OpenHands ; il n’est pas relancé.'
+        ? 'Le traitement peut continuer en arrière-plan'
         : '',
     )
   }
@@ -95,6 +136,7 @@ export default function VoiceControls(props: Props) {
       callbacks.current = { onDictated: props.onDictated, onSend: props.onSend }
       options.current = props.preferences
       setMessage('')
+      setRunNotice('')
       setReview(false)
       transition('permission')
       const mic = new MicrophoneCapture()
@@ -115,7 +157,11 @@ export default function VoiceControls(props: Props) {
       } catch (failure) {
         if (ticket === epoch.current) {
           cancel()
-          setMessage(failure instanceof Error ? failure.message : 'Microphone indisponible.')
+          setMessage(
+            failure instanceof Error
+              ? failure.message
+              : 'Microphone indisponible.',
+          )
         }
       }
       return
@@ -125,7 +171,6 @@ export default function VoiceControls(props: Props) {
     const preferences = options.current!
     const controller = new AbortController()
     request.current = controller
-    let outcome = ''
     transition('transcribing')
     try {
       const bytes = await capture.current!.stop()
@@ -136,99 +181,170 @@ export default function VoiceControls(props: Props) {
         controller.signal,
       )
       if (ticket !== epoch.current) return
-      if (typeof result.text !== 'string' || !result.text.trim()) throw new Error('Aucune transcription exploitable.')
+      if (typeof result.text !== 'string' || !result.text.trim())
+        throw new Error('Aucune transcription exploitable.')
       if (!open) {
         callbacks.current.onDictated(result.text)
-        setMessage('Dictée ajoutée au brouillon. Relis puis envoie manuellement.')
+        setMessage(
+          'Dictée ajoutée au brouillon',
+        )
         return
       }
 
       transition('thinking')
-      const answer = await callbacks.current.onSend(result.text, controller.signal)
+      const answer = await callbacks.current.onSend(
+        result.text,
+        controller.signal,
+      )
       if (ticket !== epoch.current) return
       setReview(Boolean(answer.review))
       // L'état de sécurité d'un run reste visible si la lecture est désactivée ou échoue.
       // Ce message d'état ne duplique pas le contenu de la conversation.
-      outcome = answer.notice ?? ''
-      setMessage(outcome)
+      // L'état du run et un éventuel problème audio gardent chacun leur courte phrase.
+      setRunNotice(answer.notice ?? '')
+      setMessage('')
       if (!preferences.voice_enabled) {
-        setMessage(`${outcome} Réponse enregistrée ; lecture désactivée dans les paramètres.`.trim())
+        setMessage('Lecture vocale désactivée')
         return
       }
 
       transition('synthesizing')
-      const status = await voiceRequest<VoiceStatus>('status', undefined, controller.signal)
-      const selectedVoice = status.voices.find((voice) => voice.id === preferences.voice_id)
+      const status = await voiceRequest<VoiceStatus>(
+        'status',
+        undefined,
+        controller.signal,
+      )
+      const selectedVoice = status.voices.find(
+        (voice) => voice.id === preferences.voice_id,
+      )
       if (!status.tts || !selectedVoice) {
-        throw new Error('La voix choisie est indisponible. La réponse reste dans l’historique ; vérifie les paramètres ou sélectionne une autre voix.')
+        throw new Error(
+          'Voix choisie indisponible',
+        )
       }
       // Pocket TTS ne gère pas la vitesse ; le réglage Piper sauvegardé reste intact.
-      const effectiveRate = effectiveVoiceRate(selectedVoice, preferences.voice_rate)
+      const effectiveRate = effectiveVoiceRate(
+        selectedVoice,
+        preferences.voice_rate,
+      )
       const sound = await voiceRequest<{ audio: string; partial: boolean }>(
         'speak',
         { text: answer.text, voice_id: selectedVoice.id, rate: effectiveRate },
         controller.signal,
       )
       if (ticket !== epoch.current) return
-      if (sound.partial) setMessage(`${outcome} Lecture partielle ; contenu complet dans l’historique.`.trim())
+      if (sound.partial)
+        setMessage(
+          'Lecture audio partielle',
+        )
       transition('speaking')
       await playback.current!.play(sound.audio, preferences.voice_volume)
     } catch (failure) {
       if (ticket === epoch.current) {
-        setMessage(`${outcome} ${failure instanceof Error ? failure.message : 'Le traitement vocal a échoué.'}`.trim())
+        setMessage(
+          failure instanceof Error ? failure.message : 'Le traitement vocal a échoué.',
+        )
       }
     } finally {
       if (ticket === epoch.current) cancel()
     }
   }
 
-  return (
+  const microphoneLabel =
+    phase === 'recording'
+      ? open
+        ? 'Terminer et envoyer'
+        : 'Terminer la dictée'
+      : open
+        ? 'Parler à Léa'
+        : 'Dictée'
+  const cancelLabel =
+    phase === 'thinking' ? 'Arrêter la réponse'
+      : phase === 'speaking' ? 'Arrêter la lecture' : 'Annuler l’audio'
+
+  const controls = (
     <section
-      className={open ? 'chat' : 'voice-controls'}
+      className={open ? 'chat voice-view' : 'voice-controls'}
       hidden={props.hidden}
       aria-label={open ? 'Conversation vocale' : 'Commandes vocales'}
     >
-      {open && <h1>Conversation vocale</h1>}
+      {open && (
+        <h1 ref={title} tabIndex={-1}>
+          Conversation vocale
+        </h1>
+      )}
+      {open && (
+        <div
+          className="voice-orb"
+          data-active={phase !== 'idle'}
+          aria-hidden="true"
+        >
+          <Icon name="voice" />
+        </div>
+      )}
       {open && !props.ready && (
-        <p role="status">Démarre un profil IA dans l’interface classique avant de parler à Léa.</p>
+        <p role="status">
+          Choisissez un modèle pour parler
+        </p>
       )}
       <div className="page-header">
         <button
           type="button"
+          className={open ? undefined : 'icon-button'}
+          aria-label={microphoneLabel}
+          title={microphoneLabel}
+          aria-pressed={phase === 'recording'}
           onClick={() => void microphone()}
-          disabled={review || props.blocked || !props.preferences || (open && !props.ready) || !['idle', 'recording'].includes(phase)}
+          disabled={
+            review ||
+            props.blocked ||
+            !props.preferences ||
+            (open && !props.ready) ||
+            !['idle', 'recording'].includes(phase)
+          }
         >
-          {phase === 'recording'
-            ? (open ? 'Terminer et envoyer' : 'Terminer la dictée')
-            : (open ? 'Parler à Léa' : 'Dicter au microphone')}
+          <Icon name={phase === 'recording' ? 'stop' : 'mic'} />
+          {open && microphoneLabel}
         </button>
-        {!open && (
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={phase !== 'idle' || props.blocked}
-            onClick={() => {
-              setOpen(true)
-              props.onMode(true)
-              setMessage('')
-            }}
-          >
-            Conversation vocale
-          </button>
-        )}
+        {/* Le même emplacement reçoit l'envoi du brouillon ou l'ouverture vocale. */}
+        {!open &&
+          (props.composerSendButton ?? (
+            <button
+              ref={opener}
+              type="button"
+              className="icon-button send-button"
+              aria-label="Conversation vocale"
+              title="Conversation vocale"
+              disabled={phase !== 'idle' || props.blocked}
+              onClick={() => {
+                setOpen(true)
+                props.onMode(true)
+                setMessage('')
+                setRunNotice('')
+              }}
+            >
+              <Icon name="voice" />
+            </button>
+          ))}
         {phase !== 'idle' && (
           <button
             type="button"
-            className="secondary-button"
+            className={open ? 'secondary-button' : 'icon-button'}
+            aria-label={cancelLabel}
+            title={cancelLabel}
+            disabled={phase === 'thinking' && props.stopping}
             onClick={() => {
               const thinking = phase === 'thinking'
+              // L'arrêt du modèle appartient à App ; attendre son résultat garde l'historique cohérent.
+              if (thinking) {
+                void props.onStopResponse()
+                return
+              }
               cancel()
-              setMessage(thinking
-                ? 'Traitement déjà lancé : vérifie son résultat dans l’interface classique.'
-                : 'Audio arrêté.')
+              setMessage('Audio arrêté.')
             }}
           >
-            {phase === 'speaking' ? 'Arrêter la lecture' : 'Annuler l’audio'}
+            {open ? cancelLabel : <Icon name="close" />}
           </button>
         )}
         {open && (
@@ -240,11 +356,19 @@ export default function VoiceControls(props: Props) {
       {(open || phase !== 'idle') && <p role="status">{labels[phase]}</p>}
       {review && (
         <p role="status">
-          Validation visuelle obligatoire : examine le résultat et les changements avant d’accepter ou de restaurer.
-          Aucune décision automatique.
+          Examinez les changements avant toute décision
         </p>
       )}
-      {message && <p role="status">{message}</p>}
+      {runNotice && <p role="status">{shortNotice(runNotice, 'task')}</p>}
+      {message && <p role="status">{shortNotice(message, 'voice')}</p>}
     </section>
   )
+
+  // Seules les commandes compactes rejoignent la saisie. Le contrôleur reste monté
+  // hors de la vue masquée pour conserver la capture, l'annulation et le mode vocal.
+  return open
+    ? controls
+    : props.controlsHost
+      ? createPortal(controls, props.controlsHost)
+      : null
 }

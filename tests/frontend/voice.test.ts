@@ -1,8 +1,19 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { appendDictation, audioBase64, audioContainer, effectiveVoiceRate, pcmWav, MicrophoneCapture } from '../../src/voice.ts'
-import { allowsDestructiveMessageAction } from '../../src/conversations.ts'
-import { defaultVoicePreferences, isPreferences, requestPreferences } from '../../src/preferences.ts'
+import {
+  appendDictation,
+  audioBase64,
+  audioContainer,
+  effectiveVoiceRate,
+  pcmWav,
+  MicrophoneCapture,
+} from '../../src/lib/voice.ts'
+import { allowsDestructiveMessageAction } from '../../src/lib/conversations.ts'
+import {
+  defaultVoicePreferences,
+  isPreferences,
+  requestPreferences,
+} from '../../src/lib/preferences.ts'
 
 test('dictation appends without replacing a draft or sending a message', () => {
   assert.equal(appendDictation('Brouillon édité', '  bonjour  '), 'Brouillon édité bonjour')

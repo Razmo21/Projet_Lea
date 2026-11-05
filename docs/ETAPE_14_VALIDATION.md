@@ -276,7 +276,7 @@ les changements par des tests et peut restaurer le checkpoint.
 ## Fichiers, données, nettoyage et état final
 
 Créés : `backend/app/voice.py`, `backend/tests/test_voice.py`,
-`src/voice.ts`, `src/VoiceControls.tsx`, `src/VoiceSettings.tsx`,
+`src/lib/voice.ts`, `src/components/VoiceControls.tsx`, `src/components/VoiceSettings.tsx`,
 `tools/voice-controller.ts`, `tools/voice/{worker.py,install.ps1,requirements.txt}`,
 tests vocaux frontend/E2E, fixture source sous `tests/fixtures/voice-project`,
 test PowerShell d’inspection idle et ce rapport. Le prompt 14 fourni par
@@ -285,7 +285,7 @@ l’utilisateur est conservé intact.
 Modifiés : `config/models.json`, `vite.config.ts`, `lea.ps1`,
 `backend/app/{database,main,migrations,model_registry,openhands_runs,preferences}.py`,
 tests backend associés, `tools/preferences.py`, `src/{App,Settings}.tsx`,
-`src/{conversations,preferences}.ts`, `src/index.css`, tests préférences et
+`src/lib/{conversations,preferences}.ts`, `src/styles/index.css`, tests préférences et
 sélecteurs E2E existants, `.gitignore`, AGENTS/README/TODO/CHANGELOG/DECISIONS
 et README backend. Commentaires/docstrings de cycle de vie, opérations sensibles
 et fonctions significatives ; retrait des seuls blocs de test dupliqués et
@@ -430,7 +430,7 @@ utilisateur n’est modifié. Le test tourne sur une base Vite isolée.
 `tests/e2e/voice-codec-host.mjs` permet de rejouer la comparaison Edge/hôte intégré
 via deux ports CDP de test ; ses fixtures synthétiques restent en RAM.
 
-Fichiers de ce correctif : `src/voice.ts`, `tests/frontend/voice.test.ts`,
+Fichiers de ce correctif : `src/lib/voice.ts`, `tests/frontend/voice.test.ts`,
 `backend/tests/test_voice.py`, les deux scripts E2E ci-dessus, README, CHANGELOG
 et ce rapport. Aucune dépendance ajoutée, aucun moteur/modèle/poids modifié.
 La compatibilité avec le navigateur intégré VS Code **n’est pas implémentée**.

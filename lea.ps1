@@ -789,6 +789,14 @@ function Get-PrimaryRecord {
     return Get-ObjectValue -Object $component -Name 'listener'
 }
 
+# Le lanceur npm ne reste qu'un bootstrap : le processus node qui écoute est
+# l'unique autorité persistante du frontend après la vérification du port.
+function Test-ComponentLauncherRequired {
+    param([Parameter(Mandatory = $true)][string]$ComponentName)
+
+    return $ComponentName -ne 'frontend'
+}
+
 # Vérifie qu'un endpoint local répond avec le contenu minimal attendu.
 function Test-Endpoint {
     param(
@@ -1017,6 +1025,10 @@ function Start-Frontend {
         Set-ObjectValue -Object $frontendState -Name 'listener' -Value $listenerRecord
         Write-LeaState -State $State
         Assert-RecordOwnsPort -Record $listenerRecord -ComponentLabel $definition.Label
+        # npm.cmd peut changer d'identité ou survivre brièvement après avoir créé
+        # node. Une fois node vérifié, ne plus persister ce lanceur transitoire.
+        Set-ObjectValue -Object $frontendState -Name 'launcher' -Value $null
+        Write-LeaState -State $State
     } catch {
         $frontendState = Get-ObjectValue -Object (Get-ObjectValue -Object $State -Name 'components') -Name 'frontend'
         if ($null -eq (Get-ObjectValue -Object $frontendState -Name 'listener')) {
@@ -1078,21 +1090,25 @@ function Get-StateSummary {
         $componentState = Get-ObjectValue -Object $components -Name $componentName
         $launcherRecord = Get-ObjectValue -Object $componentState -Name 'launcher'
         $launcherCheck = Test-ProcessRecord -Record $launcherRecord
+        $launcherRequired = Test-ComponentLauncherRequired -ComponentName $componentName
         $active = $check.Exists -and $check.Verified -and $check.Listening
         $items[$componentName] = [pscustomobject]@{
             Record = $record
             Check = $check
             LauncherRecord = $launcherRecord
             LauncherCheck = $launcherCheck
+            LauncherRequired = $launcherRequired
             Active = $active
         }
 
-        $componentFullyActive = $active -and $launcherCheck.Exists -and $launcherCheck.Verified
+        $componentFullyActive = $active -and (
+            -not $launcherRequired -or ($launcherCheck.Exists -and $launcherCheck.Verified)
+        )
         if (-not $componentFullyActive) {
             $allActive = $false
         }
 
-        if ($check.Exists -or $launcherCheck.Exists) {
+        if ($check.Exists -or ($launcherRequired -and $launcherCheck.Exists)) {
             $allStopped = $false
         }
     }
@@ -1372,11 +1388,16 @@ function Write-LeaStatus {
     foreach ($componentName in $AllComponentNames) {
         $definition = $ComponentDefinitions[$componentName]
         $item = $summary.Items[$componentName]
-        if ($item.Active -and $item.LauncherCheck.Exists -and $item.LauncherCheck.Verified) {
+        $launcherReady = -not $item.LauncherRequired -or (
+            $item.LauncherCheck.Exists -and $item.LauncherCheck.Verified
+        )
+        if ($item.Active -and $launcherReady) {
             Write-Host ("{0,-10}: actif (PID {1})" -f $definition.Label, (Get-ObjectValue -Object $item.Record -Name 'pid'))
         } elseif ($item.LauncherCheck.Exists -and $item.LauncherCheck.Verified -and $null -eq $item.Record) {
             Write-Host ("{0,-10}: démarrage en cours" -f $definition.Label)
-        } elseif (-not $item.Check.Exists -and -not $item.LauncherCheck.Exists) {
+        } elseif (-not $item.Check.Exists -and (
+                -not $item.LauncherRequired -or -not $item.LauncherCheck.Exists
+            )) {
             $owners = @(Get-ListeningPids -Port $definition.Port)
             if ($owners.Count -eq 0) {
                 Write-Host ("{0,-10}: arrêté" -f $definition.Label)
@@ -1609,7 +1630,9 @@ function Remove-StoppedComponentStates {
     $summary = Get-StateSummary -State $State -ComponentNames $ComponentNames
     foreach ($componentName in $ComponentNames) {
         $item = $summary.Items[$componentName]
-        if (-not $item.Check.Exists -and -not $item.LauncherCheck.Exists) {
+        if (-not $item.Check.Exists -and (
+                -not $item.LauncherRequired -or -not $item.LauncherCheck.Exists
+            )) {
             Remove-ComponentState -State $State -ComponentName $componentName
         }
     }
@@ -1632,12 +1655,12 @@ function Stop-LeaFromState {
             throw "Refus d’arrêter Léa : l’état de $($definition.Label) est ambigu. Aucun processus ne sera tué."
         }
 
-        if ($item.LauncherCheck.Exists -and -not $item.LauncherCheck.Verified) {
+        if ($item.LauncherRequired -and $item.LauncherCheck.Exists -and -not $item.LauncherCheck.Verified) {
             $definition = $ComponentDefinitions[$componentName]
             throw "Refus d’arrêter Léa : l’état du lanceur de $($definition.Label) est ambigu. Aucun processus ne sera tué."
         }
 
-        if ($item.Check.Exists -or $item.LauncherCheck.Exists) {
+        if ($item.Check.Exists -or ($item.LauncherRequired -and $item.LauncherCheck.Exists)) {
             $ownedComponentNames += $componentName
         }
     }
@@ -1664,7 +1687,9 @@ function Stop-LeaFromState {
         }
 
         $item = $summary.Items[$componentToStop.Name]
-        if (-not $item.Check.Exists -and -not $item.LauncherCheck.Exists) {
+        if (-not $item.Check.Exists -and (
+                -not $item.LauncherRequired -or -not $item.LauncherCheck.Exists
+            )) {
             continue
         }
 
@@ -1690,7 +1715,9 @@ function Stop-LeaFromState {
     $remainingSummary = Get-StateSummary -State $State -ComponentNames $ComponentNames
     foreach ($componentName in $ComponentNames) {
         $remainingItem = $remainingSummary.Items[$componentName]
-        if ($remainingItem.Check.Exists -or $remainingItem.LauncherCheck.Exists) {
+        if ($remainingItem.Check.Exists -or (
+                $remainingItem.LauncherRequired -and $remainingItem.LauncherCheck.Exists
+            )) {
             $definition = $ComponentDefinitions[$componentName]
             $stopErrors += "Le processus enregistré de $($definition.Label) est encore présent."
         }
@@ -1780,20 +1807,30 @@ function Get-ComponentsToStart {
             throw "L’état de $($definition.Label) est ambigu. Exécutez .\lea.ps1 stop avant un nouveau démarrage."
         }
 
-        if ($item.LauncherCheck.Exists -and -not $item.LauncherCheck.Verified) {
+        if ($item.LauncherRequired -and $item.LauncherCheck.Exists -and -not $item.LauncherCheck.Verified) {
             throw "L’état du lanceur de $($definition.Label) est ambigu. Exécutez .\lea.ps1 stop avant un nouveau démarrage."
         }
 
-        if ($item.Active -and $item.LauncherCheck.Exists -and $item.LauncherCheck.Verified) {
+        $launcherReady = -not $item.LauncherRequired -or (
+            $item.LauncherCheck.Exists -and $item.LauncherCheck.Verified
+        )
+        if ($item.Active -and $launcherReady) {
             $expectedContent = Get-EndpointExpectedContent -ComponentName $componentName -State $State
             if (-not (Test-Endpoint -Uri $definition.Endpoint -ExpectedContent $expectedContent)) {
                 throw "$($definition.Label) est enregistré comme actif mais son point de contrôle ne répond pas. Exécutez .\lea.ps1 stop avant un nouveau démarrage."
             }
 
+            # Migre en mémoire un ancien état Frontend qui contenait encore le
+            # bootstrap npm. Le processus ambigu n'est ni adopté ni arrêté.
+            if (-not $item.LauncherRequired -and $null -ne $item.LauncherRecord) {
+                $component = Get-ObjectValue -Object (Get-StateComponents -State $State) -Name $componentName
+                Set-ObjectValue -Object $component -Name 'launcher' -Value $null
+            }
+
             continue
         }
 
-        if ($item.Check.Exists -or $item.LauncherCheck.Exists) {
+        if ($item.Check.Exists -or ($item.LauncherRequired -and $item.LauncherCheck.Exists)) {
             throw "L’état de $($definition.Label) est incomplet. Exécutez .\lea.ps1 stop avant un nouveau démarrage."
         }
 

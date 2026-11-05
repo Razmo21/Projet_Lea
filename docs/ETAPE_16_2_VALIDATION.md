@@ -40,7 +40,7 @@ Périmètre : phase 16.2 uniquement ; phase 16.3 non commencée
 - `backend/app/migrations.py`, `backend/app/database.py` : migration 15 et
   persistance de six preuves typées au maximum.
 - `backend/requirements.txt` : `pypdf==6.21.2`, bibliothèque Python pure.
-- `src/conversations.ts`, `src/App.tsx` : contrat et présentation des preuves.
+- `src/lib/conversations.ts`, `src/App.tsx` : contrat et présentation des preuves.
 - `backend/tests/test_web_research.py` : scénarios déterministes de 16.2.
 - `tests/frontend/conversations.test.ts` : libellés de preuve.
 - `AGENTS.md`, `README.md`, `TODO.md`, `CHANGELOG.md`, `backend/README.md`,

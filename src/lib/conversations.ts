@@ -67,6 +67,7 @@ export type ConversationSummary = {
   revision: number
   generation_active: boolean
   message_count: number
+  has_agent_runs?: boolean
 }
 
 export type ConversationDetail = ConversationSummary & {

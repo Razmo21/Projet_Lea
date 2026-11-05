@@ -205,8 +205,7 @@
         "workspace_projects",
         "agent_runs",
         "checkpoints",
-        "openhands",
-        "web_research"
+        "openhands"
       ],
       "tools": [
         "terminal",

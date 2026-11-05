@@ -1,13 +1,18 @@
+import { ApiError, apiRequest } from './lib/api'
+import { shortNotice } from './lib/notices'
+import Welcome, {
+  nextWelcomeIndex,
+  welcomePhrases,
+  welcomePhrasesForProfile,
+} from './components/Welcome'
+import { useEphemeralChat } from './hooks/useEphemeralChat'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
+import type { FormEvent, KeyboardEvent } from 'react'
 import {
-  backendOrigin,
   allowsDestructiveMessageAction,
   buildSendMessagePayload,
   conversationIdFromSearch,
   createLatestRequestGate,
-  formatActivity,
-  isAmbiguousWebRequest,
   isExplicitWebRequest,
   isWebConfirmation,
   isWebFailure,
@@ -15,22 +20,21 @@ import {
   setConversationInUrl,
   webAuthorizationForTurn,
   webRetryDraft,
-  webSourceKindLabel,
-} from './conversations'
+} from './lib/conversations'
 import type {
   ConversationDetail,
   ConversationMessage,
   ConversationSummary,
-} from './conversations'
+} from './lib/conversations'
 import {
   activeModelProfile,
   canActivateModel,
   isModelCatalog,
   isModelRuntimeStatus,
-} from './models'
-import type { ModelCatalog, ModelRuntimeStatus } from './models'
-import { isProjectCatalog } from './projects'
-import type { ProjectCatalog } from './projects'
+} from './lib/models'
+import type { ModelCatalog, ModelRuntimeStatus } from './lib/models'
+import { isProjectCatalog } from './lib/projects'
+import type { ProjectCatalog } from './lib/projects'
 import {
   agentRunValidationPresentation,
   isActiveAgentRun,
@@ -43,14 +47,26 @@ import {
   requireAgentRun,
   resetPollingHealth,
   runtimeStatusPresentation,
-} from './agentRuns'
-import type { AgentRun, AgentRunChanges, PollingHealth } from './agentRuns'
-import Settings from './Settings'
-import ResourcePanel from './ResourcePanel'
-import { requestPreferences } from './preferences'
-import type { Preferences } from './preferences'
-import VoiceControls from './VoiceControls'
-import { appendDictation } from './voice'
+} from './lib/agentRuns'
+import type {
+  AgentRun,
+  AgentRunChanges,
+  PollingHealth,
+} from './lib/agentRuns'
+import MarkdownMessage from './components/MarkdownMessage'
+import AgentRunResult from './components/AgentRunResult'
+import WebSources from './components/WebSources'
+import Settings from './components/Settings'
+import type { SettingsHandle } from './components/Settings'
+import ConversationSidebar from './components/ConversationSidebar'
+import AutoTextarea from './components/AutoTextarea'
+import Icon from './components/Icon'
+import { useAppearance } from './hooks/useAppearance'
+import ResourcePanel from './components/ResourcePanel'
+import { requestPreferences } from './lib/preferences'
+import type { Preferences } from './lib/preferences'
+import VoiceControls from './components/VoiceControls'
+import { appendDictation } from './lib/voice'
 
 type CoreState = 'stopped' | 'starting' | 'ready' | 'stopping' | 'error'
 
@@ -61,24 +77,7 @@ type CoreStatus = {
   message: string
 }
 
-type ApiErrorBody = {
-  detail?: string
-  conversation?: ConversationDetail
-}
-
 type GenerationResult = 'completed' | 'persisted-error' | 'failed' | 'blocked'
-
-class ApiError extends Error {
-  status: number
-  conversation?: ConversationDetail
-
-  // Conserve la réponse autoritaire éventuelle pour résoudre les conflits sans nouvelle requête.
-  constructor(status: number, message: string, conversation?: ConversationDetail) {
-    super(message)
-    this.status = status
-    this.conversation = conversation
-  }
-}
 
 const initialCoreStatus: CoreStatus = {
   state: 'stopped',
@@ -115,39 +114,25 @@ async function readCoreStatus(response: Response): Promise<CoreStatus> {
   return data
 }
 
-// Centralise les appels backend et conserve les détails structurés des erreurs API.
-async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${backendOrigin}${path}`, {
-    cache: 'no-store',
-    ...init,
-    headers: init?.body
-      ? { 'Content-Type': 'application/json', ...init.headers }
-      : init?.headers,
-  })
-  let data: unknown = null
-  if (response.status !== 204) {
-    try {
-      data = await response.json()
-    } catch {
-      data = null
-    }
-  }
-  if (!response.ok) {
-    const body = (data ?? {}) as ApiErrorBody
-    throw new ApiError(
-      response.status,
-      typeof body.detail === 'string' ? body.detail : 'L’opération demandée a échoué.',
-      body.conversation,
-    )
-  }
-  return data as T
-}
-
 // Orchestre l'interface locale sans dupliquer l'état autoritaire du backend.
 function App() {
+  const { theme, chooseTheme, themeError } = useAppearance()
+  const chatScroll = useRef<HTMLDivElement>(null)
+  const followMessages = useRef(true)
+  const sendButton = useRef<HTMLButtonElement>(null)
+  const [voiceControlsHost, setVoiceControlsHost] =
+    useState<HTMLDivElement | null>(null)
+  const [resourceNoticeHost, setResourceNoticeHost] = useState<HTMLDivElement | null>(null)
+  const [alternateNoticeHost, setAlternateNoticeHost] = useState<HTMLDivElement | null>(null)
+
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const settingsPanel = useRef<SettingsHandle>(null)
   const [voiceOpen, setVoiceOpen] = useState(false)
-  const voiceRunWaiter = useRef<{ id: string; resolve: (run: AgentRun) => void; reject: (error: Error) => void } | null>(null)
+  const voiceRunWaiter = useRef<{
+    id: string
+    resolve: (run: AgentRun) => void
+    reject: (error: Error) => void
+  } | null>(null)
   const [preferences, setPreferences] = useState<Preferences | null>(null)
   const [preferencesError, setPreferencesError] = useState('')
 
@@ -155,38 +140,108 @@ function App() {
   useEffect(() => {
     if (settingsOpen) return
     let current = true
-    void requestPreferences().then((value) => {
-      if (current) { setPreferences(value); setPreferencesError('') }
-    }).catch(() => {
-      if (current) setPreferencesError('Préférence de ressources indisponible. Ouvre les paramètres pour la vérifier.')
-    })
-    return () => { current = false }
+    void requestPreferences()
+      .then((value) => {
+        if (current) {
+          setPreferences(value)
+          setPreferencesError('')
+        }
+      })
+      .catch(() => {
+        if (current)
+          setPreferencesError(
+            'Préférence de ressources indisponible. Ouvre les paramètres pour la vérifier.',
+          )
+      })
+    return () => {
+      current = false
+    }
   }, [settingsOpen])
   const settingsButton = useRef<HTMLButtonElement>(null)
 
   // Fermer les paramètres ne recharge ni la conversation ni son brouillon.
   function closeSettings() {
     setSettingsOpen(false)
+    setWelcomeIndex(renewedWelcomeIndex)
     window.requestAnimationFrame(() => settingsButton.current?.focus())
+  }
+
+  // Le bouton permanent ouvre la page ou lui demande sa fermeture protégée.
+  function toggleSettings() {
+    if (settingsOpen) settingsPanel.current?.close()
+    else setSettingsOpen(true)
   }
 
   // État visible : brouillon, liste locale, conversation active et éditeurs.
   const [question, setQuestion] = useState('')
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
-  const [activeConversation, setActiveConversation] = useState<ConversationDetail | null>(null)
+  const [activeConversation, setActiveConversation] =
+    useState<ConversationDetail | null>(null)
+  const [coreStatus, setCoreStatus] = useState<CoreStatus>(initialCoreStatus)
+  const [modelStatus, setModelStatus] = useState<ModelRuntimeStatus | null>(
+    null,
+  )
+  const ephemeral = useEphemeralChat(
+    modelStatus?.instance_id,
+    coreStatus.state === 'stopped' || coreStatus.state === 'stopping',
+  )
+  const normalDraft = useRef('')
+  const [welcomeIndex, setWelcomeIndex] = useState(() =>
+    Math.floor(Math.random() * welcomePhrases.length),
+  )
+  const wasEphemeral = useRef(false)
+  const displayedConversation = ephemeral.active
+    ? ephemeral.conversation
+    : activeConversation
   const [search, setSearch] = useState('')
   const [isListLoading, setIsListLoading] = useState(false)
   const [isConversationLoading, setIsConversationLoading] = useState(false)
-  const [isGenerating, setIsGenerating] = useState(false)
+  const [normalGenerating, setIsGenerating] = useState(false)
+  const isGenerating = normalGenerating || ephemeral.sending
+  const showSendAction = Boolean(question.trim())
+  const responseOperationId = useRef<string | null>(null)
+  const responseStopLock = useRef(false)
+  const [isResponseStopping, setIsResponseStopping] = useState(false)
   const [pendingText, setPendingText] = useState('')
   const [conversationError, setConversationError] = useState('')
   const [copyFeedback, setCopyFeedback] = useState('')
   const [renameDraft, setRenameDraft] = useState<string | null>(null)
+  const [renameTarget, setRenameTarget] = useState<ConversationSummary | null>(null)
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState('')
   const [isRenaming, setIsRenaming] = useState(false)
   const [webInProgress, setWebInProgress] = useState(false)
-  const [webOperationId, setWebOperationId] = useState<string | null>(null)
+  const displayedPending = ephemeral.active ? ephemeral.pending : pendingText
+
+  // Le brouillon normal est isolé du texte privé et revient aussi après un arrêt du cœur.
+  useEffect(() => {
+    if (wasEphemeral.current && !ephemeral.active) {
+      setQuestion(normalDraft.current)
+      setWelcomeIndex(renewedWelcomeIndex)
+    }
+    wasEphemeral.current = ephemeral.active
+  }, [ephemeral.active])
+
+  // Une nouvelle conversation revient au bas ; les autres mises à jour respectent la lecture.
+  useEffect(() => {
+    followMessages.current = true
+  }, [displayedConversation?.id])
+  useEffect(() => {
+    if (renameDraft !== null) {
+      chatScroll.current?.scrollTo({ top: 0 })
+      return
+    }
+    if (followMessages.current && !settingsOpen && !voiceOpen) {
+      chatScroll.current?.scrollTo({ top: chatScroll.current.scrollHeight })
+    }
+  }, [
+    displayedConversation,
+    displayedPending,
+    isGenerating,
+    settingsOpen,
+    voiceOpen,
+    renameDraft,
+  ])
 
   // Verrous synchrones : ils bloquent les doubles clics avant le prochain rendu React.
   const generationLock = useRef(false)
@@ -196,23 +251,27 @@ function App() {
   const conversationLoadingLock = useRef(false)
   const questionInput = useRef<HTMLTextAreaElement>(null)
   const activeConversationRef = useRef<ConversationDetail | null>(null)
-  const [coreStatus, setCoreStatus] = useState<CoreStatus>(initialCoreStatus)
-  const [corePollingHealth, setCorePollingHealth] = useState<PollingHealth>(resetPollingHealth)
+  const [corePollingHealth, setCorePollingHealth] =
+    useState<PollingHealth>(resetPollingHealth)
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null)
-  const [modelStatus, setModelStatus] = useState<ModelRuntimeStatus | null>(null)
   const [modelError, setModelError] = useState('')
-  const [modelPollingHealth, setModelPollingHealth] = useState<PollingHealth>(resetPollingHealth)
-  const [requestedProfileId, setRequestedProfileId] = useState<string | null>(null)
+  const [modelPollingHealth, setModelPollingHealth] =
+    useState<PollingHealth>(resetPollingHealth)
+  const [requestedProfileId, setRequestedProfileId] = useState<string | null>(
+    null,
+  )
   const [isModelTransition, setIsModelTransition] = useState(false)
-  const [projectCatalog, setProjectCatalog] = useState<ProjectCatalog | null>(null)
+  const [projectCatalog, setProjectCatalog] = useState<ProjectCatalog | null>(
+    null,
+  )
   const [projectError, setProjectError] = useState('')
   const [isProjectTransition, setIsProjectTransition] = useState(false)
-  const [agentTask, setAgentTask] = useState('')
   const [agentRun, setAgentRun] = useState<AgentRun | null>(null)
   const [agentChanges, setAgentChanges] = useState<AgentRunChanges | null>(null)
   const [agentError, setAgentError] = useState('')
   const [agentPollingError, setAgentPollingError] = useState('')
-  const [agentPollingHealth, setAgentPollingHealth] = useState<PollingHealth>(resetPollingHealth)
+  const [agentPollingHealth, setAgentPollingHealth] =
+    useState<PollingHealth>(resetPollingHealth)
   const [isAgentStarting, setIsAgentStarting] = useState(false)
   const [isAgentCancelling, setIsAgentCancelling] = useState(false)
   const [isCheckpointTransition, setIsCheckpointTransition] = useState(false)
@@ -223,10 +282,22 @@ function App() {
   const corePollingHealthRef = useRef<PollingHealth>(resetPollingHealth())
   const modelPollingHealthRef = useRef<PollingHealth>(resetPollingHealth())
   const agentPollingHealthRef = useRef<PollingHealth>(resetPollingHealth())
+  const agentSelectionRequest = useRef(0)
+  const agentStartLock = useRef(false)
+  const agentStopRequested = useRef(false)
+
+  // Le bouton reste en attente jusqu'à la fin effective de la requête ou du run.
+  useEffect(() => {
+    if (!isGenerating && !isAgentStarting && !isActiveAgentRun(agentRun)) {
+      responseStopLock.current = false
+      setIsResponseStopping(false)
+    }
+  }, [isGenerating, isAgentStarting, agentRun?.state])
 
   // Ferme ensemble les deux éditeurs afin d'éviter des brouillons attachés à une autre conversation.
   const closeEditors = useCallback(() => {
     setRenameDraft(null)
+    setRenameTarget(null)
     setEditingMessageId(null)
     setEditDraft('')
   }, [])
@@ -249,7 +320,9 @@ function App() {
       return
     }
     try {
-      const controllerResponse = await fetch('/api/core/status', { cache: 'no-store' })
+      const controllerResponse = await fetch('/api/core/status', {
+        cache: 'no-store',
+      })
       const status = await readCoreStatus(controllerResponse)
       // A timed-out health probe is not a confirmed stop. Reuse the existing
       // consecutive-failure policy before clearing the frozen vocal context.
@@ -265,7 +338,9 @@ function App() {
       if (!modelTransitionLock.current) {
         const health = recordPollingFailure(
           corePollingHealthRef.current,
-          failure instanceof Error ? failure.message : 'Le contrôleur local de Léa n’est pas disponible.',
+          failure instanceof Error
+            ? failure.message
+            : 'Le contrôleur local de Léa n’est pas disponible.',
         )
         corePollingHealthRef.current = health
         setCorePollingHealth(health)
@@ -292,7 +367,11 @@ function App() {
       setModelError('')
     } catch (error) {
       setModelCatalog(null)
-      setModelError(error instanceof Error ? error.message : 'Catalogue des profils indisponible.')
+      setModelError(
+        error instanceof Error
+          ? error.message
+          : 'Catalogue des profils indisponible.',
+      )
     }
   }, [])
 
@@ -312,8 +391,12 @@ function App() {
       setModelError('')
       return status
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'État du modèle indisponible.'
-      const health = recordPollingFailure(modelPollingHealthRef.current, message)
+      const message =
+        error instanceof Error ? error.message : 'État du modèle indisponible.'
+      const health = recordPollingFailure(
+        modelPollingHealthRef.current,
+        message,
+      )
       modelPollingHealthRef.current = health
       setModelPollingHealth(health)
       return null
@@ -332,15 +415,23 @@ function App() {
       return catalog
     } catch (error) {
       setProjectCatalog(null)
-      setProjectError(error instanceof Error ? error.message : 'Registre des projets indisponible.')
+      setProjectError(
+        error instanceof Error
+          ? error.message
+          : 'Registre des projets indisponible.',
+      )
       return null
     }
   }, [])
 
   // Lit le diff calculé par le backend ; React ne reconstitue jamais de snapshot local.
   const loadAgentChanges = useCallback(async (runId: string) => {
+    const selection = agentSelectionRequest.current
     try {
-      const payload = await apiRequest<unknown>(`/api/agent-runs/${encodeURIComponent(runId)}/changes`)
+      const payload = await apiRequest<unknown>(
+        `/api/agent-runs/${encodeURIComponent(runId)}/changes`,
+      )
+      if (selection !== agentSelectionRequest.current) return null
       if (!isAgentRunChanges(payload)) {
         throw new Error('Le checkpoint du run est invalide.')
       }
@@ -348,46 +439,70 @@ function App() {
       setAgentError('')
       return payload
     } catch (error) {
+      if (selection !== agentSelectionRequest.current) return null
       setAgentChanges(null)
-      setAgentError(error instanceof Error ? error.message : 'Les changements du run sont indisponibles.')
+      setAgentError(
+        error instanceof Error
+          ? error.message
+          : 'Les changements du run sont indisponibles.',
+      )
       return null
     }
   }, [])
 
-  // Récupère seulement le dernier run du projet actif, sans transcript OpenHands ni historique d'un autre projet.
-  const loadLatestAgentRun = useCallback(async (projectId: string | null) => {
-    if (!projectId) {
-      const health = resetPollingHealth()
-      agentPollingHealthRef.current = health
-      setAgentPollingHealth(health)
-      setAgentPollingError('')
-      setAgentRun(null)
-      setAgentChanges(null)
-      return null
-    }
-    try {
-      const payload = await apiRequest<unknown>('/api/agent-runs')
-      if (!isAgentRunList(payload)) {
-        throw new Error('La liste des runs OpenHands est invalide.')
-      }
-      const health = resetPollingHealth()
-      agentPollingHealthRef.current = health
-      setAgentPollingHealth(health)
-      setAgentPollingError('')
-      setAgentError('')
-      const latest = latestAgentRunForProject(payload.runs, projectId)
-      setAgentRun(latest)
-      if (latest?.checkpoint_id && !isActiveAgentRun(latest)) {
-        await loadAgentChanges(latest.run_id)
-      } else if (!latest) {
+  // Résout le run de la conversation sélectionnée ; les anciens runs sans
+  // conversation restent consultables par projet, sans être dupliqués dans SQLite.
+  const loadLatestAgentRun = useCallback(
+    async (projectId: string | null, conversationRunId: string | null = null) => {
+      const request = ++agentSelectionRequest.current
+      if (!projectId) {
+        const health = resetPollingHealth()
+        agentPollingHealthRef.current = health
+        setAgentPollingHealth(health)
+        setAgentPollingError('')
+        setAgentRun(null)
         setAgentChanges(null)
+        return null
       }
-      return latest
-    } catch (error) {
-      setAgentError(error instanceof Error ? error.message : 'Les runs OpenHands sont indisponibles.')
-      return null
-    }
-  }, [loadAgentChanges])
+      try {
+        const payload = await apiRequest<unknown>(
+          conversationRunId
+            ? `/api/agent-runs/${encodeURIComponent(conversationRunId)}`
+            : '/api/agent-runs',
+        )
+        if (request !== agentSelectionRequest.current) return null
+        if (conversationRunId ? !isAgentRun(payload) : !isAgentRunList(payload)) {
+          throw new Error('La liste des runs OpenHands est invalide.')
+        }
+        const health = resetPollingHealth()
+        agentPollingHealthRef.current = health
+        setAgentPollingHealth(health)
+        setAgentPollingError('')
+        setAgentError('')
+        const candidate = isAgentRun(payload)
+          ? payload
+          : isAgentRunList(payload)
+            ? latestAgentRunForProject(payload.runs, projectId)
+            : null
+        const latest = candidate?.project_id === projectId ? candidate : null
+        setAgentRun(latest)
+        setAgentChanges(null)
+        if (latest?.checkpoint_id && !isActiveAgentRun(latest)) {
+          await loadAgentChanges(latest.run_id)
+        }
+        return latest
+      } catch (error) {
+        if (request !== agentSelectionRequest.current) return null
+        setAgentError(
+          error instanceof Error
+            ? error.message
+            : 'Les runs OpenHands sont indisponibles.',
+        )
+        return null
+      }
+    },
+    [loadAgentChanges],
+  )
 
   // Chargement et navigation : seule la requête la plus récente peut modifier l'écran.
   const loadConversations = useCallback(async (searchTerm = '') => {
@@ -402,7 +517,9 @@ function App() {
       }
     } catch (error) {
       if (requestNumber === listRequestNumber.current) {
-        setConversationError(error instanceof Error ? error.message : 'Liste indisponible.')
+        setConversationError(
+          error instanceof Error ? error.message : 'Liste indisponible.',
+        )
       }
     } finally {
       if (requestNumber === listRequestNumber.current) {
@@ -412,39 +529,46 @@ function App() {
   }, [])
 
   // Charge une conversation seulement si aucune navigation plus récente n'a pris sa place.
-  const loadConversation = useCallback(async (conversationId: string, updateUrl = true) => {
-    const requestNumber = conversationRequests.current.begin()
-    conversationLoadingLock.current = true
-    setIsConversationLoading(true)
-    try {
-      const conversation = await apiRequest<ConversationDetail>(
-        `/api/conversations/${conversationId}`,
-      )
-      if (conversationRequests.current.isCurrent(requestNumber)) {
-        setActiveConversation(conversation)
-        closeEditors()
-        setConversationError('')
-        if (updateUrl) {
-          setConversationInUrl(conversation.id)
-        }
-      }
-    } catch (error) {
-      if (conversationRequests.current.isCurrent(requestNumber)) {
-        setConversationError(error instanceof Error ? error.message : 'Conversation indisponible.')
-        if (error instanceof ApiError && error.status === 404) {
-          setActiveConversation(null)
+  const loadConversation = useCallback(
+    async (conversationId: string, updateUrl = true) => {
+      const requestNumber = conversationRequests.current.begin()
+      conversationLoadingLock.current = true
+      setIsConversationLoading(true)
+      try {
+        const conversation = await apiRequest<ConversationDetail>(
+          `/api/conversations/${conversationId}`,
+        )
+        if (conversationRequests.current.isCurrent(requestNumber)) {
+          setActiveConversation(conversation)
           closeEditors()
-          setConversationInUrl(null, !updateUrl)
+          setConversationError('')
+          if (updateUrl) {
+            setConversationInUrl(conversation.id)
+          }
+        }
+      } catch (error) {
+        if (conversationRequests.current.isCurrent(requestNumber)) {
+          setConversationError(
+            error instanceof Error
+              ? error.message
+              : 'Conversation indisponible.',
+          )
+          if (error instanceof ApiError && error.status === 404) {
+            setActiveConversation(null)
+            closeEditors()
+            setConversationInUrl(null, !updateUrl)
+          }
+        }
+      } finally {
+        if (conversationRequests.current.isCurrent(requestNumber)) {
+          conversationLoadingLock.current = false
+          setIsConversationLoading(false)
         }
       }
-    } finally {
-      if (conversationRequests.current.isCurrent(requestNumber)) {
-        conversationLoadingLock.current = false
-        setIsConversationLoading(false)
-      }
-    }
-    return requestNumber
-  }, [closeEditors])
+      return requestNumber
+    },
+    [closeEditors],
+  )
 
   // Synchronise l'interface avec les redémarrages du cœur et l'URL du navigateur.
   // Recharge les données autoritaires quand le cœur vient de devenir disponible.
@@ -465,13 +589,21 @@ function App() {
       void refreshModelStatus()
       void loadConversations(search)
       const requestedConversation =
-        conversationIdFromSearch(window.location.search) ?? activeConversationRef.current?.id
+        conversationIdFromSearch(window.location.search) ??
+        activeConversationRef.current?.id
       if (requestedConversation) {
         void loadConversation(requestedConversation, false)
       }
     }
     previousCoreState.current = coreStatus.state
-  }, [coreStatus.state, loadConversation, loadConversations, loadModelCatalog, refreshModelStatus, search])
+  }, [
+    coreStatus.state,
+    loadConversation,
+    loadConversations,
+    loadModelCatalog,
+    refreshModelStatus,
+    search,
+  ])
 
   // Charge les projets seulement pour un profil qui annonce cette capacité.
   useEffect(() => {
@@ -490,7 +622,10 @@ function App() {
   // Suit un run actif jusqu'à son état final puis récupère son diff persistant.
   useEffect(() => {
     const profile = modelCatalog ? activeModelProfile(modelCatalog) : null
-    if (coreStatus.state === 'ready' && profile?.capabilities.includes('workspace_projects')) {
+    if (
+      coreStatus.state === 'ready' &&
+      profile?.capabilities.includes('workspace_projects')
+    ) {
       void loadProjects()
     } else {
       const health = resetPollingHealth()
@@ -505,13 +640,30 @@ function App() {
     }
   }, [coreStatus.state, loadProjects, modelCatalog])
 
-  // Recharge le dernier run uniquement quand le projet actif est connu, afin de ne jamais réafficher un autre projet.
+  const selectedConversationRunId = activeConversation?.messages
+    .slice()
+    .reverse()
+    .find((message) => message.agent_run_id)?.agent_run_id ?? null
+
+  // Retrouve le checkpoint du tour sélectionné, même après rechargement de la page.
   useEffect(() => {
     const profile = modelCatalog ? activeModelProfile(modelCatalog) : null
-    if (coreStatus.state === 'ready' && profile?.capabilities.includes('workspace_projects')) {
-      void loadLatestAgentRun(projectCatalog?.active_project_id ?? null)
+    if (
+      coreStatus.state === 'ready' &&
+      profile?.capabilities.includes('workspace_projects')
+    ) {
+      void loadLatestAgentRun(
+        projectCatalog?.active_project_id ?? null,
+        selectedConversationRunId,
+      )
     }
-  }, [coreStatus.state, loadLatestAgentRun, modelCatalog, projectCatalog?.active_project_id])
+  }, [
+    coreStatus.state,
+    loadLatestAgentRun,
+    modelCatalog,
+    projectCatalog?.active_project_id,
+    selectedConversationRunId,
+  ])
 
   // Suit le run courant jusqu'à sa fin et arrête le polling au démontage de l'effet.
   useEffect(() => {
@@ -521,7 +673,9 @@ function App() {
     // Ignore toute réponse arrivée après le démontage de cet effet de polling.
     const refreshRun = async () => {
       try {
-        const payload = await apiRequest<unknown>(`/api/agent-runs/${encodeURIComponent(activeRunId)}`)
+        const payload = await apiRequest<unknown>(
+          `/api/agent-runs/${encodeURIComponent(activeRunId)}`,
+        )
         if (cancelled) return
         if (!isAgentRun(payload)) {
           setAgentPollingError('Le statut du run OpenHands est invalide.')
@@ -533,16 +687,26 @@ function App() {
         setAgentPollingHealth(health)
         setAgentPollingError('')
         setAgentRun(run)
-        if (!isActiveAgentRun(run) && run.conversation_id === activeConversationRef.current?.id) {
+        if (
+          !isActiveAgentRun(run) &&
+          run.conversation_id === activeConversationRef.current?.id
+        ) {
           void loadConversation(run.conversation_id, false)
         }
         if (!isActiveAgentRun(run) && run.checkpoint_id) {
           await loadAgentChanges(run.run_id)
         }
+        if (!isActiveAgentRun(run)) void loadConversations(search)
       } catch (error) {
         if (!cancelled) {
-          const message = error instanceof Error ? error.message : 'Le statut du run OpenHands est indisponible.'
-          const health = recordPollingFailure(agentPollingHealthRef.current, message)
+          const message =
+            error instanceof Error
+              ? error.message
+              : 'Le statut du run OpenHands est indisponible.'
+          const health = recordPollingFailure(
+            agentPollingHealthRef.current,
+            message,
+          )
           agentPollingHealthRef.current = health
           setAgentPollingHealth(health)
         }
@@ -620,7 +784,10 @@ function App() {
         state: 'error',
         model: 'error',
         backend: 'error',
-        message: error instanceof Error ? error.message : 'L’opération sur Léa a échoué.',
+        message:
+          error instanceof Error
+            ? error.message
+            : 'L’opération sur Léa a échoué.',
       })
     } finally {
       setIsCoreTransition(false)
@@ -635,7 +802,8 @@ function App() {
       isGenerating ||
       coreStatus.state !== 'ready' ||
       !canActivateModel(modelStatus, profileId)
-    ) return
+    )
+      return
 
     modelTransitionLock.current = true
     setIsModelTransition(true)
@@ -644,24 +812,34 @@ function App() {
     const health = resetPollingHealth()
     modelPollingHealthRef.current = health
     setModelPollingHealth(health)
-    setModelStatus((current) => current && ({
-      ...current,
-      state: 'loading',
-      loading_profile_id: profileId,
-      message: 'Chargement du profil sélectionné…',
-    }))
+    setModelStatus(
+      (current) =>
+        current && {
+          ...current,
+          state: 'loading',
+          loading_profile_id: profileId,
+          message: 'Chargement du profil sélectionné…',
+        },
+    )
     try {
-      const activated = await apiRequest<unknown>(`/api/models/${encodeURIComponent(profileId)}/activate`, {
-        method: 'POST',
-      })
+      const activated = await apiRequest<unknown>(
+        `/api/models/${encodeURIComponent(profileId)}/activate`,
+        {
+          method: 'POST',
+        },
+      )
       if (!isModelRuntimeStatus(activated)) {
         throw new Error('Le backend n’a pas confirmé le nouveau profil.')
       }
       setModelStatus(activated)
+      setWelcomeIndex(Math.floor(Math.random() * welcomePhrasesForProfile(profileId).length))
       setModelError('')
       await loadModelCatalog()
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Le changement de profil a échoué.'
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Le changement de profil a échoué.'
       await Promise.all([loadModelCatalog(), refreshModelStatus()])
       setModelError(message)
     } finally {
@@ -673,18 +851,27 @@ function App() {
 
   // Redécouvre les projets autorisés puis recharge la sélection persistée.
   async function refreshProjects() {
-    if (projectTransitionLock.current || isProjectTransition || isGenerating) return
+    if (projectTransitionLock.current || isProjectTransition || isGenerating)
+      return
     projectTransitionLock.current = true
     setIsProjectTransition(true)
     setProjectError('')
     try {
-      const catalog = await apiRequest<unknown>('/api/projects/refresh', { method: 'POST' })
+      const catalog = await apiRequest<unknown>('/api/projects/refresh', {
+        method: 'POST',
+      })
       if (!isProjectCatalog(catalog)) {
-        throw new Error('Le backend n’a pas confirmé l’actualisation des projets.')
+        throw new Error(
+          'Le backend n’a pas confirmé l’actualisation des projets.',
+        )
       }
       setProjectCatalog(catalog)
     } catch (error) {
-      setProjectError(error instanceof Error ? error.message : 'Actualisation des projets échouée.')
+      setProjectError(
+        error instanceof Error
+          ? error.message
+          : 'Actualisation des projets échouée.',
+      )
     } finally {
       projectTransitionLock.current = false
       setIsProjectTransition(false)
@@ -693,20 +880,31 @@ function App() {
 
   // Active un projet par UUID public sans jamais envoyer de chemin depuis le navigateur.
   async function selectProject(projectId: string) {
-    if (!projectId || projectTransitionLock.current || isProjectTransition || isGenerating) return
+    if (
+      !projectId ||
+      projectTransitionLock.current ||
+      isProjectTransition ||
+      isGenerating
+    )
+      return
     projectTransitionLock.current = true
     setIsProjectTransition(true)
     setProjectError('')
     try {
-      const catalog = await apiRequest<unknown>(`/api/projects/${encodeURIComponent(projectId)}/activate`, {
-        method: 'POST',
-      })
+      const catalog = await apiRequest<unknown>(
+        `/api/projects/${encodeURIComponent(projectId)}/activate`,
+        {
+          method: 'POST',
+        },
+      )
       if (!isProjectCatalog(catalog)) {
         throw new Error('Le backend n’a pas confirmé le projet actif.')
       }
       setProjectCatalog(catalog)
     } catch (error) {
-      setProjectError(error instanceof Error ? error.message : 'Sélection du projet échouée.')
+      setProjectError(
+        error instanceof Error ? error.message : 'Sélection du projet échouée.',
+      )
       await loadProjects()
     } finally {
       projectTransitionLock.current = false
@@ -714,45 +912,79 @@ function App() {
     }
   }
 
-  // Démarre un seul run backend sur le projet actif ; le chemin ne vient jamais du navigateur.
-  async function startAgentRun(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const task = agentTask.trim()
+  // Démarre un seul run backend depuis la saisie commune ; le chemin ne vient jamais du navigateur.
+  async function startAgentRun() {
+    const task = question.trim()
     if (
       !task ||
+      agentStartLock.current ||
       isAgentStarting ||
       isActiveAgentRun(agentRun) ||
       coreStatus.state !== 'ready' ||
       modelStatus?.active_profile_id !== 'development' ||
       !projectCatalog?.active_project_id
-    ) return
+    )
+      return
+    if (
+      activeProfile &&
+      byteLength(task) > activeProfile.max_user_message_bytes
+    ) {
+      setAgentError('La tâche est trop longue pour le profil Programmation.')
+      return
+    }
+    agentStartLock.current = true
+    agentSelectionRequest.current += 1
     setIsAgentStarting(true)
     setAgentError('')
+    setConversationError('')
     const health = resetPollingHealth()
     agentPollingHealthRef.current = health
     setAgentPollingHealth(health)
     setAgentPollingError('')
     setAgentChanges(null)
+    setPendingText(task)
+    setQuestion('')
     try {
       const payload = await apiRequest<unknown>('/api/agent-runs', {
         method: 'POST',
-        body: JSON.stringify({ task }),
+        body: JSON.stringify({
+          task,
+          record_conversation: true,
+          conversation_id: activeConversation?.id ?? null,
+          expected_revision: activeConversation?.revision ?? null,
+          expected_profile_id: activeProfile?.id,
+          expected_project_id: projectCatalog.active_project_id,
+        }),
       })
       if (!isAgentRun(payload)) {
         throw new Error('Le backend n’a pas confirmé le run OpenHands.')
       }
       setAgentRun(payload)
-      setAgentTask('')
+      if (payload.conversation_id) await loadConversation(payload.conversation_id)
+      setPendingText('')
+      await loadConversations(search)
+      // Un clic pendant la création du checkpoint attend l'identité réelle du run.
+      if (agentStopRequested.current) await cancelAgentRun(payload)
     } catch (error) {
-      setAgentError(error instanceof Error ? error.message : 'Le run OpenHands n’a pas démarré.')
+      setQuestion(task)
+      setAgentError(
+        error instanceof Error
+          ? error.message
+          : 'Le run OpenHands n’a pas démarré.',
+      )
     } finally {
+      agentStartLock.current = false
+      agentStopRequested.current = false
+      responseStopLock.current = false
+      setIsResponseStopping(false)
+      setPendingText('')
       setIsAgentStarting(false)
     }
   }
 
   // L’API ne répond qu’après l’arrêt du conteneur vérifié, donc le bouton reste en attente jusque-là.
-  async function cancelAgentRun() {
-    if (!agentRun || !isActiveAgentRun(agentRun) || isAgentCancelling) return
+  async function cancelAgentRun(target = agentRun) {
+    if (!target || !isActiveAgentRun(target) || isAgentCancelling) return
     setIsAgentCancelling(true)
     setAgentError('')
     const health = resetPollingHealth()
@@ -760,9 +992,12 @@ function App() {
     setAgentPollingHealth(health)
     setAgentPollingError('')
     try {
-      const payload = await apiRequest<unknown>(`/api/agent-runs/${encodeURIComponent(agentRun.run_id)}/cancel`, {
-        method: 'POST',
-      })
+      const payload = await apiRequest<unknown>(
+        `/api/agent-runs/${encodeURIComponent(target.run_id)}/cancel`,
+        {
+          method: 'POST',
+        },
+      )
       if (!isAgentRun(payload)) {
         throw new Error('Le backend n’a pas confirmé l’arrêt du run.')
       }
@@ -770,8 +1005,18 @@ function App() {
       if (payload.checkpoint_id) {
         await loadAgentChanges(payload.run_id)
       }
+      // L'annulation termine aussi le tour SQLite. Relire sa révision avant
+      // d'autoriser la tâche suivante évite de renvoyer une révision périmée.
+      if (payload.conversation_id === activeConversationRef.current?.id) {
+        await loadConversation(payload.conversation_id, false)
+      }
+      await loadConversations(search)
     } catch (error) {
-      setAgentError(error instanceof Error ? error.message : 'L’annulation OpenHands a échoué.')
+      setAgentError(
+        error instanceof Error
+          ? error.message
+          : 'L’annulation OpenHands a échoué.',
+      )
     } finally {
       setIsAgentCancelling(false)
     }
@@ -783,12 +1028,19 @@ function App() {
     setIsCheckpointTransition(true)
     setAgentError('')
     try {
-      await apiRequest<unknown>(`/api/agent-runs/${encodeURIComponent(agentRun.run_id)}/accept`, {
-        method: 'POST',
-      })
+      await apiRequest<unknown>(
+        `/api/agent-runs/${encodeURIComponent(agentRun.run_id)}/accept`,
+        {
+          method: 'POST',
+        },
+      )
       await loadAgentChanges(agentRun.run_id)
     } catch (error) {
-      setAgentError(error instanceof Error ? error.message : 'L’acceptation du checkpoint a échoué.')
+      setAgentError(
+        error instanceof Error
+          ? error.message
+          : 'L’acceptation du checkpoint a échoué.',
+      )
     } finally {
       setIsCheckpointTransition(false)
     }
@@ -800,12 +1052,18 @@ function App() {
     setIsCheckpointTransition(true)
     setAgentError('')
     try {
-      await apiRequest<unknown>(`/api/agent-runs/${encodeURIComponent(agentRun.run_id)}/rollback`, {
-        method: 'POST',
-      })
+      await apiRequest<unknown>(
+        `/api/agent-runs/${encodeURIComponent(agentRun.run_id)}/rollback`,
+        {
+          method: 'POST',
+        },
+      )
       await loadAgentChanges(agentRun.run_id)
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'La restauration du checkpoint a échoué.'
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'La restauration du checkpoint a échoué.'
       // A 409 can have persisted the checkpoint as `conflict`; reload it so
       // stale action buttons are removed before showing the refusal message.
       await loadAgentChanges(agentRun.run_id)
@@ -842,7 +1100,11 @@ function App() {
       setActiveConversation(error.conversation)
       setConversationInUrl(error.conversation.id)
       await loadConversations(search)
-    } else if (error instanceof ApiError && error.status === 409 && conversationId) {
+    } else if (
+      error instanceof ApiError &&
+      error.status === 409 &&
+      conversationId
+    ) {
       const reloadRequest = await loadConversation(conversationId, false)
       await loadConversations(search)
       if (!conversationRequests.current.isCurrent(reloadRequest)) {
@@ -851,14 +1113,16 @@ function App() {
       activeRequest = reloadRequest
     }
     if (conversationRequests.current.isCurrent(activeRequest)) {
-      setConversationError(error instanceof Error ? error.message : 'L’opération a échoué.')
+      setConversationError(
+        error instanceof Error ? error.message : 'L’opération a échoué.',
+      )
     }
   }
 
-  // Chemin commun aux envois, modifications, régénérations et réessais.
+  // Chemin commun aux envois, modifications et réessais.
   // Le message pending reste purement visuel jusqu'à la réponse du backend.
   async function runGeneration(
-    operation: () => Promise<ConversationDetail>,
+    operation: (responseId: string) => Promise<ConversationDetail>,
     pending = '',
     clearDraft = true,
   ): Promise<GenerationResult> {
@@ -872,17 +1136,39 @@ function App() {
       return 'blocked'
     }
     generationLock.current = true
+    const responseId = crypto.randomUUID()
+    responseOperationId.current = responseId
     const navigationRequest = conversationRequests.current.current()
+    const submittedDraft = clearDraft && pending ? question : null
     setIsGenerating(true)
     setPendingText(pending)
     setConversationError('')
+    // La bulle d'attente montre le texte envoyé ; le champ redevient vide immédiatement.
+    if (submittedDraft !== null) setQuestion('')
+    let responseReceived = false
     try {
-      await refreshAfterMutation(await operation(), navigationRequest)
-      if (clearDraft && conversationRequests.current.isCurrent(navigationRequest)) {
+      const conversation = await operation(responseId)
+      responseReceived = true
+      await refreshAfterMutation(conversation, navigationRequest)
+      if (
+        clearDraft &&
+        conversationRequests.current.isCurrent(navigationRequest)
+      ) {
         setQuestion('')
       }
       return 'completed'
     } catch (error) {
+      // Un refus sans tour enregistré restitue le brouillon, uniquement dans sa conversation.
+      if (
+        submittedDraft !== null &&
+        !responseReceived &&
+        conversationRequests.current.isCurrent(navigationRequest) &&
+        (!(error instanceof ApiError) ||
+          !error.conversation ||
+          (error.status === 409 && error.conversation.messages.at(-1)?.error !== 'interrupted'))
+      ) {
+        setQuestion(submittedDraft)
+      }
       await handleMutationError(
         error,
         navigationRequest,
@@ -893,6 +1179,9 @@ function App() {
         : 'failed'
     } finally {
       generationLock.current = false
+      responseOperationId.current = null
+      responseStopLock.current = false
+      setIsResponseStopping(false)
       setIsGenerating(false)
       setPendingText('')
     }
@@ -907,24 +1196,32 @@ function App() {
       setConversationError('Écrivez une question avant de l’envoyer.')
       return
     }
-    if (activeProfile && byteLength(submitted) > activeProfile.max_user_message_bytes) {
-      setConversationError('La question est trop longue pour le contexte actif de Léa.')
-      return
-    }
-    const confirmsPendingWeb = activeConversation?.web_confirmation_pending === true
-      && isWebConfirmation(submitted)
     if (
-      programmingActive
-      && !isExplicitWebRequest(submitted)
-      && !isAmbiguousWebRequest(submitted)
-      && !confirmsPendingWeb
+      activeProfile &&
+      byteLength(submitted) > activeProfile.max_user_message_bytes
     ) {
       setConversationError(
-        'En Programmation, cette zone accepte uniquement une demande Web explicite. '
-        + 'Utilise la tâche OpenHands pour modifier un projet.',
+        'La question est trop longue pour le contexte actif de Léa.',
       )
       return
     }
+    if (programmingActive) {
+      void startAgentRun()
+      return
+    }
+    if (ephemeral.active) {
+      if (isGenerating || ephemeral.busy || coreStatus.state !== 'ready') return
+      const draft = question
+      setQuestion('')
+      void ephemeral.send(submitted).catch(() => {
+        // Les erreurs restent dans le mode temporaire, jamais dans l'historique normal.
+        if (wasEphemeral.current) setQuestion(draft)
+      })
+      return
+    }
+    const confirmsPendingWeb =
+      activeConversation?.web_confirmation_pending === true &&
+      isWebConfirmation(submitted)
     const usesWeb = webAuthorizationForTurn(submitted) || confirmsPendingWeb
     const operationId = usesWeb ? crypto.randomUUID() : null
     const payload = {
@@ -934,35 +1231,74 @@ function App() {
       ...(operationId ? { web_request_id: operationId } : {}),
     }
     setWebInProgress(usesWeb)
-    setWebOperationId(operationId)
     void runGeneration(
-      () =>
+      (responseId) =>
         apiRequest<ConversationDetail>('/api/conversations/messages', {
           method: 'POST',
+          headers: { 'X-Lea-Response-ID': responseId },
           body: JSON.stringify(payload),
         }),
       submitted,
     ).finally(() => {
       setWebInProgress(false)
-      setWebOperationId(null)
     })
   }
 
-  // Le backend conserve l'autorité : le bouton ne fait que signaler l'opération en cours.
-  async function cancelWebRequest() {
-    if (!webOperationId) return
+  // Entrée emprunte le même bouton et ses barrières ; Maj+Entrée et une composition
+  // IME restent de la saisie. Maintenir la touche ne doit pas envoyer plusieurs tours.
+  function handleQuestionKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (
+      event.key !== 'Enter' ||
+      event.shiftKey ||
+      event.nativeEvent.isComposing ||
+      event.nativeEvent.keyCode === 229
+    )
+      return
+    event.preventDefault()
+    if (event.repeat || !sendButton.current || sendButton.current.disabled)
+      return
+    event.currentTarget.form?.requestSubmit(sendButton.current)
+  }
+
+  // Le bouton arrête l'activité exacte, sans éteindre Léa ni libérer prématurément le modèle.
+  async function stopResponse() {
+    if (responseStopLock.current || isAgentCancelling) return
+    responseStopLock.current = true
+    setIsResponseStopping(true)
+    if (isAgentStarting) {
+      agentStopRequested.current = true
+      return
+    }
     try {
-      await apiRequest(`/api/web/operations/${encodeURIComponent(webOperationId)}/cancel`, {
-        method: 'POST',
-      })
+      if (isActiveAgentRun(agentRun)) {
+        await cancelAgentRun()
+        responseStopLock.current = false
+        setIsResponseStopping(false)
+      }
+      else if (ephemeral.sending) await ephemeral.cancel()
+      else if (responseOperationId.current) {
+        await apiRequest(`/api/responses/${responseOperationId.current}/cancel`, {
+          method: 'POST',
+        })
+      }
     } catch (error) {
-      setConversationError(error instanceof Error ? error.message : 'L’annulation Web n’a pas été confirmée.')
+      responseStopLock.current = false
+      setIsResponseStopping(false)
+      setConversationError(
+        error instanceof Error
+          ? error.message
+          : 'L’arrêt de la réponse n’a pas été confirmé.',
+      )
     }
   }
 
   // Réinitialise seulement l'interface; SQLite attend toujours le premier message.
   function handleNewConversation() {
-    if (isGenerating || renameLock.current) return
+    if (
+      isGenerating || renameLock.current || isAgentStarting ||
+      agentRunActive || isCheckpointTransition
+    ) return
+    setWelcomeIndex(renewedWelcomeIndex)
     conversationRequests.current.invalidate()
     conversationLoadingLock.current = false
     setIsConversationLoading(false)
@@ -972,34 +1308,35 @@ function App() {
     setPendingText('')
     setConversationError('')
     setConversationInUrl(null)
+    if (programmingActive) {
+      agentSelectionRequest.current += 1
+      setAgentRun(null)
+      setAgentChanges(null)
+    }
     focusQuestion()
   }
 
-  // Mutations versionnées de la conversation active.
-  function handleRename() {
-    // Ouvre l'éditeur avec le titre actuellement confirmé par le backend.
-    if (
-      !activeConversation ||
-      isGenerating ||
-      conversationLoadingLock.current ||
-      renameLock.current
-    ) return
-    setEditingMessageId(null)
-    setEditDraft('')
-    setRenameDraft(activeConversation.title)
+  // Ouvre le renommage depuis les métadonnées de la barre latérale.
+  function openRename(conversationId: string) {
+    // Les métadonnées suffisent : le crayon n'ouvre pas une conversation verrouillée.
+    const target = conversations.find((conversation) => conversation.id === conversationId)
+    if (!target || target.generation_active || renameLock.current) return
+    setRenameTarget(target)
+    setRenameDraft(target.title)
     setConversationError('')
   }
 
-  // Enregistre le titre avec la révision affichée et recharge en cas de conflit.
+  // Renomme la ligne choisie sans changer la conversation ni son brouillon.
   async function handleRenameSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (
-      !activeConversation ||
+      !renameTarget ||
       renameDraft === null ||
       isGenerating ||
       conversationLoadingLock.current ||
       renameLock.current
-    ) return
+    )
+      return
     const title = renameDraft.trim()
     if (!title) {
       setConversationError('Le titre ne peut pas être vide.')
@@ -1010,24 +1347,30 @@ function App() {
     setConversationError('')
     const navigationRequest = conversationRequests.current.current()
     try {
-      const conversation = await apiRequest<ConversationDetail>(
-        `/api/conversations/${activeConversation.id}`,
+      const conversation = await apiRequest<ConversationSummary>(
+        `/api/conversations/${renameTarget.id}`,
         {
           method: 'PATCH',
           body: JSON.stringify({
             title,
-            expected_revision: activeConversation.revision,
+            expected_revision: renameTarget.revision,
           }),
         },
       )
-      await refreshAfterMutation(conversation, navigationRequest)
+      setActiveConversation((current) => current?.id === conversation.id
+        ? { ...current, title: conversation.title, revision: conversation.revision }
+        : current)
+      await loadConversations(search)
       if (conversationRequests.current.isCurrent(navigationRequest)) {
         setRenameDraft(null)
+        setRenameTarget(null)
       }
     } catch (error) {
-      await handleMutationError(error, navigationRequest, activeConversation.id)
+      setConversationError(error instanceof Error ? error.message : 'Le renommage a échoué.')
+      await loadConversations(search)
       if (error instanceof ApiError && error.status === 409) {
         setRenameDraft(null)
+        setRenameTarget(null)
       }
     } finally {
       renameLock.current = false
@@ -1036,25 +1379,43 @@ function App() {
   }
 
   // Supprime la conversation confirmée par l'utilisateur sous contrôle de révision.
-  async function handleDelete() {
+  async function handleDelete(
+    target: ConversationSummary | null = activeConversation,
+  ) {
     if (
-      !activeConversation ||
+      !target ||
+      target.generation_active ||
+      coreStatus.state !== 'ready' ||
       isGenerating ||
       conversationLoadingLock.current ||
       renameLock.current
-    ) return
+    )
+      return
     // Le backend applique la révision et supprime la conversation avec ses
     // messages. Les souvenirs globaux ne répondent qu'à « Oublie que… ».
-    if (!window.confirm(
-      `Supprimer définitivement « ${activeConversation.title} » et tous ses messages ?`,
-    )) return
+    if (
+      !window.confirm(
+        `Supprimer définitivement « ${target.title} » et tous ses messages ?`,
+      )
+    )
+      return
     const navigationRequest = conversationRequests.current.current()
+    renameLock.current = true
+    setIsRenaming(true)
+    setConversationError('')
+    let clearedSelection = false
     try {
-      await apiRequest<void>(`/api/conversations/${activeConversation.id}`, {
+      await apiRequest<void>(`/api/conversations/${target.id}`, {
         method: 'DELETE',
-        body: JSON.stringify({ expected_revision: activeConversation.revision }),
+        body: JSON.stringify({
+          expected_revision: target.revision,
+        }),
       })
-      if (conversationRequests.current.isCurrent(navigationRequest)) {
+      // Supprimer une autre ligne de la barre ne change ni la sélection ni le brouillon.
+      if (
+        conversationRequests.current.isCurrent(navigationRequest) &&
+        activeConversationRef.current?.id === target.id
+      ) {
         conversationRequests.current.invalidate()
         conversationLoadingLock.current = false
         setIsConversationLoading(false)
@@ -1062,11 +1423,22 @@ function App() {
         closeEditors()
         setConversationInUrl(null)
         setConversationError('')
-        focusQuestion()
+        clearedSelection = true
       }
       await loadConversations(search)
     } catch (error) {
-      await handleMutationError(error, navigationRequest, activeConversation.id)
+      if (activeConversationRef.current?.id === target.id) {
+        await handleMutationError(error, navigationRequest, target.id)
+      } else {
+        setConversationError(
+          error instanceof Error ? error.message : 'La suppression a échoué.',
+        )
+        await loadConversations(search)
+      }
+    } finally {
+      renameLock.current = false
+      setIsRenaming(false)
+      if (clearedSelection) focusQuestion()
     }
   }
 
@@ -1080,7 +1452,8 @@ function App() {
       message.role !== 'user' ||
       isWebFailure(message) ||
       !allowsDestructiveMessageAction(message)
-    ) return
+    )
+      return
     setRenameDraft(null)
     setEditingMessageId(message.id)
     setEditDraft(message.content)
@@ -1101,21 +1474,28 @@ function App() {
       message.role !== 'user' ||
       isWebFailure(message) ||
       !allowsDestructiveMessageAction(message)
-    ) return
+    )
+      return
     const content = editDraft.trim()
     if (!content) {
       setConversationError('Le message ne peut pas être vide.')
       return
     }
-    if (activeProfile && byteLength(content) > activeProfile.max_user_message_bytes) {
-      setConversationError('Le message est trop long pour le contexte actif de Léa.')
+    if (
+      activeProfile &&
+      byteLength(content) > activeProfile.max_user_message_bytes
+    ) {
+      setConversationError(
+        'Le message est trop long pour le contexte actif de Léa.',
+      )
       return
     }
-    const result = await runGeneration(() =>
+    const result = await runGeneration((responseId) =>
       apiRequest<ConversationDetail>(
         `/api/conversations/${activeConversation.id}/messages/${message.id}`,
         {
           method: 'PATCH',
+          headers: { 'X-Lea-Response-ID': responseId },
           body: JSON.stringify({
             content,
             expected_revision: activeConversation.revision,
@@ -1129,26 +1509,6 @@ function App() {
     }
   }
 
-  // Demande une nouvelle réponse à partir de la question associée au message.
-  function handleRegenerate(message: ConversationMessage) {
-    if (
-      !activeConversation ||
-      isGenerating ||
-      conversationLoadingLock.current ||
-      message.role !== 'assistant' ||
-      !allowsDestructiveMessageAction(message)
-    ) return
-    void runGeneration(() =>
-      apiRequest<ConversationDetail>(
-        `/api/conversations/${activeConversation.id}/messages/${message.id}/regenerate`,
-        {
-          method: 'POST',
-          body: JSON.stringify({ expected_revision: activeConversation.revision }),
-        },
-      ),
-    )
-  }
-
   // Relance une question échouée sans fabriquer de nouveau tour côté navigateur.
   function handleRetry(message: ConversationMessage) {
     if (
@@ -1157,13 +1517,17 @@ function App() {
       conversationLoadingLock.current ||
       message.role !== 'user' ||
       !allowsDestructiveMessageAction(message)
-    ) return
-    void runGeneration(() =>
+    )
+      return
+    void runGeneration((responseId) =>
       apiRequest<ConversationDetail>(
         `/api/conversations/${activeConversation.id}/messages/${message.id}/retry`,
         {
           method: 'POST',
-          body: JSON.stringify({ expected_revision: activeConversation.revision }),
+          headers: { 'X-Lea-Response-ID': responseId },
+          body: JSON.stringify({
+            expected_revision: activeConversation.revision,
+          }),
         },
       ),
     )
@@ -1178,7 +1542,8 @@ function App() {
       message.role !== 'user' ||
       !isWebFailure(message) ||
       preferences?.web_enabled !== true
-    ) return
+    )
+      return
     conversationRequests.current.invalidate()
     conversationLoadingLock.current = false
     setIsConversationLoading(false)
@@ -1204,36 +1569,83 @@ function App() {
 
   // Rendu : le frontend affiche l'état SQLite reçu, sans reconstruire l'historique.
   const activeProfile = modelCatalog ? activeModelProfile(modelCatalog) : null
-  const loadingProfile = modelCatalog?.profiles.find(
-    (profile) => profile.id === (modelStatus?.loading_profile_id ?? requestedProfileId),
-  ) ?? null
-  const selectedProfileId = loadingProfile?.id ?? modelStatus?.active_profile_id ?? activeProfile?.id ?? ''
+
+  // Le titre change seulement au retour à l'accueil et reste propre au profil courant.
+  function renewedWelcomeIndex(current: number) {
+    return nextWelcomeIndex(current, welcomePhrasesForProfile(activeProfile?.id).length)
+  }
+  const loadingProfile =
+    modelCatalog?.profiles.find(
+      (profile) =>
+        profile.id === (modelStatus?.loading_profile_id ?? requestedProfileId),
+    ) ?? null
+  const selectedProfileId =
+    loadingProfile?.id ??
+    modelStatus?.active_profile_id ??
+    activeProfile?.id ??
+    ''
   const agentRunActive = isActiveAgentRun(agentRun)
   const programmingActive = activeProfile?.id === 'development'
-  const corePollingTone = coreStatus.state === 'error' ? 'error' : pollingTone(corePollingHealth)
+  const programmingReady = programmingActive && coreStatus.state === 'ready' &&
+    modelStatus?.state === 'ready' && !isModelTransition
+
+  // Une bascule retire aussi le contenu déjà ouvert, sans effacer son historique.
+  useEffect(() => {
+    if (modelCatalog && modelStatus && !programmingReady && activeConversation?.has_agent_runs) {
+      conversationRequests.current.invalidate()
+      setActiveConversation(null)
+      setConversationInUrl(null, true)
+      closeEditors()
+    }
+  }, [programmingReady, modelCatalog, modelStatus, activeConversation?.has_agent_runs, closeEditors])
+  const showResourceChart =
+    !settingsOpen && !voiceOpen && preferences?.show_resource_chart === true
+  const corePollingTone =
+    coreStatus.state === 'error' ? 'error' : pollingTone(corePollingHealth)
   const coreStatusMessage =
     corePollingTone !== 'normal' && corePollingHealth.message
       ? corePollingHealth.message
       : coreStatus.message
+  // L'état normal est déjà porté par les boutons ; seules les alertes et
+  // transitions occupent le bandeau supérieur, également dans les autres vues.
+  const coreNotice =
+    corePollingTone !== 'normal' ||
+    coreStatus.state === 'starting' ||
+    coreStatus.state === 'stopping' ? (
+      <p
+        className={`core-status status-${corePollingTone}`}
+        role={corePollingTone === 'error' ? 'alert' : 'status'}
+      >
+        {shortNotice(coreStatusMessage, 'core')}
+      </p>
+    ) : null
   const modelPresentation = runtimeStatusPresentation(
     loadingProfile?.display_name ?? activeProfile?.display_name ?? null,
-    loadingProfile ? 'loading' : modelStatus?.state ?? null,
+    loadingProfile ? 'loading' : (modelStatus?.state ?? null),
     modelStatus?.message ?? null,
     modelPollingHealth,
   )
   const agentPollingTone = pollingTone(agentPollingHealth)
-  const agentValidation = agentRun ? agentRunValidationPresentation(agentRun) : null
+  const agentValidation = agentRun
+    ? agentRunValidationPresentation(agentRun)
+    : null
   const modelChangeBlocked = Boolean(
-    isModelTransition ||
-    isGenerating ||
-    coreStatus.state !== 'ready' ||
-    !modelStatus ||
-    modelStatus.state !== 'ready' ||
-    modelStatus.generation_active ||
-    modelStatus.agent_run_active ||
-    agentRunActive,
+    ephemeral.active ||
+      ephemeral.busy ||
+      isAgentStarting ||
+      isCheckpointTransition ||
+      isModelTransition ||
+      isGenerating ||
+      coreStatus.state !== 'ready' ||
+      !modelStatus ||
+      modelStatus.state !== 'ready' ||
+      modelStatus.generation_active ||
+      modelStatus.agent_run_active ||
+      agentRunActive,
   )
-  const projectCapabilityActive = Boolean(activeProfile?.capabilities.includes('workspace_projects'))
+  const projectCapabilityActive = Boolean(
+    activeProfile?.capabilities.includes('workspace_projects'),
+  )
 
   // La voix utilise le suivi OpenHands existant, sans seconde boucle de polling.
   useEffect(() => {
@@ -1242,70 +1654,86 @@ function App() {
     if (agentRun?.run_id === waiting.id && !isActiveAgentRun(agentRun)) {
       waiting.resolve(agentRun)
     } else if (agentPollingHealth.consecutive_failures >= 3) {
-      waiting.reject(new Error('Suivi OpenHands indisponible. Vérifie le run dans l’interface classique avant toute nouvelle demande.'))
+      waiting.reject(
+        new Error(
+          'Suivi OpenHands indisponible. Vérifie le run dans l’interface classique avant toute nouvelle demande.',
+        ),
+      )
     }
   }, [agentRun, agentPollingHealth])
 
-  // La dictée reste liée à la conversation visible au premier clic sur le micro.
+  // La dictée alimente toujours la saisie visible, y compris la tâche Programmation.
   function dictated(text: string) {
     if (activeConversationRef.current?.id !== activeConversation?.id) {
       throw new Error('La conversation a changé ; dictée non insérée.')
     }
-    if (programmingActive) {
-      setAgentTask((draft) => appendDictation(draft, text))
-    } else {
-      setQuestion((draft) => appendDictation(draft, text))
-    }
+    setQuestion((draft) => appendDictation(draft, text))
   }
 
   // La voix change l'entrée et la sortie ; les endpoints existants gardent les permissions et la persistance.
-  async function sendVoice(text: string, signal: AbortSignal): Promise<{ text: string; review?: boolean; notice?: string }> {
-    if (signal.aborted || !activeProfile || coreStatus.state !== 'ready'
-      || activeConversationRef.current?.id !== activeConversation?.id) {
+  async function sendVoice(
+    text: string,
+    signal: AbortSignal,
+  ): Promise<{ text: string; review?: boolean; notice?: string }> {
+    if (
+      signal.aborted ||
+      !activeProfile ||
+      coreStatus.state !== 'ready' ||
+      activeConversationRef.current?.id !== activeConversation?.id
+    ) {
       throw new Error('Le contexte a changé. Recommence l’intervention.')
     }
     if (byteLength(text) > activeProfile.max_user_message_bytes) {
       throw new Error('La transcription est trop longue pour le profil actif.')
     }
-    const explicitVoiceWeb = isExplicitWebRequest(text)
-    const confirmsPendingVoiceWeb = activeConversation?.web_confirmation_pending === true
-      && isWebConfirmation(text)
-    const possibleVoiceWeb = explicitVoiceWeb
-      || isAmbiguousWebRequest(text)
-      || confirmsPendingVoiceWeb
-    if (activeProfile.capabilities.includes('agent_runs') && !possibleVoiceWeb) {
+    if (ephemeral.active) return { text: await ephemeral.send(text, signal) }
+    if (activeProfile.capabilities.includes('agent_runs')) {
       if (!projectCatalog?.active_project_id || isActiveAgentRun(agentRun)) {
-        throw new Error('Sélectionne un projet et termine le run actif dans l’interface classique.')
+        throw new Error(
+          'Sélectionne un projet et termine le run actif dans l’interface classique.',
+        )
       }
       setIsAgentStarting(true)
       setAgentChanges(null)
       let run: AgentRun
       try {
-        run = requireAgentRun(await apiRequest('/api/agent-runs', {
-          method: 'POST',
-          body: JSON.stringify({
-            task: text,
-            record_conversation: true,
-            conversation_id: activeConversation?.id ?? null,
-            expected_revision: activeConversation?.revision ?? null,
-            expected_profile_id: activeProfile.id,
-            expected_project_id: projectCatalog.active_project_id,
+        run = requireAgentRun(
+          await apiRequest('/api/agent-runs', {
+            method: 'POST',
+            body: JSON.stringify({
+              task: text,
+              record_conversation: true,
+              conversation_id: activeConversation?.id ?? null,
+              expected_revision: activeConversation?.revision ?? null,
+              expected_profile_id: activeProfile.id,
+              expected_project_id: projectCatalog.active_project_id,
+            }),
           }),
-        }))
+        )
         setAgentRun(run)
-        if (run.conversation_id) await loadConversation(run.conversation_id, true)
+        if (run.conversation_id)
+          await loadConversation(run.conversation_id, true)
         await loadConversations(search)
+        if (agentStopRequested.current) {
+          await cancelAgentRun(run)
+          run = requireAgentRun(await apiRequest(`/api/agent-runs/${run.run_id}`))
+        }
       } finally {
+        agentStopRequested.current = false
         setIsAgentStarting(false)
       }
       // Fermer l'audio n'annule pas silencieusement une mutation de projet déjà autorisée.
-      if (signal.aborted) throw new Error('Audio fermé. Le run reste consultable dans Programmation.')
+      if (signal.aborted)
+        throw new Error(
+          'Audio fermé. Le run reste consultable dans Programmation.',
+        )
       const finished = await new Promise<AgentRun>((resolve, reject) => {
         if (!isActiveAgentRun(run)) {
           resolve(run)
           return
         }
-        const cancel = () => reject(new Error('Audio fermé ; consulte le run dans Programmation.'))
+        const cancel = () =>
+          reject(new Error('Audio fermé ; consulte le run dans Programmation.'))
         signal.addEventListener('abort', cancel, { once: true })
         voiceRunWaiter.current = {
           id: run.run_id,
@@ -1320,655 +1748,800 @@ function App() {
         }
         // Un run court peut finir pendant le chargement de sa conversation.
         // Un instantané couvre cette course ; la suite utilise le poller existant.
-        void apiRequest<unknown>(`/api/agent-runs/${run.run_id}`, { signal }).then((payload) => {
-          const current = requireAgentRun(payload)
-          if (!isActiveAgentRun(current) && voiceRunWaiter.current?.id === run.run_id) {
-            voiceRunWaiter.current.resolve(current)
-          }
-        }).catch((failure: unknown) => {
-          if (voiceRunWaiter.current?.id === run.run_id) {
-            voiceRunWaiter.current.reject(failure instanceof Error ? failure : new Error('Suivi du run indisponible.'))
-          }
-        })
+        void apiRequest<unknown>(`/api/agent-runs/${run.run_id}`, { signal })
+          .then((payload) => {
+            const current = requireAgentRun(payload)
+            if (
+              !isActiveAgentRun(current) &&
+              voiceRunWaiter.current?.id === run.run_id
+            ) {
+              voiceRunWaiter.current.resolve(current)
+            }
+          })
+          .catch((failure: unknown) => {
+            if (voiceRunWaiter.current?.id === run.run_id) {
+              voiceRunWaiter.current.reject(
+                failure instanceof Error
+                  ? failure
+                  : new Error('Suivi du run indisponible.'),
+              )
+            }
+          })
       }).finally(() => {
         voiceRunWaiter.current = null
       })
       const detail = finished.conversation_id
-        ? await apiRequest<ConversationDetail>(`/api/conversations/${finished.conversation_id}`)
+        ? await apiRequest<ConversationDetail>(
+            `/api/conversations/${finished.conversation_id}`,
+          )
         : null
-      if (detail) await refreshAfterMutation(detail, conversationRequests.current.current())
-      const answer = detail?.messages.find((item) => item.agent_run_id === finished.run_id && item.role === 'assistant')?.content
+      if (detail)
+        await refreshAfterMutation(
+          detail,
+          conversationRequests.current.current(),
+        )
+      const answer = detail?.messages.find(
+        (item) =>
+          item.agent_run_id === finished.run_id && item.role === 'assistant',
+      )?.content
       return {
-        text: answer ?? `Run ${finished.state}, validation ${finished.validation_status}. Examine le résultat dans l’interface classique.`,
+        text:
+          answer ??
+          `Run ${finished.state}, validation ${finished.validation_status}. Examine le résultat dans l’interface classique.`,
         review: true,
-        notice: `Run OpenHands : ${finished.state}. Validation : ${finished.validation_status}.`,
+        notice: finished.state === 'completed'
+          ? agentRunValidationPresentation(finished).message
+          : finished.state === 'cancelled' ? 'Tâche annulée' : 'Tâche non terminée',
       }
     }
+    const explicitVoiceWeb = isExplicitWebRequest(text)
+    const confirmsPendingVoiceWeb =
+      activeConversation?.web_confirmation_pending === true &&
+      isWebConfirmation(text)
     let answer = ''
-    const voiceWebOperationId = explicitVoiceWeb || confirmsPendingVoiceWeb
-      ? crypto.randomUUID()
-      : null
+    const voiceWebOperationId =
+      explicitVoiceWeb || confirmsPendingVoiceWeb ? crypto.randomUUID() : null
     const cancelVoiceWeb = () => {
       if (voiceWebOperationId) {
-        void apiRequest(`/api/web/operations/${voiceWebOperationId}/cancel`, { method: 'POST' }).catch(() => undefined)
+        void apiRequest(`/api/web/operations/${voiceWebOperationId}/cancel`, {
+          method: 'POST',
+        }).catch(() => undefined)
       }
     }
     signal.addEventListener('abort', cancelVoiceWeb, { once: true })
-    const result = await runGeneration(async () => {
-      const detail = await apiRequest<ConversationDetail>('/api/conversations/messages', {
-        method: 'POST',
-        signal,
-        body: JSON.stringify({
-          // La voix suit la même autorisation textuelle : le backend valide la
-          // formulation et peut demander confirmation avant tout réseau.
-          ...buildSendMessagePayload(activeConversation, text),
-          expected_profile_id: activeProfile.id,
-          ...(voiceWebOperationId ? { web_request_id: voiceWebOperationId } : {}),
-        }),
-      })
-      answer = detail.messages.at(-1)?.role === 'assistant' ? detail.messages.at(-1)!.content : ''
-      return detail
-    }, text, false).finally(() => signal.removeEventListener('abort', cancelVoiceWeb))
+    const result = await runGeneration(
+      async (responseId) => {
+        const detail = await apiRequest<ConversationDetail>(
+          '/api/conversations/messages',
+          {
+            method: 'POST',
+            signal,
+            headers: { 'X-Lea-Response-ID': responseId },
+            body: JSON.stringify({
+              // La voix suit la même autorisation textuelle : le backend valide la
+              // formulation et peut demander confirmation avant tout réseau.
+              ...buildSendMessagePayload(activeConversation, text),
+              expected_profile_id: activeProfile.id,
+              ...(voiceWebOperationId
+                ? { web_request_id: voiceWebOperationId }
+                : {}),
+            }),
+          },
+        )
+        answer =
+          detail.messages.at(-1)?.role === 'assistant'
+            ? detail.messages.at(-1)!.content
+            : ''
+        return detail
+      },
+      text,
+      false,
+    ).finally(() => signal.removeEventListener('abort', cancelVoiceWeb))
     if (result !== 'completed' || !answer) {
-      throw new Error('La réponse n’a pas abouti. Consulte l’historique avant de réessayer ; aucune demande n’est renvoyée automatiquement.')
+      throw new Error(
+        'Vérifiez l’historique avant de réessayer',
+      )
     }
     return { text: answer }
   }
 
-  return (
-    <main>
-      {settingsOpen && <Settings onBack={closeSettings} onSaved={setPreferences} />}
-      <section className="chat" aria-labelledby="page-title" hidden={settingsOpen || voiceOpen}>
-        <div className="page-header">
-          <h1 id="page-title">Léa</h1>
-          <button type="button" className="secondary-button" ref={settingsButton} onClick={() => setSettingsOpen(true)}>
-            Paramètres
-          </button>
-        </div>
-
-        <section className="core-controls" aria-label="Contrôle local de Léa">
-          <p className={`core-status status-${corePollingTone}`} aria-live="polite">
-            {coreStatusMessage}
-          </p>
-          {modelCatalog && (
-            <div className="model-selector">
-              <label htmlFor="model-profile">Profil de Léa</label>
-              <select
-                id="model-profile"
-                value={selectedProfileId}
-                onChange={(event) => void handleModelChange(event.target.value)}
-                disabled={modelChangeBlocked}
-              >
-                {modelCatalog.profiles
-                  .filter((profile) => profile.enabled)
-                  .sort((left, right) => left.display_order - right.display_order)
-                  .map((profile) => (
-                    <option key={profile.id} value={profile.id}>
-                      {profile.display_name}
-                    </option>
-                  ))}
-              </select>
-              <p
-                className={`model-profile-status status-${modelPresentation.tone}`}
-                aria-live="polite"
-              >
-                {modelPresentation.message}
-              </p>
-              {modelError && (
-                <p className="model-profile-status status-error" role="alert">
-                  {modelError}
-                </p>
-              )}
-            </div>
+  // Les décisions restent liées au run affiché, jamais au projet sélectionné après coup.
+  const agentCheckpointControls = (
+    <>
+      {agentChanges?.run_id === agentRun?.run_id &&
+        agentRun?.project_id === projectCatalog?.active_project_id &&
+        !agentRunActive && agentChanges?.checkpoint.state === 'completed' && (
+        <div className="agent-changes">
+          <h3>
+            {agentChanges.changes.length > 0
+              ? 'Changements proposés'
+              : 'Checkpoint de la tâche'}
+          </h3>
+          {agentChanges.changes.length > 0 ? (
+            <ul>
+              {agentChanges.changes.map((change) => (
+                <li
+                  key={`${change.change}:${change.relative_path}`}
+                >
+                  {change.change} — {change.relative_path}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>Aucun fichier modifié.</p>
           )}
-          {!modelCatalog && coreStatus.state === 'ready' && modelError && (
-            <p className="model-profile-status status-error" role="alert">
-              {modelError}
-            </p>
-          )}
-          <div className="core-buttons">
-            <button
-              type="button"
-              onClick={() => void handleCoreAction('start')}
-              disabled={
-                isCoreTransition ||
-                coreStatus.state === 'ready' ||
-                coreStatus.state === 'starting'
-              }
-            >
-              Démarrer Léa
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => void handleCoreAction('stop')}
-              disabled={
-                isCoreTransition ||
-                coreStatus.state === 'stopped' ||
-                coreStatus.state === 'stopping'
-              }
-            >
-              Arrêter Léa
-            </button>
-          </div>
-        </section>
-
-        {projectCapabilityActive && (
-          <section className="project-controls" aria-label="Projet de programmation actif">
-            <div className="project-header">
-              <h2>Projet</h2>
+          <div className="editor-actions">
+            {agentValidation?.accepts_changes && (
               <button
                 type="button"
-                className="secondary-button compact-button"
-                onClick={() => void refreshProjects()}
-                disabled={isProjectTransition || isGenerating || agentRunActive}
+                className="compact-button"
+                onClick={() => void acceptAgentChanges()}
+                disabled={isCheckpointTransition}
               >
-                {isProjectTransition ? 'Actualisation…' : 'Actualiser'}
+                Accepter les changements
+              </button>
+            )}
+            <button
+              type="button"
+              className="danger-button compact-button"
+              onClick={() => void rollbackAgentChanges()}
+              disabled={isCheckpointTransition}
+            >
+              Restaurer le checkpoint
+            </button>
+          </div>
+        </div>
+      )}
+      {agentChanges?.run_id === agentRun?.run_id && (
+        agentChanges?.checkpoint.state === 'accepted' ? (
+          <p className="status-ready">Changements acceptés.</p>
+        ) : agentChanges?.checkpoint.state === 'rolled_back' ? (
+          <p>Fichiers restaurés au checkpoint.</p>
+        ) : null
+      )}
+    </>
+  )
+
+  return (
+    <main className="app-shell">
+      <div className={`app-layout${showResourceChart ? ' with-resource-chart' : ''}`}>
+        <ConversationSidebar
+          search={search}
+          onSearch={setSearch}
+          ready={
+            coreStatus.state === 'ready' &&
+            !settingsOpen &&
+            !voiceOpen &&
+            !ephemeral.active &&
+            !ephemeral.busy
+          }
+          loading={isListLoading}
+          busy={
+            isAgentStarting ||
+            agentRunActive ||
+            isCheckpointTransition ||
+            isGenerating ||
+            isRenaming ||
+            isConversationLoading ||
+            settingsOpen ||
+            voiceOpen ||
+            ephemeral.active ||
+            ephemeral.busy
+          }
+          conversations={conversations}
+          programmingReady={programmingReady}
+          activeId={ephemeral.active ? undefined : activeConversation?.id}
+          onSelect={(id) => void loadConversation(id)}
+          onRename={openRename}
+          onDelete={(conversation) => void handleDelete(conversation)}
+          onNew={handleNewConversation}
+          onSettings={toggleSettings}
+          settingsRef={settingsButton}
+          coreControls={
+            <div className="core-buttons">
+              <button
+                type="button"
+                onClick={() => void handleCoreAction('start')}
+                disabled={
+                  isCoreTransition ||
+                  coreStatus.state === 'ready' ||
+                  coreStatus.state === 'starting'
+                }
+              >
+                Démarrer
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void handleCoreAction('stop')}
+                disabled={
+                  isCoreTransition ||
+                  coreStatus.state === 'stopped' ||
+                  coreStatus.state === 'stopping'
+                }
+              >
+                Arrêter
               </button>
             </div>
-            {projectCatalog && projectCatalog.projects.length > 0 ? (
-              <>
-                <label htmlFor="active-project">Projet actif dans IA_WORKSPACE</label>
-                <select
-                  id="active-project"
-                  value={projectCatalog.active_project_id ?? ''}
-                  onChange={(event) => void selectProject(event.target.value)}
-                  disabled={isProjectTransition || isGenerating || isModelTransition || agentRunActive}
-                >
-                  <option value="">Sélectionner un projet</option>
-                  {projectCatalog.projects.map((project) => (
-                    <option key={project.id} value={project.id}>
-                      {project.name}
-                    </option>
-                  ))}
-                </select>
-              </>
-            ) : (
-              <p className="conversation-empty">Aucun projet dans IA_WORKSPACE.</p>
-            )}
-            {projectError && (
-              <p className="chat-error" role="alert">
-                {projectError}
+          }
+        />
+        <div className="main-pane">
+          {(settingsOpen || voiceOpen) && (
+            <div className="core-status-banner">
+              {coreNotice}
+              <div ref={setAlternateNoticeHost} />
+            </div>
+          )}
+          {settingsOpen && (
+            <Settings
+              ref={settingsPanel}
+              onBack={closeSettings}
+              onSaved={setPreferences}
+              theme={theme}
+              onTheme={chooseTheme}
+              themeError={themeError}
+            />
+          )}
+          <section
+            className="chat"
+            aria-label="Conversation avec Léa"
+            hidden={settingsOpen || voiceOpen}
+          >
+            <header className="chat-topbar has-core-notice">
+              <button
+                type="button"
+                className="icon-button ephemeral-toggle"
+                aria-label={
+                  ephemeral.active
+                    ? 'Quitter le chat éphémère'
+                    : 'Chat éphémère'
+                }
+                title={
+                  ephemeral.active
+                    ? 'Quitter le chat éphémère'
+                    : 'Chat éphémère'
+                }
+                aria-pressed={ephemeral.active}
+                disabled={
+                  normalGenerating ||
+                  ephemeral.busy ||
+                  isConversationLoading ||
+                  isRenaming ||
+                  isModelTransition ||
+                  isCoreTransition ||
+                  (!ephemeral.active &&
+                    (selectedProfileId !== 'general' ||
+                      coreStatus.state !== 'ready'))
+                }
+                onClick={async () => {
+                  // Le mode normal conserve son brouillon ; aucun texte éphémère ne lui est transféré.
+                  const entering = !ephemeral.active
+                  if (entering) normalDraft.current = question
+                  if (await ephemeral.toggle()) {
+                    closeEditors()
+                    setQuestion(entering ? '' : normalDraft.current)
+                    focusQuestion()
+                  }
+                }}
+              >
+                <Icon name="ephemeral" />
+              </button>
+              <div className="topbar-notices">
+                {!settingsOpen && !voiceOpen && coreNotice}
+                <div ref={setResourceNoticeHost} />
+              </div>
+              {modelCatalog && (
+                <div className="model-selector">
+                  <label htmlFor="model-profile">Profil de Léa</label>
+                  <select
+                    id="model-profile"
+                    value={selectedProfileId}
+                    onChange={(event) =>
+                      void handleModelChange(event.target.value)
+                    }
+                    disabled={modelChangeBlocked}
+                  >
+                    {modelCatalog.profiles
+                      .filter((profile) => profile.enabled)
+                      .sort(
+                        (left, right) =>
+                          left.display_order - right.display_order,
+                      )
+                      .map((profile) => (
+                        <option key={profile.id} value={profile.id}>
+                          {profile.display_name}
+                        </option>
+                      ))}
+                  </select>
+                  <p
+                    className={`model-profile-status status-${modelPresentation.tone}`}
+                    aria-live="polite"
+                  >
+                    {shortNotice(modelPresentation.message, 'model')}
+                  </p>
+                  {modelError && (
+                    <p
+                      className="model-profile-status status-error"
+                      role="alert"
+                    >
+                      {shortNotice(modelError, 'model')}
+                    </p>
+                  )}
+                </div>
+              )}
+            </header>
+            {!modelCatalog && coreStatus.state === 'ready' && modelError && (
+              <p className="runtime-error status-error" role="alert">
+                {shortNotice(modelError, 'model')}
               </p>
             )}
-          </section>
-        )}
 
-        {programmingActive && (
-          <section className="agent-controls" aria-label="Tâche OpenHands">
-            <h2>Programmation avec OpenHands</h2>
-            <p className="conversation-empty">
-              La tâche est exécutée sur le projet actif avec checkpoint avant modification.
-            </p>
-            <form onSubmit={(event) => void startAgentRun(event)}>
-              <label htmlFor="agent-task">Tâche de développement</label>
-              <textarea
-                id="agent-task"
-                value={agentTask}
-                onChange={(event) => setAgentTask(event.target.value)}
-                placeholder="Décris la correction ou l’évolution à réaliser"
-                rows={5}
-                disabled={
-                  isAgentStarting ||
-                  isAgentCancelling ||
-                  agentRunActive ||
-                  !projectCatalog?.active_project_id ||
-                  coreStatus.state !== 'ready'
-                }
-              />
-              <button
-                type="submit"
-                disabled={
-                  isAgentStarting ||
-                  isAgentCancelling ||
-                  agentRunActive ||
-                  !agentTask.trim() ||
-                  !projectCatalog?.active_project_id ||
-                  coreStatus.state !== 'ready'
-                }
-              >
-                {isAgentStarting ? 'Préparation du checkpoint…' : 'Lancer le run'}
-              </button>
-            </form>
-            {agentRun && (
-              <div className="agent-run-status" aria-live="polite">
-                <p>
-                  <strong>Run :</strong> {agentRun.state}
-                </p>
-                {agentValidation && (
-                  <p className={`agent-run-validation status-${agentValidation.tone}`}>
-                    <strong>Validation :</strong> {agentValidation.message}
-                  </p>
-                )}
-                {agentRun.result_summary && <p>{agentRun.result_summary}</p>}
-                {agentRun.failure_detail && <p role="status">{agentRun.failure_detail}</p>}
-                {agentRunActive && (
+            {projectCapabilityActive && (
+              <div className="project-dock">
+                <section className="project-controls" aria-label="Projet de programmation actif">
+                  <h2>Projet</h2>
+                  {projectCatalog && projectCatalog.projects.length > 0 ? (
+                    <>
+                      <label className="sr-only" htmlFor="active-project">Projet actif dans IA_WORKSPACE</label>
+                      <select
+                        id="active-project"
+                        value={projectCatalog.active_project_id ?? ''}
+                        onChange={(event) => void selectProject(event.target.value)}
+                        disabled={isProjectTransition || isGenerating || isModelTransition ||
+                          agentRunActive || isAgentStarting || isCheckpointTransition}
+                      >
+                        <option value="">Sélectionner un projet</option>
+                        {projectCatalog.projects.map((project) => (
+                          <option key={project.id} value={project.id}>{project.name}</option>
+                        ))}
+                      </select>
+                    </>
+                  ) : (
+                    <p className="conversation-empty">Aucun projet dans IA_WORKSPACE.</p>
+                  )}
                   <button
                     type="button"
-                    className="danger-button compact-button"
-                    onClick={() => void cancelAgentRun()}
-                    disabled={isAgentCancelling}
+                    className="secondary-button compact-button"
+                    onClick={() => void refreshProjects()}
+                    disabled={isProjectTransition || isGenerating || agentRunActive || isAgentStarting || isCheckpointTransition}
                   >
-                    {isAgentCancelling ? 'Arrêt vérifié en cours…' : 'Annuler le run'}
+                    {isProjectTransition ? 'Actualisation…' : 'Actualiser'}
                   </button>
-                )}
-                {agentChanges && (
-                  <div className="agent-changes">
-                    <p>
-                      <strong>Checkpoint :</strong> {agentChanges.checkpoint.state}
-                    </p>
-                    {agentChanges.changes.length > 0 ? (
-                      <ul>
-                        {agentChanges.changes.map((change) => (
-                          <li key={`${change.change}:${change.relative_path}`}>
-                            {change.change} — {change.relative_path}
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p>Aucun fichier modifié par ce run.</p>
-                    )}
-                    {agentChanges.checkpoint.state === 'completed' && (
-                      <div className="editor-actions">
-                        {agentValidation?.accepts_changes && (
+                  {projectError && <p className="chat-error" role="alert">{shortNotice(projectError, 'project')}</p>}
+                </section>
+              </div>
+            )}
+
+            <div
+              className={`chat-scroll${!displayedConversation?.messages.length && !displayedPending && !(programmingActive && agentRun) ? ' chat-empty' : ''}`}
+              ref={chatScroll}
+              onScroll={() => {
+                const panel = chatScroll.current
+                if (panel)
+                  followMessages.current =
+                    panel.scrollHeight - panel.scrollTop - panel.clientHeight <
+                    80
+              }}
+            >
+              <div className="chat-content">
+                {programmingActive &&
+                  (Boolean(agentPollingError) ||
+                    agentPollingTone !== 'normal' ||
+                    Boolean(agentError)) && (
+                    <section
+                      className="agent-controls"
+                      aria-label="Tâche OpenHands"
+                    >
+                      <h2 className="sr-only">Tâche OpenHands</h2>
+                      {agentPollingError && (
+                        <p className="agent-run-notice status-error" role="alert">
+                          {shortNotice(agentPollingError, 'task')}
+                        </p>
+                      )}
+                      {agentPollingTone !== 'normal' && (
+                        <p
+                          className={`agent-run-notice status-${agentPollingTone}`}
+                          role={
+                            agentPollingTone === 'error' ? 'alert' : undefined
+                          }
+                        >
+                          {shortNotice(agentPollingHealth.message, 'task')}
+                        </p>
+                      )}
+                      {agentError && (
+                        <p className="chat-error" role="alert">
+                          {shortNotice(agentError, 'task')}
+                        </p>
+                      )}
+                    </section>
+                  )}
+
+                <section
+                  className="conversation"
+                  aria-label="Conversation"
+                  aria-busy={isGenerating || isConversationLoading}
+                >
+                  {!ephemeral.active &&
+                    renameTarget &&
+                    renameDraft !== null && (
+                      <form
+                        className="inline-editor rename-editor"
+                        onSubmit={(event) => void handleRenameSubmit(event)}
+                      >
+                        <label htmlFor="conversation-title">
+                          Nouveau titre
+                        </label>
+                        <input
+                          id="conversation-title"
+                          value={renameDraft}
+                          onChange={(event) =>
+                            setRenameDraft(event.target.value)
+                          }
+                          maxLength={100}
+                          autoFocus
+                          disabled={isRenaming || isGenerating}
+                        />
+                        <div className="editor-actions">
+                          <button
+                            type="submit"
+                            className="compact-button"
+                            disabled={
+                              isRenaming ||
+                              isGenerating ||
+                              coreStatus.state !== 'ready'
+                            }
+                          >
+                            {isRenaming ? 'Enregistrement…' : 'Enregistrer'}
+                          </button>
                           <button
                             type="button"
-                            className="compact-button"
-                            onClick={() => void acceptAgentChanges()}
-                            disabled={isCheckpointTransition}
+                            className="secondary-button compact-button"
+                            onClick={() => setRenameDraft(null)}
+                            disabled={isRenaming}
                           >
-                            Accepter les changements
+                            Annuler
                           </button>
+                        </div>
+                      </form>
+                    )}
+
+                  {!displayedConversation?.messages.length &&
+                    !displayedPending &&
+                    !settingsOpen &&
+                    !voiceOpen &&
+                    !(programmingActive && agentRun) && (
+                      <Welcome
+                        ephemeral={ephemeral.active}
+                        index={welcomeIndex}
+                        profileId={activeProfile?.id}
+                      />
+                    )}
+                  {isConversationLoading && (
+                    <p className="conversation-pending">Chargement…</p>
+                  )}
+                  <div className="conversation-list" aria-live="polite">
+                    {/* Les anciens runs sans conversation restent lisibles sans réécrire l'historique. */}
+                    {programmingActive && agentRun && !agentRun.conversation_id && (
+                      <>
+                        <article className="message message-user">
+                          <strong>Vous</strong>
+                          <MarkdownMessage content={agentRun.task} />
+                        </article>
+                        <AgentRunResult run={agentRun}>{agentCheckpointControls}</AgentRunResult>
+                      </>
+                    )}
+                    {displayedConversation?.messages.map((message) => (
+                      programmingActive && message.role === 'assistant' &&
+                      agentRun && message.agent_run_id === agentRun.run_id ? (
+                        <AgentRunResult key={message.id} run={agentRun}>
+                          {agentCheckpointControls}
+                        </AgentRunResult>
+                      ) :
+                      <article
+                        className={`message message-${message.role} message-${message.status}`}
+                        key={message.id}
+                      >
+                        <strong>
+                          {message.role === 'user' ? 'Vous' : 'Léa'}
+                        </strong>
+                        {message.role === 'assistant' && message.profile_id && (
+                          <small className="message-profile">
+                            {modelCatalog?.profiles.find(
+                              (profile) => profile.id === message.profile_id,
+                            )?.display_name ?? message.profile_id}
+                          </small>
                         )}
-                        <button
-                          type="button"
-                          className="danger-button compact-button"
-                          onClick={() => void rollbackAgentChanges()}
-                          disabled={isCheckpointTransition}
-                        >
-                          Restaurer le checkpoint
-                        </button>
-                      </div>
+                        {editingMessageId === message.id ? (
+                          <form
+                            className="inline-editor message-editor"
+                            onSubmit={(event) =>
+                              void handleEditSubmit(event, message)
+                            }
+                          >
+                            <label htmlFor={`message-edit-${message.id}`}>
+                              Modifier votre message
+                            </label>
+                            <textarea
+                              id={`message-edit-${message.id}`}
+                              value={editDraft}
+                              onChange={(event) =>
+                                setEditDraft(event.target.value)
+                              }
+                              rows={4}
+                              autoFocus
+                              disabled={isGenerating}
+                            />
+                            <div className="editor-actions">
+                              <button
+                                type="submit"
+                                className="compact-button"
+                                disabled={
+                                  isGenerating || coreStatus.state !== 'ready'
+                                }
+                              >
+                                {isGenerating
+                                  ? 'Envoi…'
+                                  : 'Enregistrer et régénérer'}
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary-button compact-button"
+                                onClick={() => {
+                                  setEditingMessageId(null)
+                                  setEditDraft('')
+                                }}
+                                disabled={isGenerating}
+                              >
+                                Annuler
+                              </button>
+                            </div>
+                          </form>
+                        ) : (
+                          <MarkdownMessage content={message.content} />
+                        )}
+                        {message.role === 'assistant' && (
+                          <WebSources sources={message.web_sources} />
+                        )}
+                        {message.status === 'failed' && (
+                          <p className="message-error">
+                            {shortNotice(messageFailureLabel(message), 'conversation')}
+                          </p>
+                        )}
+                        {editingMessageId !== message.id && (
+                          <div className="message-actions">
+                            <button
+                              type="button"
+                              className="text-button"
+                              onClick={() => void handleCopy(message)}
+                            >
+                              Copier
+                            </button>
+                            {!ephemeral.active &&
+                              message.role === 'user' &&
+                              !isWebFailure(message) &&
+                              allowsDestructiveMessageAction(message) && (
+                                <button
+                                  type="button"
+                                  className="text-button"
+                                  onClick={() => handleEdit(message)}
+                                  disabled={
+                                    isGenerating ||
+                                    isConversationLoading ||
+                                    isRenaming
+                                  }
+                                >
+                                  Modifier
+                                </button>
+                              )}
+                            {!ephemeral.active &&
+                              message.role === 'user' &&
+                              message.status === 'failed' &&
+                              !isWebFailure(message) &&
+                              allowsDestructiveMessageAction(message) && (
+                                <button
+                                  type="button"
+                                  className="text-button"
+                                  onClick={() => handleRetry(message)}
+                                  disabled={
+                                    isGenerating ||
+                                    isConversationLoading ||
+                                    isRenaming ||
+                                    coreStatus.state !== 'ready'
+                                  }
+                                >
+                                  Réessayer
+                                </button>
+                              )}
+                            {!ephemeral.active &&
+                              message.role === 'user' &&
+                              message.status === 'failed' &&
+                              isWebFailure(message) &&
+                              allowsDestructiveMessageAction(message) && (
+                                <button
+                                  type="button"
+                                  className="text-button"
+                                  onClick={() => prepareWebRetry(message)}
+                                  disabled={
+                                    isGenerating ||
+                                    isConversationLoading ||
+                                    isRenaming ||
+                                    preferences?.web_enabled !== true ||
+                                    coreStatus.state !== 'ready'
+                                  }
+                                >
+                                  Préparer une nouvelle recherche
+                                </button>
+                              )}
+                          </div>
+                        )}
+                      </article>
+                    ))}
+                    {displayedPending && (
+                      <article className="message message-user message-pending">
+                        <strong>Vous</strong>
+                        <MarkdownMessage content={displayedPending} />
+                      </article>
                     )}
                   </div>
-                )}
+                  {isGenerating && (
+                    <p className="conversation-pending">Léa répond…</p>
+                  )}
+                  {copyFeedback && (
+                    <p className="copy-feedback" aria-live="polite">
+                      {copyFeedback}
+                    </p>
+                  )}
+                  {(ephemeral.error ||
+                    (!ephemeral.active && conversationError)) && (
+                    <p className="chat-error" role="alert">
+                      {shortNotice(ephemeral.error || conversationError, 'conversation')}
+                    </p>
+                  )}
+                </section>
               </div>
-            )}
-            {agentPollingError && (
-              <p className="agent-run-notice status-error" role="alert">
-                {agentPollingError}
-              </p>
-            )}
-            {agentPollingTone !== 'normal' && (
-              <p
-                className={`agent-run-notice status-${agentPollingTone}`}
-                role={agentPollingTone === 'error' ? 'alert' : undefined}
-              >
-                {agentPollingHealth.message}
-              </p>
-            )}
-            {agentError && (
-              <p className="chat-error" role="alert">
-                {agentError}
-              </p>
-            )}
-          </section>
-        )}
-
-        <section className="conversation-browser" aria-label="Conversations locales">
-          <label htmlFor="conversation-search">Rechercher une conversation</label>
-          <input
-            id="conversation-search"
-            type="search"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Titre ou message"
-            disabled={coreStatus.state !== 'ready'}
-          />
-          {isListLoading && (
-            <p className="conversation-pending">Chargement des conversations…</p>
-          )}
-          {!isListLoading && conversations.length === 0 && (
-            <p className="conversation-empty">Aucune conversation enregistrée.</p>
-          )}
-          <div className="conversation-summaries">
-            {conversations.map((conversation) => (
-              <button
-                key={conversation.id}
-                type="button"
-                className={
-                  conversation.id === activeConversation?.id
-                    ? 'conversation-summary active'
-                    : 'conversation-summary'
-                }
-                onClick={() => void loadConversation(conversation.id)}
-                disabled={isGenerating}
-              >
-                <span>{conversation.title}</span>
-                <small>{formatActivity(conversation.updated_at)}</small>
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="conversation" aria-label="Conversation" aria-busy={isGenerating || isConversationLoading}>
-          <div className="conversation-header">
-            <h2>{activeConversation?.title ?? 'Nouvelle conversation'}</h2>
-            <div className="conversation-actions">
-              {activeConversation && (
-                <>
-                  <button
-                    type="button"
-                    className="secondary-button compact-button"
-                    onClick={handleRename}
-                    disabled={isGenerating || isConversationLoading || isRenaming}
-                  >
-                    Renommer
-                  </button>
-                  <button
-                    type="button"
-                    className="danger-button compact-button"
-                    onClick={() => void handleDelete()}
-                    disabled={isGenerating || isConversationLoading || isRenaming}
-                  >
-                    Supprimer
-                  </button>
-                </>
-              )}
-              <button
-                type="button"
-                className="secondary-button compact-button"
-                onClick={handleNewConversation}
-                disabled={isGenerating || isRenaming}
-              >
-                Nouvelle conversation
-              </button>
             </div>
-          </div>
-
-          {activeConversation && renameDraft !== null && (
-            <form
-              className="inline-editor rename-editor"
-              onSubmit={(event) => void handleRenameSubmit(event)}
-            >
-              <label htmlFor="conversation-title">Nouveau titre</label>
-              <input
-                id="conversation-title"
-                value={renameDraft}
-                onChange={(event) => setRenameDraft(event.target.value)}
-                maxLength={100}
-                autoFocus
-                disabled={isRenaming || isGenerating}
-              />
-              <div className="editor-actions">
-                <button
-                  type="submit"
-                  className="compact-button"
-                  disabled={isRenaming || isGenerating || coreStatus.state !== 'ready'}
-                >
-                  {isRenaming ? 'Enregistrement…' : 'Enregistrer'}
-                </button>
+            <div className="composer-container">
+              <form
+                className="composer"
+                aria-label={
+                  programmingActive ? 'Tâche de programmation' : 'Votre question'
+                }
+                onSubmit={handleSubmit}
+              >
+                <label className="sr-only" htmlFor="question">
+                  {programmingActive ? 'Tâche de programmation' : 'Votre question'}
+                </label>
+                {/* Réservé à l'import de fichiers dans une étape future ; aucune action pour le moment. */}
                 <button
                   type="button"
-                  className="secondary-button compact-button"
-                  onClick={() => setRenameDraft(null)}
-                  disabled={isRenaming}
+                  className="icon-button composer-add"
+                  aria-label="Ajouter des fichiers (indisponible)"
+                  title="Import de fichiers indisponible"
+                  disabled
                 >
-                  Annuler
+                  <Icon name="plus" />
                 </button>
-              </div>
-            </form>
-          )}
-
-          {!activeConversation && !pendingText && (
-            <p className="conversation-empty">
-              La conversation sera enregistrée au premier message.
-            </p>
-          )}
-          {isConversationLoading && <p className="conversation-pending">Chargement…</p>}
-          <div className="conversation-list" aria-live="polite">
-            {activeConversation?.messages.map((message) => (
-              <article
-                className={`message message-${message.role} message-${message.status}`}
-                key={message.id}
-              >
-                <strong>{message.role === 'user' ? 'Vous' : 'Léa'}</strong>
-                {message.role === 'assistant' && message.profile_id && (
-                  <small className="message-profile">
-                    {modelCatalog?.profiles.find(
-                      (profile) => profile.id === message.profile_id,
-                    )?.display_name ?? message.profile_id}
-                  </small>
+                <AutoTextarea
+                  ref={questionInput}
+                  id="question"
+                  value={question}
+                  onChange={(event) => setQuestion(event.target.value)}
+                  onKeyDown={handleQuestionKeyDown}
+                  placeholder={
+                    programmingActive
+                      ? 'Décris la correction ou l’évolution à réaliser…'
+                      : 'Écrivez votre question…'
+                  }
+                  rows={1}
+                  autoComplete="off"
+                  disabled={
+                    isGenerating ||
+                    ephemeral.busy ||
+                    isConversationLoading ||
+                    isRenaming ||
+                    (programmingActive &&
+                      (isAgentStarting || isAgentCancelling || agentRunActive))
+                  }
+                />
+                {!ephemeral.active &&
+                  !programmingActive &&
+                  preferences?.web_enabled !== true && (
+                  <p className="web-note">
+                    Web désactivé dans les paramètres
+                  </p>
                 )}
-                {editingMessageId === message.id ? (
-                  <form
-                    className="inline-editor message-editor"
-                    onSubmit={(event) => void handleEditSubmit(event, message)}
-                  >
-                    <label htmlFor={`message-edit-${message.id}`}>Modifier votre message</label>
-                    <textarea
-                      id={`message-edit-${message.id}`}
-                      value={editDraft}
-                      onChange={(event) => setEditDraft(event.target.value)}
-                      rows={4}
-                      autoFocus
-                      disabled={isGenerating}
-                    />
-                    <div className="editor-actions">
-                      <button
-                        type="submit"
-                        className="compact-button"
-                        disabled={isGenerating || coreStatus.state !== 'ready'}
-                      >
-                        {isGenerating ? 'Envoi…' : 'Enregistrer et régénérer'}
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary-button compact-button"
-                        onClick={() => {
-                          setEditingMessageId(null)
-                          setEditDraft('')
-                        }}
-                        disabled={isGenerating}
-                      >
-                        Annuler
-                      </button>
-                    </div>
-                  </form>
-                ) : (
-                  <p>{message.content}</p>
-                )}
-                {message.role === 'assistant' && message.web_sources.length > 0 && (
-                  <section className="message-sources" aria-label="Sources Web collectées">
-                    <strong>Web utilisé — Sources contrôlées par Léa</strong>
-                    <ol>
-                      {message.web_sources.map((source) => (
-                        <li key={`${source.source_id}:${source.url}`}>
-                          <a href={source.url} target="_blank" rel="noopener noreferrer">
-                            [{source.source_id}] {source.title}
-                          </a>
-                          <small>
-                            {source.domain} · {source.provider} · {webSourceKindLabel(source)}
-                            {source.published_at ? ` · publié : ${source.published_at}` : ''}
-                            {source.updated_at ? ` · mis à jour : ${source.updated_at}` : ''}
-                            {source.document_date ? ` · date interne du document : ${source.document_date}` : ''}
-                          </small>
-                          {source.limitations && <small>Limite : {source.limitations}</small>}
-                        </li>
-                      ))}
-                    </ol>
-                  </section>
-                )}
-                {message.status === 'failed' && (
-                  <p className="message-error">{messageFailureLabel(message)}</p>
-                )}
-                {editingMessageId !== message.id && (
-                  <div className="message-actions">
-                    <button
-                      type="button"
-                      className="text-button"
-                      onClick={() => void handleCopy(message)}
-                    >
-                      Copier
-                    </button>
-                    {message.role === 'user' &&
-                      !isWebFailure(message) &&
-                      allowsDestructiveMessageAction(message) && (
-                      <button
-                        type="button"
-                        className="text-button"
-                        onClick={() => handleEdit(message)}
-                        disabled={isGenerating || isConversationLoading || isRenaming}
-                      >
-                        Modifier
-                      </button>
-                    )}
-                    {message.role === 'user' &&
-                      message.status === 'failed' &&
-                      !isWebFailure(message) &&
-                      allowsDestructiveMessageAction(message) && (
-                        <button
-                          type="button"
-                          className="text-button"
-                          onClick={() => handleRetry(message)}
-                          disabled={
-                            isGenerating ||
-                            isConversationLoading ||
-                            isRenaming ||
-                            coreStatus.state !== 'ready'
-                          }
-                        >
-                          Réessayer
-                        </button>
-                      )}
-                    {message.role === 'user' &&
-                      message.status === 'failed' &&
-                      isWebFailure(message) &&
-                      allowsDestructiveMessageAction(message) && (
-                        <button
-                          type="button"
-                          className="text-button"
-                          onClick={() => prepareWebRetry(message)}
-                          disabled={
-                            isGenerating ||
-                            isConversationLoading ||
-                            isRenaming ||
-                            preferences?.web_enabled !== true ||
-                            coreStatus.state !== 'ready'
-                          }
-                        >
-                          Préparer une nouvelle recherche
-                        </button>
-                      )}
-                    {message.role === 'assistant' && allowsDestructiveMessageAction(message) && (
-                      <button
-                        type="button"
-                        className="text-button"
-                        onClick={() => handleRegenerate(message)}
-                        disabled={
-                          isGenerating ||
-                          isConversationLoading ||
-                          isRenaming ||
-                          coreStatus.state !== 'ready'
-                        }
-                      >
-                        Régénérer
-                      </button>
-                    )}
+                {webInProgress && (
+                  <div className="web-progress" role="status">
+                    <span>Recherche Web autorisée en cours…</span>
                   </div>
                 )}
-              </article>
-            ))}
-            {pendingText && (
-              <article className="message message-user message-pending">
-                <strong>Vous</strong>
-                <p>{pendingText}</p>
-              </article>
-            )}
-          </div>
-          {isGenerating && <p className="conversation-pending">Léa répond…</p>}
-          {copyFeedback && (
-            <p className="copy-feedback" aria-live="polite">
-              {copyFeedback}
-            </p>
-          )}
-          {conversationError && (
-            <p className="chat-error" role="alert">
-              {conversationError}
-            </p>
-          )}
-        </section>
-
-        <form className="conversation" aria-label="Votre question" onSubmit={handleSubmit}>
-            <label htmlFor="question">Votre question</label>
-            <textarea
-              ref={questionInput}
-              id="question"
-              value={question}
-              onChange={(event) => setQuestion(event.target.value)}
-              placeholder="Écrivez votre question"
-              rows={5}
-              disabled={
-                isGenerating ||
-                isConversationLoading ||
-                isRenaming
-              }
-            />
-            {preferences?.web_enabled !== true && (
-              <p className="web-note">Le Web est désactivé dans Paramètres.</p>
-            )}
-            {programmingActive && (
-              <p className="web-note">
-                Cette zone reste réservée au Web conversationnel. OpenHands et son terminal
-                restent sans accès Internet.
+                <div className="composer-voice" ref={setVoiceControlsHost} />
+              </form>
+            </div>
+            <div className="chat-footer">
+              <p className="composer-hint">
+                {ephemeral.active
+                  ? 'Sans historique local · Traces possibles sur les sites consultés'
+                  : 'Vérifiez les réponses de Léa'}
               </p>
-            )}
-            {webInProgress && (
-              <div className="web-progress" role="status">
-                <span>Recherche Web autorisée en cours…</span>
-                {webOperationId && (
-                  <button
-                    type="button"
-                    className="secondary-button compact-button"
-                    onClick={() => void cancelWebRequest()}
-                  >
-                    Annuler la recherche
-                  </button>
-                )}
-              </div>
-            )}
-            <button
-              type="submit"
-              disabled={
-                isGenerating ||
-                isConversationLoading ||
-                isRenaming ||
-                coreStatus.state !== 'ready' ||
-                (
-                  programmingActive
-                  && !isExplicitWebRequest(question)
-                  && !isAmbiguousWebRequest(question)
-                  && !(
-                    activeConversation?.web_confirmation_pending === true
-                    && isWebConfirmation(question)
-                  )
-                )
-              }
-            >
-              {isGenerating ? 'Envoi...' : 'Envoyer'}
-            </button>
-        </form>
-      </section>
-      <VoiceControls preferences={preferences} onMode={setVoiceOpen} onDictated={dictated} onSend={sendVoice}
-        hidden={settingsOpen} contextKey={`${coreStatus.state}:${selectedProfileId}:${projectCatalog?.active_project_id ?? ''}`}
-        ready={coreStatus.state === 'ready' && Boolean(activeProfile)}
-        blocked={isGenerating || isAgentStarting || agentRunActive || isModelTransition || isCoreTransition || isProjectTransition || isConversationLoading || isRenaming} />
-      {preferencesError && <p role="status">{preferencesError}</p>}
-      <ResourcePanel
-        enabled={coreStatus.state !== 'stopped' && coreStatus.state !== 'stopping' && Boolean(activeProfile || loadingProfile)}
-        profileId={(loadingProfile ?? activeProfile)?.id}
-        showChart={!settingsOpen && !voiceOpen && preferences?.show_resource_chart === true}
-      />
+            </div>
+          </section>
+          <VoiceControls
+            composerSendButton={
+              isGenerating || isAgentStarting || agentRunActive || isAgentCancelling ? (
+                <button
+                  type="button"
+                  className="icon-button send-button"
+                  aria-label="Arrêter la réponse"
+                  title="Arrêter la réponse"
+                  aria-busy={isResponseStopping || isAgentCancelling}
+                  disabled={isResponseStopping || isAgentCancelling}
+                  onClick={() => void stopResponse()}
+                >
+                  <Icon name="stop" />
+                </button>
+              ) : showSendAction ? (
+                <button
+                  ref={sendButton}
+                  className="icon-button send-button"
+                  aria-label="Envoyer"
+                  title="Envoyer"
+                  type="submit"
+                  disabled={
+                    isGenerating ||
+                    ephemeral.busy ||
+                    isConversationLoading ||
+                    isRenaming ||
+                    coreStatus.state !== 'ready' ||
+                    (programmingActive &&
+                      (isAgentStarting ||
+                        isAgentCancelling ||
+                        isCheckpointTransition ||
+                        agentRunActive ||
+                        !projectCatalog?.active_project_id))
+                  }
+                >
+                  <Icon name="send" />
+                </button>
+              ) : null
+            }
+            ephemeral={ephemeral.active}
+            controlsHost={voiceControlsHost}
+            preferences={preferences}
+            onMode={setVoiceOpen}
+            onDictated={dictated}
+            onSend={sendVoice}
+            onStopResponse={stopResponse}
+            stopping={isResponseStopping || isAgentCancelling}
+            hidden={settingsOpen}
+            contextKey={`${coreStatus.state}:${selectedProfileId}:${projectCatalog?.active_project_id ?? ''}:${ephemeral.conversation?.id ?? 'normal'}`}
+            ready={coreStatus.state === 'ready' && Boolean(activeProfile)}
+            blocked={
+              isGenerating ||
+              ephemeral.busy ||
+              isAgentStarting ||
+              agentRunActive ||
+              isCheckpointTransition ||
+              isModelTransition ||
+              isCoreTransition ||
+              isProjectTransition ||
+              isConversationLoading ||
+              isRenaming
+            }
+          />
+          <ResourcePanel
+            noticeHost={settingsOpen || voiceOpen ? alternateNoticeHost : resourceNoticeHost}
+            enabled={
+              coreStatus.state !== 'stopped' &&
+              coreStatus.state !== 'stopping' &&
+              Boolean(activeProfile || loadingProfile)
+            }
+            profileId={(loadingProfile ?? activeProfile)?.id}
+            showChart={showResourceChart}
+          />
+        </div>
+      </div>
+      {preferencesError && <p role="status">{shortNotice(preferencesError, 'preferences')}</p>}
     </main>
   )
 }

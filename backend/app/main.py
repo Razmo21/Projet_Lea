@@ -7,7 +7,7 @@ import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Coroutine, Protocol
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
@@ -64,8 +64,10 @@ from .openhands_runs import OpenHandsRunError, OpenHandsRunManager
 from .workspace import FrozenProject, WorkspaceGuard, WorkspacePathError
 from .preferences import PreferencesError, PreferencesStore, ReasoningLevel
 from .resources import ResourceMonitor
+from .ephemeral import EphemeralSessions
 from .dynamic_browser import EdgeDynamicPageReader
 from .web_gateway import (
+    PRIVATE_WEB_OPERATION,
     SafeHttpFetcher,
     WebAuthorizationError,
     WebAuthorizationManager,
@@ -470,6 +472,19 @@ class SendMessageRequest(StrictRequest):
             raise ValueError("L’identifiant de recherche Web est invalide.") from error
 
 
+class EphemeralMessageRequest(StrictRequest):
+    """Aucun historique, identifiant persistant ni permission Web n'est accepté."""
+
+    message: str
+    expected_revision: int = Field(ge=0)
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, content: str) -> str:
+        """Applique la même limite commune que le chat normal."""
+        return normalize_received_user_message(content)
+
+
 class RevisionRequest(StrictRequest):
     expected_revision: int = Field(ge=0)
 
@@ -534,6 +549,10 @@ class ConversationLockRegistry:
         return self._locks.setdefault(conversation_id, asyncio.Lock())
 
 
+class ResponseCancelledError(Exception):
+    """Arrêt explicite d'une réponse, distinct d'une erreur du modèle ou du Web."""
+
+
 class RuntimeCoordinator:
     """Sérialise les générations, runs agents et changements de cerveau."""
 
@@ -546,6 +565,7 @@ class RuntimeCoordinator:
         self.active_agent_runs = 0
         self._lock = asyncio.Lock()
         self.database = database
+        self.response_operations: dict[str, tuple[asyncio.Task, asyncio.Event]] = {}
 
     def _recovery_pending(self) -> bool:
         """Detect persisted runs not owned by this instance without inventing a terminal state."""
@@ -563,13 +583,17 @@ class RuntimeCoordinator:
                 "Un run attend un arrêt vérifié. Vérifie Docker puis redémarre Léa."
             )
 
-    async def begin_generation(self) -> str:
+    async def begin_generation(self, response_id: str | None = None) -> str:
         """Fige le profil d'une réponse et interdit une génération pendant une bascule."""
 
         async with self._lock:
             self._require_recovered()
             if self.switching_profile_id is not None:
                 raise GenerationConflictError("Un changement de profil est en cours.")
+            if response_id is not None:
+                if response_id in self.response_operations:
+                    raise GenerationConflictError("Cette réponse est déjà en cours.")
+                self.response_operations[response_id] = (asyncio.current_task(), asyncio.Event())
             self.active_generations += 1
             return self.active_profile_id
 
@@ -577,8 +601,37 @@ class RuntimeCoordinator:
         """Libère exactement une génération enregistrée, même après erreur."""
 
         async with self._lock:
+            for identity, (owner, _event) in list(self.response_operations.items()):
+                if owner is asyncio.current_task():
+                    self.response_operations.pop(identity)
             if self.active_generations > 0:
                 self.active_generations -= 1
+
+    async def response_step(self, operation: Coroutine[Any, Any, Any]) -> Any:
+        """Interrompt l'appel en vol et attend sa fermeture avant de libérer le modèle."""
+
+        event = next((event for owner, event in self.response_operations.values()
+                      if owner is asyncio.current_task()), None)
+        if event is None:
+            return await operation
+        if event.is_set():
+            operation.close()
+            raise ResponseCancelledError("La réponse a été interrompue.")
+        work = asyncio.create_task(operation)
+        stopped = asyncio.create_task(event.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                {work, stopped}, return_when=asyncio.FIRST_COMPLETED,
+            )
+            if stopped in done:
+                raise ResponseCancelledError("La réponse a été interrompue.")
+            return await work
+        finally:
+            # Une fermeture de session ou une erreur doit aussi fermer le transport HTTP.
+            for task in (work, stopped):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(work, stopped, return_exceptions=True)
 
     async def begin_agent_run(self, required_profile_id: str) -> None:
         """Réserve le slot agent seulement sur le profil actif et sans autre activité."""
@@ -636,6 +689,18 @@ class RuntimeCoordinator:
             }
 
 
+def _response_id(request: Request) -> str | None:
+    """Le jeton d'arrêt identifie une requête ; il ne donne aucune permission Web."""
+
+    value = request.headers.get("x-lea-response-id")
+    if value is None:
+        return None
+    try:
+        return str(UUID(value))
+    except ValueError as error:
+        raise HTTPException(422, "L'identifiant de réponse est invalide.") from error
+
+
 def require_local_mutation(request: Request) -> None:
     """Refuse une mutation issue d'une origine navigateur non locale."""
 
@@ -678,6 +743,16 @@ def _reasoning_level(request: Request, profile: ModelProfile) -> ReasoningLevel:
         )
     except PreferencesError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+def _require_direct_conversation_profile(profile: ModelProfile) -> None:
+    """Réserve les profils agentiques à leur route de tâche, sans accès Web parallèle."""
+
+    if "agent_runs" in profile.capabilities:
+        raise HTTPException(
+            status_code=409,
+            detail="Utilise la saisie Programmation pour démarrer une tâche sur le projet sélectionné.",
+        )
 
 
 def _current_information_web_availability(
@@ -770,6 +845,8 @@ def _safe_failure_code(error: BaseException) -> tuple[int, str, str]:
         return 503, MODEL_UNAVAILABLE_MESSAGE, "model_unavailable"
     if isinstance(error, asyncio.CancelledError):
         return 503, "La génération a été interrompue.", "interrupted"
+    if isinstance(error, ResponseCancelledError):
+        return 409, str(error), "interrupted"
     if isinstance(error, WebCancelledError):
         return 409, str(error), "interrupted"
     if isinstance(error, (MemoryCapacityError, ValueError)):
@@ -777,14 +854,14 @@ def _safe_failure_code(error: BaseException) -> tuple[int, str, str]:
     return 502, MODEL_INVALID_RESPONSE_MESSAGE, "model_error"
 
 
-def _safe_web_failure(error: WebGatewayError) -> tuple[int, str]:
+def _safe_web_failure(error: WebGatewayError | ResponseCancelledError) -> tuple[int, str]:
     """Traduit un échec Web sans publier d'adresse IP ni de détail de transport."""
 
     if isinstance(error, WebPolicyError):
         return 422, "model_error"
     if isinstance(error, WebAuthorizationError):
         return 409, "model_error"
-    if isinstance(error, WebCancelledError):
+    if isinstance(error, (WebCancelledError, ResponseCancelledError)):
         return 409, "interrupted"
     if isinstance(error, WebTimeoutError):
         return 504, "model_error"
@@ -883,27 +960,34 @@ async def _generate_response(
             answer = insufficient_research_message(web_research)
         else:
             if web_research is not None and web_query is not None and isinstance(gateway, HttpModelGateway):
-                model_messages, prompt_tokens = await _prepare_web_prompt(
+                model_messages, prompt_tokens = await runtime.response_step(_prepare_web_prompt(
                     model_messages, web_research, web_query, profile, gateway
-                )
+                ))
             stage = "model_call"
             model_started_at = time.monotonic()
             if cancellation is None:
-                answer = await gateway.generate(model_messages)
+                answer = await runtime.response_step(gateway.generate(model_messages))
             else:
-                generation_task = asyncio.create_task(gateway.generate(model_messages))
-                cancellation_task = asyncio.create_task(cancellation.wait())
-                done, _pending = await asyncio.wait(
-                    {generation_task, cancellation_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                if cancellation_task in done:
-                    generation_task.cancel()
-                    await asyncio.gather(generation_task, return_exceptions=True)
-                    raise WebCancelledError("La recherche Web a été annulée.")
-                cancellation_task.cancel()
-                await asyncio.gather(cancellation_task, return_exceptions=True)
-                answer = await generation_task
+                # Le bouton Web historique et l'arrêt général ferment les mêmes ressources.
+                async def web_generation() -> str:
+                    """Attend l'inférence ou l'annulation Web, sans tâche enfant orpheline."""
+                    generation_task = asyncio.create_task(gateway.generate(model_messages))
+                    cancellation_task = asyncio.create_task(cancellation.wait())
+                    try:
+                        done, _pending = await asyncio.wait(
+                            {generation_task, cancellation_task},
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        if cancellation_task in done:
+                            raise WebCancelledError("La recherche Web a été annulée.")
+                        return await generation_task
+                    finally:
+                        for task in (generation_task, cancellation_task):
+                            if not task.done():
+                                task.cancel()
+                        await asyncio.gather(generation_task, cancellation_task, return_exceptions=True)
+
+                answer = await runtime.response_step(web_generation())
             if web_research is not None:
                 LOGGER.info(
                     "web_model_completed conversation_id=%s message_id=%s "
@@ -983,7 +1067,9 @@ async def _generate_response(
         status_code, public_message, error_code = _safe_failure_code(error)
         if web_research is not None and type(error) is ModelResponseError:
             public_message = WEB_SYNTHESIS_FAILURE_MESSAGE
-        if isinstance(error, WebGatewayError):
+        if isinstance(error, ResponseCancelledError) and web_research is not None:
+            failure_kind = "web_cancelled"
+        elif isinstance(error, WebGatewayError):
             failure_kind = error.code
         elif web_research is not None:
             # Le schéma existant reconnaît ce code Web ; un échec de synthèse
@@ -1083,6 +1169,7 @@ def create_app(
         try:
             yield
         finally:
+            application.state.ephemeral.clear()
             try:
                 await openhands_runs.close()
             finally:
@@ -1095,6 +1182,7 @@ def create_app(
         lifespan=lifespan,
     )
     application.state.database = database
+    application.state.ephemeral = EphemeralSessions()
     application.state.preferences = PreferencesStore(database)
     application.state.model_registry = model_registry
     application.state.fixed_model_gateway = model_gateway
@@ -1124,6 +1212,14 @@ def create_app(
             ),
         )
     application.state.web_gateway = web_gateway
+    # Le chat privé réutilise les protections HTTP et les fournisseurs, sans profil
+    # Edge temporaire sur disque. Une page exigeant JavaScript peut donc être refusée.
+    application.state.ephemeral_web_gateway = WebGateway(
+        application.state.ephemeral.authorization,
+        fetcher=web_gateway.fetcher,
+        provider=web_gateway.provider,
+        research_limits=web_gateway.research_limits,
+    )
     application.state.web_cancellations: dict[str, asyncio.Event] = {}
     application.state.runtime_coordinator = RuntimeCoordinator(
         model_registry.document.default_profile_id, database
@@ -1164,7 +1260,7 @@ def create_app(
         allow_origins=sorted(ALLOWED_BROWSER_ORIGINS),
         allow_credentials=False,
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
-        allow_headers=["Content-Type"],
+        allow_headers=["Content-Type", "X-Lea-Response-ID"],
     )
     # Refuse le DNS rebinding vers l'API loopback tout en conservant TestClient.
     application.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
@@ -1326,6 +1422,7 @@ def create_app(
         result: dict[str, Any] = {
             "state": state,
             "message": message,
+            "instance_id": request.app.state.ephemeral.instance_id,
             **status,
         }
         if development_readiness is not None:
@@ -1614,6 +1711,160 @@ def create_app(
             "checkpoint": request.app.state.checkpoints.rollback(checkpoint_id, frozen),
         }
 
+    @application.post("/api/ephemeral", dependencies=[Depends(require_local_mutation)])
+    async def create_ephemeral(request: Request) -> dict:
+        """Ouvre un chat RAM pour le profil conversationnel actif, sans écriture SQLite."""
+        profile_id = _runtime(request).active_profile_id
+        profile = request.app.state.model_registry.profile(profile_id)
+        if profile.id != "general":
+            raise HTTPException(409, "Le chat éphémère est réservé au profil Général.")
+        session = request.app.state.ephemeral.create(profile_id)
+        return {**session.detail(), "instance_id": request.app.state.ephemeral.instance_id}
+
+    @application.delete(
+        "/api/ephemeral/{session_id}", status_code=204,
+        dependencies=[Depends(require_local_mutation)],
+    )
+    async def close_ephemeral(session_id: UUID, request: Request) -> Response:
+        """L'effacement est idempotent, y compris après expiration ou redémarrage."""
+        request.app.state.ephemeral.discard(str(session_id))
+        return Response(status_code=204)
+
+    @application.post(
+        "/api/ephemeral/{session_id}/messages",
+        dependencies=[Depends(require_local_mutation)],
+    )
+    async def send_ephemeral(
+        session_id: UUID, body: EphemeralMessageRequest, request: Request,
+    ) -> dict:
+        """Réutilise l'inférence et le Web autorisé, sans mémoire ni persistance du texte."""
+        store = request.app.state.ephemeral
+        session = store.get(str(session_id))
+        if session.task or body.expected_revision != session.revision:
+            raise HTTPException(409, "Ce chat éphémère a changé ou une réponse est en cours.")
+        runtime = _runtime(request)
+        profile_id = await runtime.begin_generation(_response_id(request))
+        session.task = asyncio.current_task()
+        store.touch(session)
+        privacy_token = PRIVATE_WEB_OPERATION.set(True)
+        try:
+            profile = request.app.state.model_registry.profile(profile_id)
+            if profile_id != session.profile_id or profile.id != "general":
+                raise HTTPException(409, "Le profil a changé. Ouvre un nouveau chat éphémère.")
+            message = normalize_user_message(body.message, profile)
+            authorization = store.authorization
+            intent = (
+                "pending_confirmation" if is_web_confirmation(message)
+                else classify_web_request(message)
+            )
+            query = message
+            remember = False
+            research = None
+            # Le consentement appartient à ce seul tour RAM, pas au chat normal ni au modèle.
+            if intent != "pending_confirmation":
+                authorization.discard_pending(session.id)
+            web_enabled = request.app.state.preferences.read().web_enabled
+            if intent != "local" and not web_enabled:
+                authorization.discard_pending(session.id)
+                intent = "disabled"
+            if intent == "pending_confirmation":
+                pending = authorization.confirm_pending(
+                    session.id, message, profile_id=profile.id,
+                    conversation_revision=body.expected_revision,
+                )
+                if pending and any(
+                    item["id"] == pending.source_message_id
+                    and item["role"] == "user" and item["content"] == pending.query
+                    for item in session.messages
+                ):
+                    query, intent = pending.query, "authorized"
+                else:
+                    intent = "missing_confirmation"
+            if parse_memory_command(message) is not None:
+                answer = (
+                    "Dans ce chat éphémère, je ne consulte, "
+                    "n’enregistre et ne supprime aucun souvenir."
+                )
+            elif intent == "disabled":
+                answer = web_disabled_message()
+            elif intent == "missing_confirmation":
+                answer = missing_web_confirmation_message()
+            elif intent == "confirmation":
+                answer, remember = web_confirmation_message(message), True
+            elif intent == "local" and requires_current_web_verification(message):
+                answer = current_information_unavailable_message(web_enabled)
+                remember = web_enabled
+            else:
+                reasoning = _reasoning_level(request, profile)
+                gateway = _gateway(request, profile_id, reasoning)
+                if intent == "authorized":
+                    research = await runtime.response_step(request.app.state.ephemeral_web_gateway.retrieve(
+                        authorization.issue(query), cancelled=request.is_disconnected,
+                    ))
+                if (
+                    research is not None and research.mode == "deep"
+                    and not research.evidence_is_sufficient
+                ):
+                    answer = insufficient_research_message(research)
+                else:
+                    # Comme dans le mode normal, l'historique n'est jamais une preuve Web.
+                    history = [] if research else [
+                        {"role": item["role"], "content": item["content"]}
+                        for item in session.messages
+                    ]
+                    question = (
+                        build_web_augmented_question(query, research) if research else message
+                    )
+                    messages = build_model_messages(
+                        history, question, (), profile,
+                        request.app.state.model_registry, reasoning,
+                    )
+                    messages[0]["content"] += (
+                        "\nMode éphémère : aucun souvenir personnel n'est accessible ou enregistrable. "
+                        "Seuls cet échange en RAM et les preuves explicitement fournies sont disponibles."
+                    )
+                    if research and isinstance(gateway, HttpModelGateway):
+                        messages, _count = await runtime.response_step(_prepare_web_prompt(
+                            messages, research, query, profile, gateway,
+                        ))
+                    answer = filter_final_answer(await runtime.response_step(gateway.generate(messages)))
+                    answer = (
+                        validate_web_answer(answer, research)
+                        if research else validate_local_answer(answer)
+                    )
+            # Une fermeture pendant l'inférence ne doit jamais recréer la session.
+            store.get(session.id)
+            result = session.append(
+                message, answer,
+                [source.as_dict() for source in research.sources] if research else [],
+            )
+            result["generation_active"] = False
+            if remember:
+                authorization.remember_pending(
+                    session.id, message, result["messages"][-2]["id"],
+                    profile.id, session.revision,
+                )
+            result["web_confirmation_pending"] = authorization.has_pending(session.id)
+            store.touch(session)
+            return result
+        except HTTPException:
+            raise
+        except asyncio.CancelledError:
+            raise HTTPException(409, "Le chat éphémère a été fermé ; la réponse est abandonnée.") from None
+        except ResponseCancelledError as error:
+            # Arrêter cette réponse conserve les tours précédents uniquement en RAM.
+            raise HTTPException(409, str(error)) from None
+        except WebGatewayError as error:
+            status_code, _code = _safe_web_failure(error)
+            raise HTTPException(status_code, str(error)) from None
+        except Exception as error:
+            status_code, detail, _code = _safe_failure_code(error)
+            raise HTTPException(status_code, detail) from None
+        finally:
+            PRIVATE_WEB_OPERATION.reset(privacy_token)
+            session.task = None
+            await runtime.finish_generation()
+
     @application.get("/api/conversations")
     def list_conversations(
         request: Request,
@@ -1624,6 +1875,20 @@ def create_app(
         if "\x00" in search:
             raise HTTPException(status_code=422, detail="La recherche contient un caractère NUL.")
         return {"conversations": _database(request).list_conversations(search)}
+
+    @application.post("/api/responses/{operation_id}/cancel")
+    async def cancel_response(
+        operation_id: UUID,
+        request: Request,
+        _local: None = Depends(require_local_mutation),
+    ) -> dict[str, str]:
+        """Signale seulement l'opération exacte ; sa requête attend la fermeture effective."""
+
+        operation = _runtime(request).response_operations.get(str(operation_id))
+        if operation is None:
+            raise HTTPException(404, "Cette réponse n'est plus en cours.")
+        operation[1].set()
+        return {"status": "cancelling"}
 
     @application.post("/api/web/operations/{operation_id}/cancel")
     def cancel_web_operation(
@@ -1661,13 +1926,14 @@ def create_app(
             )
 
         runtime = _runtime(request)
-        profile_id = await runtime.begin_generation()
+        profile_id = await runtime.begin_generation(_response_id(request))
         generation_handed_off = False
         registered_web_operation_id: str | None = None
         try:
             if body.expected_profile_id is not None and body.expected_profile_id != profile_id:
                 raise HTTPException(status_code=409, detail="Le profil a changé. Recommence l’intervention.")
             profile = request.app.state.model_registry.profile(profile_id)
+            _require_direct_conversation_profile(profile)
             authorization: WebAuthorizationManager = request.app.state.web_authorization
             confirmation_answer = is_web_confirmation(body.message)
             web_intent = (
@@ -1699,18 +1965,6 @@ def create_app(
                     web_intent = "disabled"
                     if body.conversation_id is not None:
                         authorization.discard_pending(body.conversation_id)
-            if (
-                profile.agent_engine == "OpenHands"
-                and request.app.state.fixed_model_gateway is None
-                and web_intent == "local"
-            ):
-                # The Programming brain is reserved for the OpenHands SDK
-                # path. A Web turn remains conversationnel et ne donne aucun
-                # accès réseau au terminal ou au conteneur OpenHands.
-                raise HTTPException(
-                    status_code=409,
-                    detail="Utilise une tâche Programmation sur un projet sélectionné.",
-                )
             try:
                 message = normalize_user_message(body.message, profile)
                 memory_command = parse_memory_command(message)
@@ -1901,10 +2155,10 @@ def create_app(
                     return cancellation.is_set() or await request.is_disconnected()
 
                 try:
-                    web_research = await request.app.state.web_gateway.retrieve(
+                    web_research = await runtime.response_step(request.app.state.web_gateway.retrieve(
                         permit,
                         cancelled=web_cancelled,
-                    )
+                    ))
                     LOGGER.info(
                         "web_retrieval_completed conversation_id=%s message_id=%s "
                         "mode=%s sources=%d read_sources=%d context_chars=%d",
@@ -1934,13 +2188,16 @@ def create_app(
                         raise WebUnavailableError(
                             "Les extraits Web ne tiennent pas dans le contexte local actif. Reformule la demande."
                         ) from error
-                except WebGatewayError as error:
+                except (WebGatewayError, ResponseCancelledError) as error:
+                    failure_kind = (
+                        "web_cancelled" if isinstance(error, ResponseCancelledError) else error.code
+                    )
                     LOGGER.warning(
                         "web_retrieval_failed conversation_id=%s message_id=%s "
                         "code=%s error=%s",
                         conversation_id,
                         user_message_id,
-                        error.code,
+                        failure_kind,
                         type(error).__name__,
                     )
                     status_code, error_code = _safe_web_failure(error)
@@ -1948,7 +2205,7 @@ def create_app(
                         conversation_id,
                         user_message_id,
                         error_code,
-                        error.code,
+                        failure_kind,
                     )
                     if lock.locked():
                         lock.release()
@@ -1984,10 +2241,18 @@ def create_app(
                 await runtime.finish_generation()
 
     @application.get("/api/conversations/{conversation_id}")
-    def get_conversation(conversation_id: UUID, request: Request) -> dict[str, Any]:
+    async def get_conversation(conversation_id: UUID, request: Request) -> dict[str, Any]:
         """Retourne une conversation complète depuis son UUID canonique."""
 
-        return _conversation_with_web_state(request, str(conversation_id))
+        detail = _conversation_with_web_state(request, str(conversation_id))
+        if detail["has_agent_runs"]:
+            runtime = _runtime(request)
+            profile = request.app.state.model_registry.profile(runtime.active_profile_id)
+            if ("agent_runs" not in profile.capabilities
+                    or runtime.switching_profile_id is not None
+                    or not await _is_active_model_ready(request, profile.id)):
+                raise HTTPException(409, "Chargez Programmation pour ouvrir cette conversation.")
+        return detail
 
     @application.patch("/api/conversations/{conversation_id}")
     def rename_conversation(
@@ -2002,7 +2267,11 @@ def create_app(
         database_instance.rename_conversation(
             str(conversation_id), body.title, body.expected_revision
         )
-        return database_instance.get_conversation(str(conversation_id))
+        detail = database_instance.get_conversation(str(conversation_id))
+        # Renommer reste possible sans charger le contenu d'un historique agentique.
+        if detail["has_agent_runs"]:
+            return {key: value for key, value in detail.items() if key != "messages"}
+        return detail
 
     @application.delete("/api/conversations/{conversation_id}", status_code=204)
     async def delete_conversation(
@@ -2050,10 +2319,11 @@ def create_app(
             )
         lock_registry = _locks(request)
         runtime = _runtime(request)
-        profile_id = await runtime.begin_generation()
+        profile_id = await runtime.begin_generation(_response_id(request))
         profile = request.app.state.model_registry.profile(profile_id)
         lock: asyncio.Lock | None = None
         try:
+            _require_direct_conversation_profile(profile)
             reasoning_level = _reasoning_level(request, profile)
             lock = _acquire_generation_lock(lock_registry, conversation_key)
             await lock.acquire()
@@ -2136,10 +2406,11 @@ def create_app(
             )
         lock_registry = _locks(request)
         runtime = _runtime(request)
-        profile_id = await runtime.begin_generation()
+        profile_id = await runtime.begin_generation(_response_id(request))
         lock: asyncio.Lock | None = None
         try:
             profile = request.app.state.model_registry.profile(profile_id)
+            _require_direct_conversation_profile(profile)
             reasoning_level = _reasoning_level(request, profile)
             try:
                 content = normalize_user_message(body.content, profile)
@@ -2224,10 +2495,11 @@ def create_app(
         conversation_key = str(conversation_id)
         lock_registry = _locks(request)
         runtime = _runtime(request)
-        profile_id = await runtime.begin_generation()
+        profile_id = await runtime.begin_generation(_response_id(request))
         profile = request.app.state.model_registry.profile(profile_id)
         lock: asyncio.Lock | None = None
         try:
+            _require_direct_conversation_profile(profile)
             reasoning_level = _reasoning_level(request, profile)
             current = _database(request).get_conversation(conversation_key)
             regenerated = next(

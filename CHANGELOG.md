@@ -1,5 +1,130 @@
 # Changelog — Projet Léa
 
+## Étape 17 — Markdown et interface — 1er novembre 2026
+
+- Correctifs du 5 novembre : avertissements et erreurs visibles ramenés à une
+  phrase courte sans point-virgule. Les diagnostics complets, statuts API et
+  protections restent inchangés. Le listener `node` vérifié est désormais
+  l'autorité persistante du Frontend après le démarrage : le bootstrap transitoire
+  `npm.cmd` ne peut plus bloquer `start` et `stop` par un état ambigu. Validation :
+  388 tests backend, 71 frontend, 31 groupes Edge et cycle réel complet réussis.
+- Ajustements du 4 novembre : panneau Projet compact ; suppression de son bouton
+  d'annulation au profit de la commande principale voix/envoi/arrêt. L'arrêt est
+  partagé par les profils directs, le Web, le chat éphémère et OpenHands. Le
+  transport local utilise un flux interne pour que llama.cpp reçoive réellement
+  l'interruption, sans publier de fragments ni de réflexion interne.
+- Accueils Programmation et Vétérinaire : cinq phrases propres à chaque profil,
+  renouvelées uniquement à la navigation. Les conversations Programmation restent
+  dans l'historique commun, ouvrables seulement avec le profil chargé, toujours
+  renommables et supprimables hors de ce profil. Alertes de ressources déplacées
+  au centre du bandeau supérieur, collecte et diagramme existants conservés.
+- Vérification du 4 novembre : 388 tests backend, 64 frontend, 30 groupes Edge,
+  build et intégrité SQLite réussis. Arrêt Général réel : slot llama.cpp libéré
+  en 5,578 s, réponse suivante réussie, session de test RAM fermée, Programmation
+  et projet habituel rétablis. Aucun nouveau conteneur OpenHands pour cet essai.
+- Complément du 3 novembre : Programmation présente les consignes et résultats
+  en bulles persistantes, avec Projet fixe au-dessus du défilement. L'envoi texte
+  utilise l'enregistrement conversationnel déjà disponible pour la voix ; les
+  décisions Accepter/Restaurer restent rattachées à la réponse du run concerné.
+  La révision de conversation est relue après annulation pour la tâche suivante.
+  Deux vrais runs OpenHands réussis : modification et test vert, rollback exact,
+  puis lecture d'un fichier texte et acceptation. Le run utilisateur examiné
+  exécutait réellement ses outils, mais répétait la lecture d'un dossier vide.
+  Aucun correctif compensatoire du modèle ni changement du moteur agentique.
+  Validation : 379 tests backend, 63 frontend et 26 groupes Edge réussis.
+- Séparateur sous le bandeau supérieur ; barre des ressources alignée sur le
+  pied de la barre latérale, jusqu’aux bords. Retrait de « Léa est prête » en
+  bas ; alertes du cœur centrées en haut, aussi dans les paramètres et la voix.
+- Réponse finale des runs Programmation réaffichée indépendamment du diff et
+  de l’acceptation/restauration. Les échecs sans réponse restent explicites,
+  sans inventer le contenu du fichier ; un diff vide est annoncé comme tel.
+  Vérification de ces retouches : 63 tests frontend et 25 groupes Edge réussis,
+  build réussi, interface locale HTTP 200 et cœur prêt. Aucun changement backend.
+- Programmation utilise désormais l’unique saisie inférieure comme consigne de
+  run. Le champ de tâche, le titre d’accueil et le bouton « Démarrer la tâche »
+  ont été retirés : Envoyer lance directement le run. « Annuler la tâche » est
+  affiché dans l’encadré Projet pendant l’exécution. Les textes d’état redondants
+  sont masqués, tandis que les erreurs utiles et les décisions explicites
+  Accepter/Restaurer restent disponibles.
+- Le profil Programmation ne déclare plus la capacité Web conversationnelle.
+  Toutes ses saisies texte ou voix démarrent une tâche OpenHands, même si elles
+  mentionnent Internet. Une garde backend refuse aussi les anciennes routes de
+  conversation pour un profil agentique. OpenHands et son terminal restent
+  hors ligne ; une donnée externe absente doit être signalée, jamais inventée.
+- Finition des paramètres : retrait de la carte informative Programmation,
+  sans retrait du profil ni de ses flux ; microphone et voix locale répartis
+  en deux panneaux lisibles ; grand bouton Valider centré sans bandeau décoratif.
+  Le rail très fin de la saisie reste visible à droite des commandes. Le frontend
+  est rangé dans `components/`, `hooks/`, `lib/` et `styles/`, avec imports et
+  tests adaptés, sans nouvelle dépendance ni changement de contrat. Le message
+  d’indisponibilité de la surveillance est maintenant centré avec le diagramme.
+- Vérification finale de cette finition : 59 tests frontend et 378 tests backend
+  réussis, build TypeScript/Vite réussi, 23 groupes Edge réussis sur le build,
+  dépendances Python cohérentes et `git diff --check` propre.
+- Refonte finale des paramètres : cartes en deux colonnes sur grand écran et une
+  colonne sur petit écran, voix pleine largeur, barre de validation commune et
+  toutes les options existantes conservées. Le bouton Paramètres referme la page
+  avec la même confirmation en cas de modification non enregistrée. La saisie
+  montre désormais un rail très fin, placé après les commandes, uniquement quand
+  son contenu dépasse quatre lignes.
+- Ajustement final du 2 novembre : titre, Renommer et Supprimer ne sont plus
+  répétés au-dessus des messages ; les actions restent dans la barre latérale.
+  Les réponses de Léa ont une bulle distincte. Le rail des paramètres rejoint
+  le bord droit de la zone principale et le diagramme, sans titre « Ressources »,
+  reste sous la conversation sans s’étendre sous la barre latérale.
+- Derniers ajustements du 2 novembre : une seule commande principale à droite
+  de la saisie, Conversation vocale à vide et Envoyer avec du texte ; la dictée
+  reste séparée, l’envoi désactivé pendant une réponse. Le bouton éphémère rejoint
+  le coin supérieur gauche du chat et partage les dimensions de Paramètres.
+- Complément éphémère du 2 novembre, explicitement demandé : bouton en bas à
+  droite, Général uniquement, stockage RAM borné sans historique ni souvenirs.
+  Web après consentement manuel, mêmes contrôles de preuves et SSRF, lecture
+  HTTP sans profil Edge sur disque. Aucune promesse d’absence de traces chez les
+  fournisseurs externes. Les commandes vocales utilisent aussi la route RAM.
+  Accueil centré, une des six phrases à chaque retour, sans rotation temporelle ;
+  barre de défilement du champ masquée sans empêcher le défilement.
+- Complément du 2 novembre : nouveau PNG fourni copié sans transformation,
+  palette vert profond/menthe/ivoire appliquée aux deux thèmes, contrastes vérifiés.
+  « Léa » et « Conversations » agrandis dans la barre, doublon Léa supprimé du
+  bandeau et accueil réduit au titre demandé. Espacement identique entre les
+  trois commandes vocales/d’envoi ; infobulles simplifiées en Dictée et Envoyer.
+- Ajustements après retour utilisateur : crayon et poubelle dans chaque ligne
+  de l’historique au survol/focus, visibles sur écran tactile ; suppression
+  confirmée d’une autre conversation sans changer la sélection ni le brouillon.
+  Microphone et conversation vocale déplacés à gauche de l’envoi, sous forme
+  d’icônes avec infobulles. Marque latérale réduite à « Léa ».
+  Entrée envoie via les mêmes contrôles que la flèche ; Maj+Entrée ajoute une
+  ligne. Composition IME et répétition de touche ne déclenchent pas d’envoi.
+  Saisie sur une ligne initiale, croissance jusqu’à quatre lignes puis défilement
+  interne. Texte et commandes alignés sur une ligne avec « + » désactivé à gauche,
+  réservé en commentaire à un futur import sans aucune action implémentée.
+  Barre permanente, paramètres en haut à droite de celle-ci, Démarrer/Arrêter
+  en bas à la place de la phrase locale et libellé « Conversations ».
+  Profil en haut à droite du chat et libellé commun « Modèle prêt ».
+  Logo PNG original fourni conservé dans `public/lea-logo.png`, réutilisé dans
+  la barre et l’onglet. Aucun téléchargement ni génération d’image.
+  Couleurs du menu natif corrigées pour les deux thèmes. Bouton Régénérer retiré.
+  Champ vidé dès l’envoi accepté par l’interface, brouillon restauré après refus
+  sans tour enregistré ; pas de duplication après un envoi confirmé.
+- Remplacement du paragraphe React brut par CommonMark/GFM avec `react-markdown`
+  et `remark-gfm` : titres, listes, tableaux, blocs de code et copies fidèles.
+  HTML ignoré, liens HTTP(S) filtrés, images inertes et sources backend séparées.
+  Aucun remplacement global des antislashs ni migration des messages.
+- Interface conversationnelle : barre latérale permanente, accueil, largeur de
+  lecture, saisie ajustable, code/tableaux défilants, états et erreurs conservés.
+- Thèmes locaux clair/sombre, variables CSS communes, icônes SVG embarquées,
+  focus clavier et navigation compacte sur petite fenêtre. Profils, voix, ressources, Web et OpenHands
+  gardent leurs traitements et autorisations existants.
+- `tsx` pour les tests React ; correctifs compatibles Vite 7.3.7 et
+  source-map-js 1.2.2 après alertes npm, sans migration majeure.
+- 57 tests frontend, 369 tests backend, build et 21 groupes d’essais Edge sur
+  API simulées réussis. Captures visuellement examinées ; microphone physique,
+  inférence et runs réels restent à revalider manuellement dans cette interface.
+  Les 369 tests backend précèdent le complément de commandes UI ; les tests
+  frontend, Edge, le build et `git diff --check` ont été relancés après celui-ci.
+- L’étape 16 a été validée et commitée par l’utilisateur avant cette intervention.
+  L’étape 17 attend sa validation manuelle. Aucun commit ni push effectué ici.
+
 ## Étape 16 — Préparation de clôture — 29 octobre 2026
 
 - État de travail préservé avant intervention. Aucun état intermédiaire de l'étape

@@ -6,6 +6,8 @@ adaptateur ne charge aucun modèle et ne décide jamais des permissions du profi
 
 from __future__ import annotations
 
+import asyncio
+import json
 import subprocess
 from typing import Any
 
@@ -39,6 +41,42 @@ class ModelContextError(ModelResponseError):
 
 class ModelTruncatedError(ModelResponseError):
     """Refuse une réponse coupée par la limite de génération."""
+
+
+async def _read_final_stream(response: httpx.Response) -> str:
+    """Assemble le SSE en RAM ; rien n'est publié avant la fin et les validations."""
+
+    fragments: list[str] = []
+    finish_reason = None
+    try:
+        async for line in response.aiter_lines():
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                if finish_reason != "stop":
+                    raise ModelResponseError(MODEL_INVALID_RESPONSE_MESSAGE)
+                return "".join(fragments)
+            event = json.loads(data)
+            if "error" in event:
+                raise ModelResponseError(MODEL_INVALID_RESPONSE_MESSAGE)
+            choices = event["choices"]
+            if not choices:  # Éventuelles statistiques de fin, sans texte.
+                continue
+            choice = choices[0]
+            content = choice.get("delta", {}).get("content")
+            if content is not None:
+                if not isinstance(content, str):
+                    raise TypeError("Réponse non textuelle.")
+                fragments.append(content)
+            # Les champs reasoning/reasoning_content ne deviennent jamais une réponse.
+            if choice.get("finish_reason") is not None:
+                finish_reason = choice["finish_reason"]
+                if finish_reason == "length":
+                    raise ModelTruncatedError("La réponse du modèle local a été tronquée.")
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError) as error:
+        raise ModelResponseError(MODEL_INVALID_RESPONSE_MESSAGE) from error
+    raise ModelResponseError("Le flux du modèle local s'est fermé avant la fin de la réponse.")
 
 
 def llama_cpp_arguments(configuration: dict[str, Any]) -> list[str]:
@@ -200,7 +238,9 @@ class LlamaCppAdapter:
         payload: dict[str, Any] = {
             "model": self.profile.runtime.alias,
             "messages": messages,
-            "stream": False,
+            # llama.cpp détecte la fermeture du flux et interrompt alors son calcul.
+            # Ce flux reste interne : le frontend reçoit toujours une réponse validée complète.
+            "stream": True,
             "max_tokens": output_tokens,
         }
         if self.profile.model.stop_sequences:
@@ -210,13 +250,16 @@ class LlamaCppAdapter:
             # directives textuelles Qwen3 ne sont pas compatibles avec ce contrat.
             payload["chat_template_kwargs"] = {"enable_thinking": high_reasoning}
         try:
-            async with httpx.AsyncClient(
+            async with asyncio.timeout(float(self.profile.generation.timeout_seconds)), httpx.AsyncClient(
                 timeout=float(self.profile.generation.timeout_seconds),
                 transport=transport,
             ) as client:
-                response = await client.post(self.chat_url, json=payload)
-                response.raise_for_status()
-        except httpx.RequestError as error:
+                async with client.stream("POST", self.chat_url, json=payload) as response:
+                    if response.is_error:
+                        await response.aread()
+                    response.raise_for_status()
+                    return await _read_final_stream(response)
+        except (httpx.RequestError, TimeoutError) as error:
             raise ModelUnavailableError(MODEL_UNAVAILABLE_MESSAGE) from error
         except httpx.HTTPStatusError as error:
             try:
@@ -228,16 +271,6 @@ class LlamaCppAdapter:
             except (TypeError, ValueError, AttributeError):
                 pass
             raise ModelResponseError("Le modèle local de Léa a renvoyé une erreur.") from error
-        try:
-            choice = response.json()["choices"][0]
-            if choice.get("finish_reason") == "length":
-                raise ModelTruncatedError("La réponse du modèle local a été tronquée.")
-            content = choice["message"]["content"]
-            if not isinstance(content, str):
-                raise TypeError("Réponse non textuelle.")
-            return content
-        except (AttributeError, IndexError, KeyError, TypeError, ValueError) as error:
-            raise ModelResponseError(MODEL_INVALID_RESPONSE_MESSAGE) from error
 
     async def prompt_token_count(
         self,
