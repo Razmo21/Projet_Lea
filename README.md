@@ -27,6 +27,8 @@ Un seul modèle d'inférence est chargé à la fois. Les profils et leurs modèl
 Conversations et mémoire
 - Conversations persistantes dans SQLite : création, recherche, ouverture, renommage et suppression.
 - Les conversations Programmation figurent dans cette même liste. Leur ouverture exige le profil Programmation chargé ; leur renommage et leur suppression restent disponibles avec les autres profils.
+- Supprimer une conversation efface ses messages, ses sources Web, ses runs et ses copies privées. Les souvenirs explicitement créés avec `Retiens que` restent globaux même lorsque leur provenance disparaît.
+- Une conversation Programmation ne peut être supprimée qu'après décision sur ses changements. Après Accepter ou Restaurer, ses seules copies privées de run et de checkpoint sont retirées ; les fichiers du projet ne sont jamais visés.
 - Modification d'un ancien message, nouvelle génération et reprise après certaines erreurs, avec protection contre les mises à jour concurrentes.
 - Mémoire explicite : commandes telles que Retiens que… et Oublie que…. Les souvenirs ne sont pas extraits automatiquement des discussions ordinaires.
 - Chat éphémère dans le profil Général : échanges conservés uniquement en mémoire vive, sans historique ni souvenirs persistants. La session disparaît à sa fermeture ou au rechargement.
@@ -124,7 +126,9 @@ Utilisation
 Mémoriser ou oublier une information
 Retiens que je préfère les réponses en français.
 Oublie que je préfère les réponses en français.
+Affiche tes souvenirs.
 L'ajout de souvenirs est volontaire et déterministe. Un fait mentionné dans une conversation ordinaire n'est pas automatiquement enregistré comme souvenir durable. L'oubli repose sur une correspondance normalisée précise et non sur une recherche sémantique.
+Chaque souvenir conserve la provenance du message explicite tant que celui-ci existe. La suppression d'une conversation retire cette provenance, jamais le fait global. `Affiche tes souvenirs` liste directement les faits actifs depuis SQLite, sans modèle ni Web. `Oublie que` reste leur suppression globale volontaire.
 Autoriser une recherche Internet
 Cherche sur Internet les dernières informations concernant ce sujet.
 Une recherche nécessite également l'activation du Web dans les paramètres. Pour une question actuelle posée sans autorisation, attendre la proposition de Léa et confirmer si la recherche est souhaitée.
@@ -139,6 +143,7 @@ Données et configuration
 Emplacement	Rôle
 config/models.json	Registre central des modèles, profils, capacités et paramètres d'exécution.
 data/lea.sqlite3	Conversations, messages, mémoire, préférences et métadonnées persistantes.
+data/agent-checkpoints/ et data/openhands-runs/	Copies privées des checkpoints et résultats OpenHands, distinctes des projets du workspace.
 models/	Poids des modèles locaux, non destinés à Git.
 runtime/	Runtimes et fichiers d'exécution locaux.
 backend/app/	API, orchestration, inférence, contrôles et logique métier.
@@ -156,6 +161,7 @@ Le futur passage à un SSD interne plus rapide devra vérifier les chemins, les 
 Pour remplacer un modèle compatible, arrêter d'abord Léa, sauvegarder le registre, mettre à jour config/models.json, contrôler le fichier GGUF (taille et SHA-256), puis valider la configuration et tester le profil concerné. Les détails de cette procédure sont consignés dans les décisions techniques du projet.
 Sécurité et limites
 - Local par défaut. Les conversations et souvenirs sont gérés sur la machine ; aucun compte ou modèle cloud de secours n'est nécessaire à l'inférence ordinaire.
+- Suppression contrôlée. SQLite emploie `secure_delete`; le WAL est checkpointé et la base n'est compactée automatiquement que si au moins 8 Mio et 20 % de pages sont libérables. Cette politique limite les copies résiduelles applicatives sans garantir l'effacement physique des blocs du SSD, des sauvegardes externes ou des traces d'un fournisseur Web.
 - Web sous consentement. Les recherches publiques peuvent transmettre la requête aux fournisseurs et laisser des traces sur les sites consultés. Le chat éphémère n'offre pas d'anonymat réseau.
 - Sources contrôlées. Le backend valide la provenance des références Web, mais ces contrôles ne garantissent pas la vérité de toute information extraite d'une page.
 - Navigation bornée. Les protections contre les destinations locales et les actions sensibles réduisent les risques ; elles ne constituent pas un bac à sable réseau formel au niveau du système.

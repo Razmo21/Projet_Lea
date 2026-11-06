@@ -104,8 +104,80 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
             {
                 ("memory_id", "memories", "id", "CASCADE"),
                 ("conversation_id", "conversations", "id", "CASCADE"),
+                ("source_message_id", "messages", "id", "CASCADE"),
             },
         )
+        with self.database.connection() as connection:
+            orphan_trigger = connection.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name = 'delete_orphan_memory_after_source'
+                """
+            ).fetchone()
+        self.assertIsNone(orphan_trigger)
+
+    def test_stage_18_removes_orphan_trigger_without_deleting_global_memory(self) -> None:
+        """La migration change la durée de vie sans toucher aux faits existants."""
+
+        self.database_path.parent.mkdir(parents=True)
+        connection = sqlite3.connect(self.database_path, isolation_level=None)
+        try:
+            migrations_to_17 = {
+                version: MIGRATIONS[version] for version in range(1, 18)
+            }
+            self.assertEqual(apply_migrations(connection, migrations_to_17), 17)
+            connection.execute(
+                """
+                INSERT INTO memories(
+                    id, content, normalized_content, created_at, updated_at
+                ) VALUES ('memory-v17', 'fait conservé', 'fait conservé', 'created', 'created')
+                """
+            )
+            self.assertIsNotNone(
+                connection.execute(
+                    """
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'trigger'
+                      AND name = 'delete_orphan_memory_after_source'
+                    """
+                ).fetchone()
+            )
+
+            self.assertEqual(apply_migrations(connection), SCHEMA_VERSION)
+            memory = connection.execute(
+                "SELECT content FROM memories WHERE id = 'memory-v17'"
+            ).fetchone()
+            trigger = connection.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name = 'delete_orphan_memory_after_source'
+                """
+            ).fetchone()
+        finally:
+            connection.close()
+
+        self.assertEqual(memory, ("fait conservé",))
+        self.assertIsNone(trigger)
+
+    def test_latest_schema_rejects_the_obsolete_orphan_memory_trigger(self) -> None:
+        """Un schéma hybride ne doit pas réactiver l'effacement par provenance."""
+
+        self.database.initialize()
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                CREATE TRIGGER delete_orphan_memory_after_source
+                AFTER DELETE ON memory_sources
+                BEGIN
+                    DELETE FROM memories WHERE id = OLD.memory_id;
+                END
+                """
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "durée de vie globale"):
+            self.database.initialize()
 
     def test_initialize_wraps_sqlite_open_errors(self) -> None:
         database = Database(Path(self.temporary_directory.name))
@@ -487,14 +559,15 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
                     tuple(row)
                     for row in migrated.execute(
                         """
-                        SELECT memory_id, conversation_id FROM memory_sources
+                        SELECT memory_id, conversation_id, source_message_id
+                        FROM memory_sources
                         ORDER BY conversation_id
                         """
                     ).fetchall()
                 ],
                 [
-                    ("memory-live", "duplicate-source-v2"),
-                    ("memory-live", "source-v2"),
+                    ("memory-live", "duplicate-source-v2", "duplicate-user-v2"),
+                    ("memory-live", "source-v2", "memory-user-v2"),
                 ],
             )
             self.assertEqual(migrated.execute("PRAGMA quick_check").fetchone()[0], "ok")
@@ -780,6 +853,27 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
             self.assertNotIn(marker.encode("utf-8"), database_bytes)
         self.assertIn(survivor_marker.encode("utf-8"), database_bytes)
 
+    def test_controlled_maintenance_reclaims_free_pages_after_large_deletion(self) -> None:
+        """La maintenance forcée compacte une base isolée après avoir tronqué son WAL."""
+
+        self.database.initialize()
+        marker = "LEA_LARGE_DELETE_MARKER_9F8E7D6C"
+        payload = marker + ("x" * 1_200_000)
+        conversation_id, message_id = self.database.create_pending_conversation(payload)
+        self.database.complete_generation(conversation_id, message_id, payload)
+        with self.database.connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0], 0)
+        expanded_size = self.database_path.stat().st_size
+
+        revision = self.database.get_conversation(conversation_id)["revision"]
+        self.database.delete_conversation(conversation_id, revision)
+        result = self.database.reclaim_storage(force=True)
+
+        self.assertTrue(result["compacted"])
+        self.assertLess(result["after"]["database_bytes"], expanded_size)
+        self.assertEqual(result["after"]["free_pages"], 0)
+        self.assertNotIn(marker.encode("utf-8"), self.database_path.read_bytes())
+
     def test_assistant_response_records_its_nullable_model_identity(self) -> None:
         """Les nouveaux assistants sont attribués, les lignes legacy restent nullables."""
 
@@ -844,7 +938,7 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
         with self.database.connection() as connection:
             self.assertEqual(
                 connection.execute("SELECT COUNT(*) FROM memory_sources").fetchone()[0],
-                1,
+                2,
             )
 
         semantic_miss = parse_memory_command("Oublie que mon prénom est Stan.")
@@ -876,7 +970,7 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
                 0,
             )
 
-    def test_deleting_the_only_source_conversation_keeps_global_memory(self) -> None:
+    def test_deleting_the_only_source_conversation_preserves_global_memory(self) -> None:
         self.database.initialize()
         command = parse_memory_command("Mémorise que mon chien s'appelle Rex.")
         self.assertIsNotNone(command)
@@ -891,8 +985,8 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
         self.database.delete_conversation(conversation_id, detail["revision"])
 
         self.assertEqual(
-            [memory["normalized_content"] for memory in self.database.list_memories()],
-            ["mon chien s'appelle rex"],
+            [memory["content"] for memory in self.database.list_memories()],
+            ["mon chien s'appelle Rex."],
         )
         with self.database.connection() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 0)
@@ -901,7 +995,7 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
                 0,
             )
 
-    def test_memory_survives_deletion_of_all_source_conversations(self) -> None:
+    def test_memory_survives_the_removal_of_every_source_conversation(self) -> None:
         self.database.initialize()
         command = parse_memory_command("Retiens que mon chien s'appelle Rex.")
         self.assertIsNotNone(command)
@@ -938,15 +1032,75 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
 
         second_revision = self.database.get_conversation(second_conversation)["revision"]
         self.database.delete_conversation(second_conversation, second_revision)
-        self.assertEqual(
-            [memory["normalized_content"] for memory in self.database.list_memories()],
-            ["mon chien s'appelle rex"],
-        )
+        self.assertEqual(len(self.database.list_memories()), 1)
         with self.database.connection() as connection:
             self.assertEqual(
                 connection.execute("SELECT COUNT(*) FROM memory_sources").fetchone()[0],
                 0,
             )
+
+    def test_memory_source_tracks_the_exact_command_message(self) -> None:
+        """Tronquer le tour retire sa provenance, pas le souvenir global."""
+
+        self.database.initialize()
+        conversation_id, first_message_id = self.database.create_pending_conversation("Bonjour")
+        self.database.complete_generation(conversation_id, first_message_id, "Bonjour.")
+        detail = self.database.get_conversation(conversation_id)
+        command = parse_memory_command("Retiens que mon chien s'appelle Rex.")
+        self.assertIsNotNone(command)
+        self.database.apply_memory_command(
+            command,
+            "Retiens que mon chien s'appelle Rex.",
+            conversation_id,
+            detail["revision"],
+        )
+        remembered = self.database.get_conversation(conversation_id)
+        source_message = remembered["messages"][2]
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT conversation_id, source_message_id FROM memory_sources"
+            ).fetchone()
+        self.assertEqual(tuple(row), (conversation_id, source_message["id"]))
+
+        self.database.edit_user_message(
+            conversation_id,
+            first_message_id,
+            "Bonsoir",
+            remembered["revision"],
+        )
+        self.assertEqual(len(self.database.list_memories()), 1)
+        with self.database.connection() as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM memory_sources").fetchone()[0],
+                0,
+            )
+
+    def test_explicit_memory_purge_allows_new_memories_afterward(self) -> None:
+        """La purge exceptionnelle vide les liens sans désactiver la mémoire future."""
+
+        self.database.initialize()
+        for text in (
+            "Retiens que je préfère le thé.",
+            "Retiens que mon chien s'appelle Rex.",
+        ):
+            command = parse_memory_command(text)
+            self.assertIsNotNone(command)
+            self.database.apply_memory_command(command, text, None, None)
+
+        self.assertEqual(self.database.purge_all_memories(), 2)
+        self.assertEqual(self.database.list_memories(), [])
+        with self.database.connection() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM memory_sources").fetchone()[0], 0)
+
+        replacement = parse_memory_command("Retiens que je préfère le café.")
+        self.assertIsNotNone(replacement)
+        self.database.apply_memory_command(
+            replacement,
+            "Retiens que je préfère le café.",
+            None,
+            None,
+        )
+        self.assertEqual(len(self.database.list_memories()), 1)
 
     def test_memory_command_rolls_back_if_confirmation_cannot_be_stored(self) -> None:
         self.database.initialize()

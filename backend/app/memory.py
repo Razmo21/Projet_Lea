@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Literal, Sequence
 
 
-MemoryAction = Literal["remember", "forget"]
+MemoryAction = Literal["remember", "forget", "list"]
 
 # Limites et textes partagés par le stockage, l'API et les migrations.
 # Les confirmations sont déterministes : elles permettent de distinguer les
@@ -18,6 +18,8 @@ MEMORY_FORGOTTEN_CONFIRMATION = "C'est oublié."
 MEMORY_NOT_FOUND_CONFIRMATION = (
     "Je n'ai trouvé aucun souvenir correspondant exactement."
 )
+MEMORY_LIST_EMPTY_CONFIRMATION = "Je n'ai aucun souvenir enregistré."
+MEMORY_LIST_HEADER = "Voici mes souvenirs :"
 MEMORY_CONTEXT_TOKEN_LIMIT = 1800
 MEMORY_MESSAGE_TOKEN_OVERHEAD = 8
 MEMORY_CONTEXT_HEADER = (
@@ -39,6 +41,10 @@ _REMEMBER_PATTERN = re.compile(
 _FORGET_PATTERN = re.compile(
     r"\A\s*oublie\s+que\b(?P<fact>.*)\Z",
     re.IGNORECASE | re.DOTALL,
+)
+_LIST_PATTERN = re.compile(
+    r"\A\s*affiche\s+tes\s+souvenirs(?:\s*[.!?…])*\s*\Z",
+    re.IGNORECASE,
 )
 _TERMINAL_PUNCTUATION = re.compile(r"(?:\s*[.!?…])+\s*\Z")
 _APOSTROPHE_TRANSLATION = str.maketrans(
@@ -87,6 +93,9 @@ def normalize_memory_content(content: str) -> str:
 def parse_memory_command(message: str) -> MemoryCommand | None:
     """Reconnaît uniquement une commande explicite placée au début du message."""
 
+    if _LIST_PATTERN.fullmatch(message) is not None:
+        return MemoryCommand(action="list", content="", normalized_content="")
+
     for action, pattern in (
         ("remember", _REMEMBER_PATTERN),
         ("forget", _FORGET_PATTERN),
@@ -108,6 +117,16 @@ def parse_memory_command(message: str) -> MemoryCommand | None:
         )
 
     return None
+
+
+def build_memory_list_response(contents: Sequence[str]) -> str:
+    """Présente seulement les souvenirs actifs, dans leur ordre de création."""
+
+    if not contents:
+        return MEMORY_LIST_EMPTY_CONFIRMATION
+    return f"{MEMORY_LIST_HEADER}\n\n" + "\n".join(
+        f"- {content}" for content in contents
+    )
 
 
 def build_memory_context(contents: Sequence[str]) -> str:

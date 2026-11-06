@@ -1,5 +1,51 @@
 # Changelog — Projet Léa
 
+## Mémoire globale et consultation déterministe — 6 novembre 2026
+
+- Migration SQLite 18 : retrait du trigger v17 qui supprimait un souvenir avec
+  sa dernière provenance. Une suppression de conversation efface toujours ses
+  messages, sources Web, runs et copies privées, mais conserve les faits issus
+  de `Retiens que` jusqu'à un `Oublie que` exact ou une purge autorisée.
+- Nouvelle commande `Affiche tes souvenirs` : réponse construite directement à
+  partir des souvenirs actifs, dans leur ordre de création, sans appel au modèle
+  ni au Web. Un fait oublié n'est ni listé ni conservé dans un journal parallèle.
+- Tests de migration, schéma hybride, suppression/reprise, redémarrage, liste
+  vide, ordre des faits et oubli global ajoutés.
+- À la demande de l'utilisateur, la base active et les stockages privés ont été
+  remis à zéro avant cette migration : préférences, projet et migrations seuls
+  ont été conservés ; `lea.sqlite3` a été compacté à 208 896 octets.
+- Validation : 401 tests backend et 71 frontend réussis, build et
+  `git diff --check` propres. Un essai réel a retenu puis listé un fait, supprimé
+  sa conversation, relisté le fait, exécuté `Oublie que` et confirmé la liste
+  vide. Les conversations de test ont ensuite été supprimées ; la base reste
+  vide, intègre, au schéma 18, sans WAL/SHM ni copie privée.
+
+## Correction de stockage avant packaging — 5 novembre 2026
+
+- Migration SQLite 17 : `memory_sources` désigne désormais le message mémoire
+  exact. La suppression d'une conversation retire ses sources ; un souvenir
+  partagé subsiste, tandis qu'un souvenir sans autre provenance est supprimé.
+- La suppression d'une conversation Programmation exige un run terminé et un
+  checkpoint accepté, restauré ou sans changement récupérable. Elle efface le
+  registre du run et ses seules copies privées, jamais les fichiers du projet.
+- Une file SQLite limitée aux UUID permet de reprendre le nettoyage après une
+  erreur de fichier ou un redémarrage sans conserver de contenu personnel.
+- `secure_delete` reste actif. Le checkpoint WAL et `VACUUM` automatiques sont
+  réservés à un gain d'au moins 8 Mio et 20 % des pages ; la maintenance finale
+  explicitement autorisée peut forcer la compaction lorsque Léa est arrêtée.
+- Tests isolés ajoutés pour les cascades, sources partagées, rollback SQL,
+  nettoyage repris, artefacts OpenHands, Web, concurrence et intégrité SQLite.
+- Maintenance autorisée de la base active : aucun souvenir ni conversation à
+  purger ; 168 runs, 168 checkpoints et 2 696 entrées conservés. Seuls 16
+  dossiers de run et 16 dossiers de checkpoint sans référence dans la base ou
+  la sauvegarde connue ont été retirés (29 026 octets). `VACUUM` a ramené la
+  base de 1 683 456 à 1 630 208 octets, avec `quick_check=ok`, zéro violation de
+  clé étrangère, `secure_delete=1` et aucun WAL/SHM après fermeture.
+- Validation finale : 396 tests backend et 71 frontend réussis, build Vite
+  réussi, `git diff --check` propre et cycle réel complet. Général a atteint
+  l'état `ready`, le frontend a répondu HTTP 200, puis les trois composants et
+  leurs ports ont été arrêtés proprement.
+
 ## Étape 17 — Markdown et interface — 1er novembre 2026
 
 - Correctifs du 5 novembre : avertissements et erreurs visibles ramenés à une

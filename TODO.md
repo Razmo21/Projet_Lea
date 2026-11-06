@@ -46,7 +46,8 @@
 - [x] Injecter tous les souvenirs actifs comme données JSON dans le budget 8 192.
 - [x] Exclure les tours de gestion mémoire du contexte tout en les conservant visibles.
 - [x] Préserver les souvenirs globaux lors de la suppression d’une conversation
-  et les supprimer uniquement par une commande explicite `Oublie que`.
+  et les supprimer uniquement par `Oublie que` ; comportement rétabli par la
+  migration 18 après la règle transitoire de provenance v17.
 - [x] Valider migrations, concurrence, capacité, modèle réel et Microsoft Edge Stable.
 
 ## ÉTAPE 10 — Multi-modèles et profil Programmation — terminée
@@ -231,7 +232,7 @@ validation physique finalement confirmée par l’utilisateur.
   vérifiés avec le modèle réel ; refus prudent conservé si la sortie manque de citations.
 - [x] Revalidation manuelle finale et commit utilisateur, confirmés par le prompt 17.
 
-## ÉTAPE 17 — Markdown et interface — validation manuelle requise
+## ÉTAPE 17 — Markdown et interface — terminée et validée manuellement
 
 - [x] Messages d'avertissement et d'erreur simplifiés en une phrase courte sans
   point-virgule, sans modifier les diagnostics ni les décisions de sécurité.
@@ -291,7 +292,28 @@ validation physique finalement confirmée par l’utilisateur.
 - [x] Profils, Low/High existants, Web manuel, voix, ressources et OpenHands préservés.
 - [x] Clavier, focus, navigation compacte permanente, réduction des mouvements et six tailles vérifiés dans Edge automatisé.
 - [x] Tests frontend, non-régression backend complète, build et rapport `docs/ETAPE_17_VALIDATION.md`.
-- [ ] Validation manuelle utilisateur de l’apparence et des flux réels dans Edge.
+- [x] Validation manuelle utilisateur de l’apparence et des flux réels dans Edge.
+
+## Correction de stockage avant packaging — implémentée
+
+- [x] Migration SQLite 17 : provenance mémoire rattachée au message explicite ;
+  sa règle initiale de durée de vie est remplacée par la migration 18.
+- [x] Suppression transitive des messages, sources Web, runs et copies privées ;
+  souvenirs explicites globaux conservés.
+- [x] Blocage d'une conversation Programmation tant que son checkpoint n'est pas
+  accepté ou restauré ; retrait borné des copies privées après décision.
+- [x] File technique sans contenu personnel pour reprendre un nettoyage interrompu.
+- [x] Purge autorisée des souvenirs actuels, checkpoint WAL et `VACUUM` à l'arrêt.
+- [x] Seuil de compaction automatique borné et contrôles d'intégrité associés.
+- [x] Base active : zéro souvenir restant, 168 historiques conservés, 16+16
+  copies privées orphelines retirées, `VACUUM` et intégrité réussis.
+- [x] Cycle réel de démarrage et d'arrêt après maintenance.
+- [x] Remise à zéro autorisée du 6 novembre : conversations, souvenirs, runs et
+  checkpoints privés vides ; préférences, projet et migrations conservés.
+- [x] Migration SQLite 18 : souvenirs globaux conservés après suppression de
+  leur conversation, provenance exacte retirée par cascade.
+- [x] Commande déterministe `Affiche tes souvenirs`, limitée aux faits actifs,
+  sans modèle, Web ni conservation des faits oubliés.
 
 ## Suite — non commencée
 

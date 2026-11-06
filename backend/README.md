@@ -91,7 +91,9 @@ ou `memory`.
 `memory_sources` relie chaque fait aux conversations qui l’ont explicitement
 retenu tant qu’elles existent. Cette provenance est informative : un souvenir
 global reste valide sans source. Les cascades retirent uniquement les messages
-et les liens de la conversation. Les révisions empêchent les écritures périmées et
+et les liens de la conversation. `Affiche tes souvenirs` relit uniquement les
+faits actifs dans SQLite et produit une réponse déterministe, sans modèle ni Web.
+`Oublie que` reste la suppression globale exacte. Les révisions empêchent les écritures périmées et
 `generation_active` interdit deux générations simultanées dans une même
 conversation. L’appel HTTP au modèle se fait hors transaction SQLite longue.
 

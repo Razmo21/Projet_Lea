@@ -13,9 +13,12 @@ from .memory import (
     EmptyMemoryCommandError,
     MEMORY_DUPLICATE_CONFIRMATION,
     MEMORY_FORGOTTEN_CONFIRMATION,
+    MEMORY_LIST_EMPTY_CONFIRMATION,
+    MEMORY_LIST_HEADER,
     MEMORY_NOT_FOUND_CONFIRMATION,
     MEMORY_REMEMBERED_CONFIRMATION,
     MemoryCommand,
+    build_memory_list_response,
     ensure_memory_capacity,
     parse_memory_command,
 )
@@ -27,6 +30,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "lea.sqlite3"
 MAX_TITLE_LENGTH = 100
 AUTOMATIC_TITLE_LENGTH = 72
+STORAGE_RECLAIM_MINIMUM_BYTES = 8 * 1024 * 1024
+STORAGE_RECLAIM_MINIMUM_RATIO = 0.20
 
 
 class ConversationNotFoundError(LookupError):
@@ -83,6 +88,7 @@ AGENT_RUN_VALIDATION_STATUSES = frozenset(
 CHECKPOINT_STATES = frozenset(
     {"ready", "completed", "accepted", "rolled_back", "conflict", "failed"}
 )
+DELETABLE_CHECKPOINT_STATES = frozenset({"accepted", "rolled_back", "failed"})
 _UNSET = object()
 
 
@@ -241,6 +247,9 @@ class Database:
             "idx_messages_agent_role": "index",
             "idx_memories_normalized_content": "index",
             "idx_memory_sources_conversation_id": "index",
+            "idx_memory_sources_message_id": "index",
+            "conversation_cleanup_artifacts": "table",
+            "idx_conversation_cleanup_artifacts_conversation": "index",
             "projects": "table",
             "idx_projects_single_active": "index",
             "idx_projects_name": "index",
@@ -365,10 +374,11 @@ class Database:
             for row in connection.execute("PRAGMA table_info(memory_sources)").fetchall()
         }
         if (
-            set(source_columns) != {"memory_id", "conversation_id", "created_at"}
+            set(source_columns)
+            != {"memory_id", "conversation_id", "source_message_id", "created_at"}
             or any(int(source_columns[name][3]) != 1 for name in source_columns)
             or int(source_columns["memory_id"][5]) != 1
-            or int(source_columns["conversation_id"][5]) != 2
+            or int(source_columns["source_message_id"][5]) != 2
         ):
             raise RuntimeError("La provenance des souvenirs SQLite est incohérente.")
         source_foreign_keys = {
@@ -380,8 +390,37 @@ class Database:
         if source_foreign_keys != {
             ("memory_id", "memories", "id", "CASCADE"),
             ("conversation_id", "conversations", "id", "CASCADE"),
+            ("source_message_id", "messages", "id", "CASCADE"),
         }:
             raise RuntimeError("Les cascades de provenance SQLite sont incohérentes.")
+        orphan_trigger = connection.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'trigger' AND name = 'delete_orphan_memory_after_source'
+            """
+        ).fetchone()
+        if orphan_trigger is not None:
+            raise RuntimeError("La durée de vie globale des souvenirs est incohérente.")
+        cleanup_columns = {
+            str(row[1]): row
+            for row in connection.execute(
+                "PRAGMA table_info(conversation_cleanup_artifacts)"
+            ).fetchall()
+        }
+        if set(cleanup_columns) != {
+            "conversation_id",
+            "artifact_kind",
+            "storage_id",
+            "created_at",
+        } or any(int(cleanup_columns[name][3]) != 1 for name in cleanup_columns):
+            raise RuntimeError("La reprise des suppressions SQLite est incohérente.")
+        if (
+            int(cleanup_columns["conversation_id"][5]) != 0
+            or int(cleanup_columns["artifact_kind"][5]) != 1
+            or int(cleanup_columns["storage_id"][5]) != 2
+            or int(cleanup_columns["created_at"][5]) != 0
+        ):
+            raise RuntimeError("La clé de reprise des suppressions est incohérente.")
         project_columns = {
             str(row[1]): row
             for row in connection.execute("PRAGMA table_info(projects)").fetchall()
@@ -1679,7 +1718,7 @@ class Database:
                 else:
                     memory_id = str(existing["id"])
                     confirmation = MEMORY_DUPLICATE_CONFIRMATION
-            else:
+            elif command.action == "forget":
                 deleted = connection.execute(
                     "DELETE FROM memories WHERE normalized_content = ?",
                     (command.normalized_content,),
@@ -1689,6 +1728,14 @@ class Database:
                     if deleted == 1
                     else MEMORY_NOT_FOUND_CONFIRMATION
                 )
+            else:
+                active_memories = [
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT content FROM memories ORDER BY created_at ASC, id ASC"
+                    ).fetchall()
+                ]
+                confirmation = build_memory_list_response(active_memories)
 
             if is_new_conversation:
                 connection.execute(
@@ -1708,18 +1755,6 @@ class Database:
                     WHERE id = ?
                     """,
                     (now, conversation_id),
-                )
-
-            if memory_id is not None:
-                # Un fait unique peut avoir plusieurs conversations sources.
-                # La clé composée évite de compter deux fois la même source.
-                connection.execute(
-                    """
-                    INSERT OR IGNORE INTO memory_sources(
-                        memory_id, conversation_id, created_at
-                    ) VALUES (?, ?, ?)
-                    """,
-                    (memory_id, conversation_id, now),
                 )
 
             connection.execute(
@@ -1754,6 +1789,18 @@ class Database:
                     now,
                 ),
             )
+
+            if memory_id is not None:
+                # Le message exact est la provenance. Supprimer ou tronquer ce
+                # tour ne laisse donc jamais un lien abstrait vers la conversation.
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO memory_sources(
+                        memory_id, conversation_id, source_message_id, created_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (memory_id, conversation_id, user_message_id, now),
+                )
 
         return conversation_id
 
@@ -2143,15 +2190,167 @@ class Database:
                 (title, now, conversation_id),
             )
 
-    def delete_conversation(self, conversation_id: str, expected_revision: int) -> None:
-        """Supprime une conversation sans effacer les faits de mémoire globaux."""
+    def delete_conversation(
+        self, conversation_id: str, expected_revision: int
+    ) -> list[dict[str, str]]:
+        """Supprime atomiquement une conversation et prépare ses artefacts privés."""
 
-        # La conversation et ses messages disparaissent par cascade. Les faits
-        # de mémoire sont globaux : seule une commande « Oublie que » les retire.
+        # Les fichiers de projet ne figurent jamais dans cette file. Seuls le
+        # répertoire privé du runner et la copie privée d'un checkpoint déjà
+        # décidé peuvent être supprimés après le commit SQLite.
         with self.transaction() as connection:
             conversation = self._conversation_row(connection, conversation_id)
             self._assert_mutation_allowed(conversation, expected_revision)
+            runs = connection.execute(
+                """
+                SELECT run.run_id, run.state,
+                       checkpoint.storage_key,
+                       checkpoint.state AS checkpoint_state
+                FROM agent_runs AS run
+                LEFT JOIN project_checkpoints AS checkpoint
+                  ON checkpoint.run_id = run.run_id
+                WHERE run.conversation_id = ?
+                ORDER BY run.created_at ASC, run.run_id ASC
+                """,
+                (conversation_id,),
+            ).fetchall()
+            now = utc_now()
+            for run in runs:
+                if str(run["state"]) not in FINAL_AGENT_RUN_STATES:
+                    raise GenerationConflictError(
+                        "Termine ou annule la tâche Programmation avant de supprimer cette conversation."
+                    )
+                checkpoint_state = run["checkpoint_state"]
+                if (
+                    checkpoint_state is not None
+                    and str(checkpoint_state) not in DELETABLE_CHECKPOINT_STATES
+                ):
+                    raise ConversationOperationError(
+                        "Accepte ou restaure les changements Programmation "
+                        "avant de supprimer cette conversation."
+                    )
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO conversation_cleanup_artifacts(
+                        conversation_id, artifact_kind, storage_id, created_at
+                    ) VALUES (?, 'openhands_run', ?, ?)
+                    """,
+                    (conversation_id, str(run["run_id"]), now),
+                )
+                if run["storage_key"] is not None:
+                    connection.execute(
+                        """
+                        INSERT OR IGNORE INTO conversation_cleanup_artifacts(
+                            conversation_id, artifact_kind, storage_id, created_at
+                        ) VALUES (?, 'checkpoint', ?, ?)
+                        """,
+                        (conversation_id, str(run["storage_key"]), now),
+                    )
+            connection.execute(
+                "DELETE FROM agent_runs WHERE conversation_id = ?", (conversation_id,)
+            )
             connection.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+
+        return self.list_cleanup_artifacts(conversation_id)
+
+    def list_cleanup_artifacts(
+        self, conversation_id: str | None = None
+    ) -> list[dict[str, str]]:
+        """Liste la file technique de copies privées restant à effacer."""
+
+        condition = ""
+        parameters: tuple[str, ...] = ()
+        if conversation_id is not None:
+            condition = "WHERE conversation_id = ?"
+            parameters = (canonical_uuid(conversation_id, "Identifiant de conversation"),)
+        with self.connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT conversation_id, artifact_kind, storage_id, created_at
+                FROM conversation_cleanup_artifacts
+                {condition}
+                ORDER BY created_at ASC, artifact_kind ASC, storage_id ASC
+                """,
+                parameters,
+            ).fetchall()
+        return [
+            {
+                "conversation_id": str(row["conversation_id"]),
+                "artifact_kind": str(row["artifact_kind"]),
+                "storage_id": str(row["storage_id"]),
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+    def complete_cleanup_artifact(self, artifact_kind: str, storage_id: str) -> None:
+        """Retire une copie de la file uniquement après son effacement confirmé."""
+
+        if artifact_kind not in {"openhands_run", "checkpoint"}:
+            raise ValueError("Type d’artefact de suppression invalide.")
+        canonical_storage_id = canonical_uuid(storage_id, "Identifiant de stockage")
+        with self.transaction() as connection:
+            connection.execute(
+                """
+                DELETE FROM conversation_cleanup_artifacts
+                WHERE artifact_kind = ? AND storage_id = ?
+                """,
+                (artifact_kind, canonical_storage_id),
+            )
+
+    def purge_all_memories(self) -> int:
+        """Efface tous les souvenirs et leurs provenances en une transaction."""
+
+        with self.transaction() as connection:
+            count = int(connection.execute("SELECT COUNT(*) FROM memories").fetchone()[0])
+            connection.execute("DELETE FROM memories")
+        return count
+
+    def storage_stats(self) -> dict[str, int]:
+        """Mesure les pages SQLite sans lire le contenu des conversations."""
+
+        with self.connection() as connection:
+            page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
+            free_pages = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+            page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
+        return {
+            "page_count": page_count,
+            "free_pages": free_pages,
+            "page_size": page_size,
+            "database_bytes": self.path.stat().st_size if self.path.exists() else 0,
+            "free_bytes": free_pages * page_size,
+        }
+
+    def reclaim_storage(self, *, force: bool = False) -> dict[str, Any]:
+        """Tronque le WAL et compacte SQLite seulement si le gain justifie VACUUM."""
+
+        before = self.storage_stats()
+        ratio = (
+            before["free_pages"] / before["page_count"]
+            if before["page_count"]
+            else 0.0
+        )
+        worthwhile = (
+            before["free_bytes"] >= STORAGE_RECLAIM_MINIMUM_BYTES
+            and ratio >= STORAGE_RECLAIM_MINIMUM_RATIO
+        )
+        if not force and not worthwhile:
+            return {"compacted": False, "before": before, "after": before}
+
+        with self.connection() as connection:
+            checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if checkpoint is None or int(checkpoint[0]) != 0:
+                return {
+                    "compacted": False,
+                    "busy": True,
+                    "before": before,
+                    "after": before,
+                }
+            connection.execute("VACUUM")
+            integrity = connection.execute("PRAGMA quick_check").fetchone()
+            if integrity is None or str(integrity[0]).lower() != "ok":
+                raise RuntimeError("Le contrôle SQLite a échoué après la maintenance.")
+        return {"compacted": True, "before": before, "after": self.storage_stats()}
 
     def retry_message(
         self, conversation_id: str, message_id: str, expected_revision: int

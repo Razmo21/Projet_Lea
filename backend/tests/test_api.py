@@ -25,6 +25,8 @@ from app.model_controller import ModelControllerError  # noqa: E402
 from app.database import (  # noqa: E402
     MEMORY_DUPLICATE_CONFIRMATION,
     MEMORY_FORGOTTEN_CONFIRMATION,
+    MEMORY_LIST_EMPTY_CONFIRMATION,
+    MEMORY_LIST_HEADER,
     MEMORY_NOT_FOUND_CONFIRMATION,
     MEMORY_REMEMBERED_CONFIRMATION,
 )
@@ -181,6 +183,14 @@ class ApiTestCase(unittest.TestCase):
         second = self.send("LEA_HTTP_DELETE_BETA_9E8D7C").json()
         second = self.send("Deuxième message bêta", second).json()
         survivor = self.send("LEA_HTTP_SURVIVOR_2A3B4C").json()
+        self.application.state.web_authorization.remember_pending(
+            first["id"],
+            "Recherche en attente",
+            first["messages"][-2]["id"],
+            "general",
+            first["revision"],
+        )
+        self.assertTrue(self.application.state.web_authorization.has_pending(first["id"]))
 
         for conversation in (first, second):
             response = self.client.request(
@@ -214,6 +224,7 @@ class ApiTestCase(unittest.TestCase):
                 1,
             )
             self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+        self.assertFalse(self.application.state.web_authorization.has_pending(first["id"]))
 
         restarted_application = create_app(
             self.database_path,
@@ -533,6 +544,33 @@ class ApiTestCase(unittest.TestCase):
         self.assertEqual(self.application.state.database.list_memories(), [])
         self.assertEqual(self.gateway.calls, [])
 
+    def test_memory_list_command_shows_only_active_memories_without_model(self) -> None:
+        """La liste vient de SQLite et un fait oublié n'y laisse aucune trace."""
+
+        first = self.send("Retiens que je préfère le thé.").json()
+        second = self.send("Retiens que mon chien s'appelle Rex.", first).json()
+        listed = self.send("Affiche tes souvenirs", second).json()
+
+        self.assertEqual(
+            listed["messages"][-1]["content"],
+            f"{MEMORY_LIST_HEADER}\n\n"
+            "- je préfère le thé.\n"
+            "- mon chien s'appelle Rex.",
+        )
+        forgotten = self.send("Oublie que je préfère le thé.", listed).json()
+        listed_again = self.send("Affiche tes souvenirs.", forgotten).json()
+        self.assertNotIn("thé", listed_again["messages"][-1]["content"])
+        self.assertIn("Rex", listed_again["messages"][-1]["content"])
+
+        forgotten_last = self.send(
+            "Oublie que mon chien s'appelle Rex.", listed_again
+        ).json()
+        empty = self.send("Affiche tes souvenirs", forgotten_last).json()
+        self.assertEqual(
+            empty["messages"][-1]["content"], MEMORY_LIST_EMPTY_CONFIRMATION
+        )
+        self.assertEqual(self.gateway.calls, [])
+
     def test_empty_memory_commands_are_422_and_do_not_write(self) -> None:
         for command in (
             "Retiens que",
@@ -575,7 +613,7 @@ class ApiTestCase(unittest.TestCase):
             ["conversation", "conversation"],
         )
 
-    def test_memory_survives_source_deletion_and_restart_until_explicit_forget(self) -> None:
+    def test_global_memory_survives_source_deletion_and_restart(self) -> None:
         source = self.send("Souviens-toi que mon chien s'appelle Rex.").json()
         renamed = self.client.patch(
             f"/api/conversations/{source['id']}",
@@ -630,6 +668,7 @@ class ApiTestCase(unittest.TestCase):
                 },
             )
         self.assertEqual(len(memories), 1)
+        self.assertEqual(memories[0]["content"], "mon chien s'appelle Rex.")
         self.assertEqual(recalled.status_code, 200)
         self.assertEqual(forgotten.status_code, 200)
         self.assertEqual(
@@ -639,8 +678,8 @@ class ApiTestCase(unittest.TestCase):
         self.assertEqual(after_forget.status_code, 200)
         self.assertEqual(len(restarted_gateway.calls), 2)
         serialized_payload = str(restarted_gateway.calls[0])
-        self.assertIn("Rex", serialized_payload)
         self.assertIn("faits_explicites", serialized_payload)
+        self.assertIn("Rex", serialized_payload)
         payload_after_forget = str(restarted_gateway.calls[1])
         self.assertNotIn("Rex", payload_after_forget)
         self.assertNotIn("faits_explicites", payload_after_forget)
@@ -888,11 +927,25 @@ class ConcurrentApiTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(second.status_code, 409)
+                deletion_while_active = client.request(
+                    "DELETE",
+                    f"/api/conversations/{pending['id']}",
+                    json={"expected_revision": pending["revision"]},
+                )
+                self.assertEqual(deletion_while_active.status_code, 409)
                 gateway.release.set()
                 first = first_future.result(timeout=10)
                 self.assertEqual(first.status_code, 200)
                 self.assertEqual(gateway.calls, 1)
                 self.assertEqual(database.count_messages(pending["id"]), 2)
+                completed = first.json()
+                deleted = client.request(
+                    "DELETE",
+                    f"/api/conversations/{pending['id']}",
+                    json={"expected_revision": completed["revision"]},
+                )
+                self.assertEqual(deleted.status_code, 204)
+                self.assertEqual(client.get(f"/api/conversations/{pending['id']}").status_code, 404)
         finally:
             temporary_directory.cleanup()
 

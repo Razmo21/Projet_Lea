@@ -27,6 +27,7 @@ from .inference import (
     reasoning_directive,
 )
 from .checkpoints import CheckpointConflictError, CheckpointError, CheckpointService
+from .conversation_deletion import ConversationCleanupError, ConversationDeletionService
 from .database import (
     MAX_TITLE_LENGTH,
     AgentRunNotFoundError,
@@ -1125,6 +1126,17 @@ def create_app(
     """Build the sole local API with injected dependencies for safe test isolation."""
 
     database = Database(database_path)
+    private_data_root = database.path.parent
+    checkpoint_storage_root = (
+        Path(checkpoint_root)
+        if checkpoint_root is not None
+        else private_data_root / "agent-checkpoints"
+    )
+    agent_storage_root = (
+        Path(agent_runtime_root)
+        if agent_runtime_root is not None
+        else private_data_root / "openhands-runs"
+    )
     # Only the production configuration receives the fixed-root check; tests
     # may inject an isolated directory and no HTTP route can alter that choice.
     workspace_guard = WorkspaceGuard(
@@ -1134,9 +1146,7 @@ def create_app(
     checkpoints = CheckpointService(
         database,
         workspace_guard,
-        Path(checkpoint_root)
-        if checkpoint_root is not None
-        else model_registry.project_root / "data" / "agent-checkpoints",
+        checkpoint_storage_root,
     )
     openhands_runtime = OpenHandsRuntime(model_registry)
     openhands_runs = OpenHandsRunManager(
@@ -1145,9 +1155,12 @@ def create_app(
         checkpoints,
         openhands_runtime,
         model_registry,
-        Path(agent_runtime_root)
-        if agent_runtime_root is not None
-        else model_registry.project_root / "data" / "openhands-runs",
+        agent_storage_root,
+    )
+    conversation_deletion = ConversationDeletionService(
+        database,
+        checkpoint_storage_root,
+        agent_storage_root,
     )
 
     @asynccontextmanager
@@ -1155,6 +1168,12 @@ def create_app(
         """Initialize persistent state, recover owned runs, then close them safely at shutdown."""
 
         database.initialize()
+        try:
+            conversation_deletion.cleanup_pending()
+        except ConversationCleanupError:
+            # La file SQLite reste l'autorité et sera reprise au prochain
+            # démarrage ou lors d'un nouvel essai explicite de suppression.
+            LOGGER.warning("conversation_cleanup_pending")
         discovered = workspace_guard.discover_projects()
         database.sync_projects(
             [(project.name, project.relative_path) for project in discovered]
@@ -1194,6 +1213,7 @@ def create_app(
     application.state.workspace_guard = workspace_guard
     application.state.checkpoints = checkpoints
     application.state.openhands_runs = openhands_runs
+    application.state.conversation_deletion = conversation_deletion
     application.state.conversation_locks = ConversationLockRegistry()
     application.state.memory_lock = asyncio.Lock()
     application.state.web_authorization = (
@@ -1363,6 +1383,14 @@ def create_app(
         """Retourne un refus métier lisible pour une opération de conversation."""
 
         return JSONResponse(status_code=400, content={"detail": str(error)})
+
+    @application.exception_handler(ConversationCleanupError)
+    async def conversation_cleanup_error_handler(
+        _request: Request, error: ConversationCleanupError
+    ) -> JSONResponse:
+        """Refuse d'annoncer une suppression complète tant qu'une copie privée subsiste."""
+
+        return JSONResponse(status_code=500, content={"detail": str(error)})
 
     @application.exception_handler(MemoryCapacityError)
     async def memory_capacity_handler(
@@ -2280,14 +2308,27 @@ def create_app(
         request: Request,
         _local: None = Depends(require_local_mutation),
     ) -> Response:
-        """Supprime une conversation sous le verrou de mémoire partagé."""
+        """Supprime le contenu et ses copies privées sous les verrous partagés."""
 
-        # La provenance éventuelle disparaît avec la conversation, mais le fait
-        # global reste intact. Le verrou garde cet ordre avec retenir/oublier.
-        async with _memory_lock(request):
-            _database(request).delete_conversation(
-                str(conversation_id), body.expected_revision
+        canonical_id = str(conversation_id)
+        conversation_lock = _locks(request).get(canonical_id)
+        if conversation_lock.locked():
+            raise GenerationConflictError(
+                "Arrête la réponse avant de supprimer cette conversation."
             )
+        async with conversation_lock:
+            async with _memory_lock(request):
+                try:
+                    request.app.state.conversation_deletion.delete(
+                        canonical_id, body.expected_revision
+                    )
+                except ConversationCleanupError:
+                    # SQLite a déjà supprimé la conversation dans ce cas. Son
+                    # consentement RAM ne doit pas survivre au fichier restant.
+                    request.app.state.web_authorization.discard_pending(canonical_id)
+                    raise
+                else:
+                    request.app.state.web_authorization.discard_pending(canonical_id)
         return Response(status_code=204)
 
     @application.post(

@@ -254,6 +254,31 @@ class PreferencesTests(unittest.TestCase):
         conversation_id, _ = self.database.create_pending_conversation("Ancienne conversation")
         before = self.database.get_conversation(conversation_id)
         with self.database.connection() as connection:
+            # Reconstitue réellement le schéma 7. Modifier seulement le journal
+            # des migrations laisserait des objets v17 et testerait un état
+            # hybride que Léa doit au contraire refuser.
+            connection.execute("DROP TABLE conversation_cleanup_artifacts")
+            connection.execute("DROP TRIGGER IF EXISTS delete_orphan_memory_after_source")
+            connection.execute("DROP TABLE memory_sources")
+            connection.execute(
+                """
+                CREATE TABLE memory_sources (
+                    memory_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(memory_id, conversation_id),
+                    FOREIGN KEY(memory_id) REFERENCES memories(id) ON DELETE CASCADE,
+                    FOREIGN KEY(conversation_id)
+                        REFERENCES conversations(id) ON DELETE CASCADE
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX idx_memory_sources_conversation_id
+                ON memory_sources(conversation_id, memory_id)
+                """
+            )
             connection.execute("DROP TABLE web_sources")
             connection.execute("DROP TABLE user_preferences")
             connection.execute("DROP INDEX idx_messages_agent_role")

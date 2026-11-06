@@ -1391,11 +1391,11 @@ function App() {
       renameLock.current
     )
       return
-    // Le backend applique la révision et supprime la conversation avec ses
-    // messages. Les souvenirs globaux ne répondent qu'à « Oublie que… ».
+    // Le backend confirme aussi la suppression des sources, runs et copies
+    // privées. Les souvenirs explicites restent globaux jusqu'à « Oublie que ».
     if (
       !window.confirm(
-        `Supprimer définitivement « ${target.title} » et tous ses messages ?`,
+        `Supprimer définitivement « ${target.title} », ses messages et les données qui en dépendent ?`,
       )
     )
       return

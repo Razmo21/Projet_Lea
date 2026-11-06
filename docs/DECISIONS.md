@@ -60,7 +60,7 @@ active par conversation. Les appels au modèle sont exécutés hors transaction
 SQLite longue. Une génération interrompue est récupérée comme échec sûr au
 prochain démarrage.
 
-## D-014 — Mémoire générale explicite et indépendante
+## D-014 — Mémoire générale explicite et indépendante — durée de vie rétablie par D-045
 Le schéma v2 ajoute `memories`, sans clé étrangère vers une conversation, et
 classe les messages en tours `conversation` ou `memory`. Seules les commandes
 françaises explicites `Retiens que`, `Souviens-toi que`, `Mémorise que` et
@@ -76,9 +76,8 @@ tokens estimés ; tout dépassement est refusé sans troncature ni suppression.
 Les écritures mémoire, les messages de confirmation et la révision de la
 conversation sont validés dans une même transaction courte, sans appel modèle.
 
-Une mémoire générale est indépendante de la conversation où elle a été créée.
-La suppression d’une conversation ne la retire pas ; seule une commande exacte
-`Oublie que` le fait globalement.
+La commande et l'absence d'extraction implicite restent en vigueur. La durée de
+vie indépendante décrite ici est rétablie et précisée par D-045.
 
 ## D-015 — Provenance et suppression définitive — remplacée par D-016
 Cette décision décrivait le comportement transitoire suivant.
@@ -95,7 +94,7 @@ présentes et purger les souvenirs déjà orphelins. `Oublie que` conserve son
 exacte et supprime le fait ainsi que toutes ses provenances. Aucun effacement
 flou, automatique ou sémantique n’est introduit.
 
-## D-016 — Provenance informative, mémoire globale
+## D-016 — Provenance informative, mémoire globale — rétablie par D-045
 `memory_sources` reste une provenance utile tant que les conversations sources
 existent, mais ne représente plus la propriété ni la durée de vie d’un fait.
 La cascade d’une conversation retire ses messages et ses liens, jamais la ligne
@@ -578,7 +577,7 @@ catalogue. Les révisions, empreintes et validations sont consignées dans
 de dépendance a été revérifiée et le dossier expérimental a été supprimé ; les
 ressources permanentes et leurs attributions restent inchangées.
 
-## D-033 — Suppression réelle des conversations et nettoyage SQLite borné
+## D-033 — Suppression réelle des conversations et nettoyage SQLite borné — complétée par D-044
 
 La suppression frontend reste la route `DELETE` existante avec révision
 optimiste. Le backend exécute le `DELETE FROM conversations` dans une transaction
@@ -1025,3 +1024,79 @@ utilisent les métadonnées et leur révision ; le renommage d'un historique age
 ne renvoie pas son contenu. Une bascule de profil retire son contenu de la vue.
 Les nouveaux titres d'accueil et le déplacement des alertes restent purement
 visuels : aucun minuteur de titre ni seconde collecte de ressources.
+
+## D-044 — Provenance exacte et suppression transitive avant packaging — durée de vie remplacée par D-045
+
+La migration SQLite 17 remplace la provenance informative par un lien vers le
+message mémoire exact. Supprimer ou tronquer ce message retire sa provenance.
+Le souvenir reste actif si un autre message explicite le référence ; il est
+supprimé lorsque son dernier lien disparaît. `Oublie que` conserve sa portée
+globale, sa normalisation exacte et l'absence de rapprochement sémantique.
+
+La suppression d'une conversation reste révisionnée et atomique dans SQLite.
+Elle cascade les messages, sources Web et provenances, puis supprime explicitement
+les runs OpenHands qui lui appartiennent. Une tâche active bloque l'opération.
+Un checkpoint contenant une décision encore possible doit d'abord être accepté
+ou restauré. Après cette décision, seuls les répertoires privés identifiés par
+UUID sous `data/openhands-runs` et `data/agent-checkpoints` sont retirés. Le
+workspace et ses fichiers restent hors de cette suppression.
+
+SQLite conserve avant le commit une file technique composée uniquement de
+l'UUID de conversation, du type de copie et de son UUID de stockage. Si le
+fichier ne peut pas être retiré après le commit, la conversation reste supprimée
+et la file permet une reprise au prochain essai ou démarrage. Une erreur SQL
+avant commit laisse à la fois la conversation et les fichiers privés intacts.
+
+`PRAGMA secure_delete=ON` reste appliqué à chaque connexion. La maintenance
+ordinaire ne lance `VACUUM` que si les pages libres représentent au moins 8 Mio
+et 20 % de la base ; un compactage forcé est réservé à une maintenance explicite
+avec Léa arrêtée. Le WAL est alors checkpointé et tronqué, puis `quick_check`
+valide la base reconstruite. Ces mesures nettoient le stockage contrôlé par
+l'application, sans promettre l'effacement physique du SSD, des sauvegardes
+externes ou des traces réseau.
+
+Les anciens runs sans `conversation_id` sont conservés : certains précèdent
+l'enregistrement conversationnel et leur inutilité ne peut pas être déduite de
+ce lien absent. Aucun nettoyage global, prune Docker, suppression d'image ou de
+volume n'est autorisé par cette décision.
+
+La maintenance autorisée du 5 novembre 2026 a trouvé la base active déjà au
+schéma 17, sans conversation, message, souvenir, provenance ni source Web. Elle
+a conservé les 168 runs, 168 checkpoints et 2 696 entrées de fichiers encore
+référencés. Après vérification de la base active et de l'ancienne sauvegarde
+locale, 16 répertoires de run et 16 répertoires de checkpoint sans référence
+ont été retirés, pour 29 026 octets. La sauvegarde externe historique n'existait
+plus ; la sauvegarde locale antérieure à l'étape 10 ne contenait aucune donnée
+personnelle ni référence aux cibles. Ses deux sidecars techniques générés par
+l'audit ont été supprimés, pas son fichier principal.
+
+Le `VACUUM` explicitement autorisé a ramené `data/lea.sqlite3` de 1 683 456 à
+1 630 208 octets. Le schéma reste 17, `secure_delete=1`, `quick_check=ok`, zéro
+violation de clé étrangère et aucun WAL/SHM après fermeture. Ces chiffres sont
+un constat de maintenance, pas une promesse d'effacement forensique du support.
+
+## D-045 — Souvenirs globaux et consultation déterministe
+
+Le retour utilisateur du 6 novembre 2026 conserve la suppression transitive de
+D-044 pour l'historique, les sources Web, les runs OpenHands et leurs copies
+privées, mais remplace la durée de vie du souvenir. La migration SQLite 18 retire
+`delete_orphan_memory_after_source`. Une cascade supprime toujours la provenance
+exacte liée au message ; la ligne `memories` reste globale, même sans source.
+
+`Oublie que` demeure l'unique suppression conversationnelle d'un fait. Elle
+exige la même égalité normalisée exacte et retire le souvenir ainsi que toutes
+ses provenances. Une purge complète reste réservée à une demande explicite.
+Aucun journal du contenu oublié, mémoire implicite ou rapprochement sémantique
+n'est ajouté.
+
+`Affiche tes souvenirs` est une commande mémoire exacte. Le backend lit les
+faits actifs dans leur ordre de création et produit lui-même une courte liste
+Markdown. La commande ne sollicite ni modèle, ni Web, ni outil. Sa question et
+sa réponse restent un tour de gestion mémoire exclu du contexte du modèle. Une
+liste vide est annoncée explicitement ; un fait oublié ne peut plus y apparaître.
+
+La base et les stockages privés avaient été remis à zéro juste avant cette
+évolution, sur demande explicite : zéro conversation, message, souvenir, source,
+run ou checkpoint, tandis que les préférences, le projet et les migrations ont
+été conservés. Le fichier compacté mesurait 208 896 octets et passait les
+contrôles d'intégrité et de clés étrangères.

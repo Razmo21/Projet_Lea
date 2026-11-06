@@ -250,6 +250,10 @@ class OpenHandsApiTests(unittest.TestCase):
         started = self.client.post('/api/agent-runs', headers=origin,
             json={'task': 'Lis le fichier', 'record_conversation': True})
         final = self.wait_for_final(started.json()['run_id'])
+        self.assertEqual(
+            self.client.post(f"/api/agent-runs/{final['run_id']}/accept", headers=origin).status_code,
+            200,
+        )
         path = f"/api/conversations/{final['conversation_id']}"
         self.assertEqual(self.client.get(path).status_code, 200)
         self.client.post('/api/models/general/activate', headers=origin)
@@ -267,7 +271,8 @@ class OpenHandsApiTests(unittest.TestCase):
             json={'expected_revision': renamed.json()['revision']})
         self.assertEqual(deleted.status_code, 204)
         self.assertEqual(self.client.get(path).status_code, 404)
-        self.assertEqual(self.client.get(f"/api/agent-runs/{final['run_id']}").status_code, 200)
+        self.assertEqual(self.client.get(f"/api/agent-runs/{final['run_id']}").status_code, 404)
+        self.assertFalse((self.base / "runs" / final["run_id"]).exists())
 
     def test_recorded_tasks_keep_both_turns_after_failure_and_reject_stale_revision(self) -> None:
         """Texte et voix partagent le même historique, sans doublon ni perte après échec."""

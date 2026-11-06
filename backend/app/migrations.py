@@ -12,7 +12,7 @@ from .memory import (
 
 
 MigrationOperation = str | Callable[[sqlite3.Connection], None]
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 18
 
 
 def _backfill_memory_sources(connection: sqlite3.Connection) -> None:
@@ -68,6 +68,56 @@ def _backfill_memory_sources(connection: sqlite3.Connection) -> None:
                     ) VALUES (?, ?, ?)
                     """,
                     (memory_id, conversation_id, source_created_at),
+                )
+
+
+def _migrate_memory_sources_to_messages(connection: sqlite3.Connection) -> None:
+    """Relie chaque provenance existante à sa commande mémoire exacte."""
+
+    sources = connection.execute(
+        """
+        SELECT source.memory_id, source.conversation_id, source.created_at,
+               memory.normalized_content
+        FROM memory_sources_v16 AS source
+        JOIN memories AS memory ON memory.id = source.memory_id
+        ORDER BY source.created_at ASC, source.memory_id ASC
+        """
+    ).fetchall()
+    for memory_id, conversation_id, source_created_at, normalized_content in sources:
+        messages = connection.execute(
+            """
+            SELECT id, content, created_at
+            FROM messages
+            WHERE conversation_id = ?
+              AND role = 'user'
+              AND status = 'completed'
+              AND kind = 'memory'
+            ORDER BY position ASC, id ASC
+            """,
+            (conversation_id,),
+        ).fetchall()
+        for message_id, content, message_created_at in messages:
+            try:
+                command = parse_memory_command(str(content))
+            except EmptyMemoryCommandError:
+                continue
+            if (
+                command is not None
+                and command.action == "remember"
+                and command.normalized_content == str(normalized_content)
+            ):
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO memory_sources(
+                        memory_id, conversation_id, source_message_id, created_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        memory_id,
+                        conversation_id,
+                        message_id,
+                        message_created_at or source_created_at,
+                    ),
                 )
 
 MIGRATIONS: Mapping[int, Sequence[MigrationOperation]] = {
@@ -566,6 +616,66 @@ MIGRATIONS: Mapping[int, Sequence[MigrationOperation]] = {
         "DROP TABLE web_sources_v15",
         "CREATE INDEX idx_web_sources_message_position ON web_sources(assistant_message_id, position)",
     ),
+    # v17 : une provenance mémoire désigne désormais la commande exacte. La
+    # suppression d'un message ou d'une conversation retire ainsi uniquement
+    # ses liens, puis le souvenir lui-même si aucune autre source ne subsiste.
+    # La file technique de nettoyage ne contient aucun texte personnel : elle
+    # permet seulement de reprendre la suppression d'artefacts OpenHands.
+    17: (
+        "DROP INDEX idx_memory_sources_conversation_id",
+        "ALTER TABLE memory_sources RENAME TO memory_sources_v16",
+        """
+        CREATE TABLE memory_sources (
+            memory_id TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            source_message_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(memory_id, source_message_id),
+            FOREIGN KEY(memory_id) REFERENCES memories(id) ON DELETE CASCADE,
+            FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+            FOREIGN KEY(source_message_id) REFERENCES messages(id) ON DELETE CASCADE
+        )
+        """,
+        _migrate_memory_sources_to_messages,
+        "DROP TABLE memory_sources_v16",
+        """
+        CREATE INDEX idx_memory_sources_conversation_id
+        ON memory_sources(conversation_id, memory_id)
+        """,
+        """
+        CREATE INDEX idx_memory_sources_message_id
+        ON memory_sources(source_message_id, memory_id)
+        """,
+        """
+        CREATE TRIGGER delete_orphan_memory_after_source
+        AFTER DELETE ON memory_sources
+        BEGIN
+            DELETE FROM memories
+            WHERE id = OLD.memory_id
+              AND NOT EXISTS (
+                  SELECT 1 FROM memory_sources WHERE memory_id = OLD.memory_id
+              );
+        END
+        """,
+        """
+        CREATE TABLE conversation_cleanup_artifacts (
+            conversation_id TEXT NOT NULL CHECK(length(conversation_id) = 36),
+            artifact_kind TEXT NOT NULL
+                CHECK(artifact_kind IN ('openhands_run', 'checkpoint')),
+            storage_id TEXT NOT NULL CHECK(length(storage_id) = 36),
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(artifact_kind, storage_id)
+        )
+        """,
+        """
+        CREATE INDEX idx_conversation_cleanup_artifacts_conversation
+        ON conversation_cleanup_artifacts(conversation_id, artifact_kind, storage_id)
+        """,
+    ),
+    # v18 : les souvenirs explicites sont globaux. Leur provenance disparaît
+    # avec l'historique, mais seul « Oublie que » ou une purge autorisée retire
+    # désormais le fait lui-même.
+    18: ("DROP TRIGGER delete_orphan_memory_after_source",),
 }
 
 
